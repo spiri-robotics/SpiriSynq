@@ -6,6 +6,7 @@ from ruamel.yaml import YAML
 from psygnal import EmissionInfo, SignalGroupDescriptor, debounced
 from psygnal.containers import EventedList, EventedDict, EventedSet
 from collections import defaultdict
+import time
 
 import socket
 from loguru import logger
@@ -15,77 +16,91 @@ hostname = socket.gethostname()
 PLAIN_CONTAINER_TYPES = (list, dict, set)
 EVENTED_CONTAINER_TYPES = (EventedList, EventedDict, EventedSet)
 
-
 @dataclass
 class Session:
     config: zenoh.Config = field(default_factory=zenoh.Config)
     base_topic: str = hostname
-    type_registry: YAML = field(default_factory=lambda: YAML(typ=["safe","string"]))
-    _synced_objects: Dict[str, object] = field(default_factory=dict)
-    _synced_object_links: Dict[object, Set[zenoh.Publisher]] = field(default_factory=lambda: defaultdict(set))
+    type_registry: YAML = field(default_factory=lambda: YAML(typ=["safe", "string"]))
+    _synced_objects: Dict[str, "SyncableObject"] = field(default_factory=dict)
+    _synced_object_links: Dict[int, Set[zenoh.Publisher]] = field(default_factory=lambda: defaultdict(set))
+    _registered_type_queryables: Dict[str, zenoh.Queryable] = field(default_factory=dict)  # NEW
     _in_zenoh_callback: bool = False
 
     def __post_init__(self):
         self.zenoh_session = zenoh.open(self.config)
 
     def is_class_registered(self, cls):
-        """Check if a class is registered with the YAML instance."""
         representer_registered = cls in self.type_registry.representer.yaml_representers
         tag = getattr(cls, 'yaml_tag', None)
         constructor_registered = (
             tag in self.type_registry.constructor.yaml_constructors
             if tag else False
         )
-        return (representer_registered and constructor_registered)
+        return representer_registered and constructor_registered
 
-    def is_object_registered(self,obj):
+    def is_object_registered(self, obj):
         return self.is_class_registered(type(obj))
 
-    def setup_zenoh(self,path: str, authoratative=False):
+    def register_type_schema(self, cls):
+        """Declare a queryable for <base_topic>/sv_type_schema/<type_name> if not already registered."""
+        type_name = getattr(cls, 'yaml_tag', f"!{cls.__name__}").removeprefix("!")
+        topic = f"{self.base_topic}/sv_type_schema/{type_name}"
+
+        if type_name in self._registered_type_queryables:
+            return  # Already registered
+
+        def handle_type_schema(query: zenoh.Query):
+            schema = get_schema(cls)
+            query.reply(query.key_expr, payload=self.type_registry.dumps(schema))
+
+        self._registered_type_queryables[type_name] = self.zenoh_session.declare_queryable(
+            topic, handle_type_schema
+        )
+        logger.debug(f"Registered type schema queryable at {topic}")
+
+    def setup_zenoh(self, path: str, authoratative=False):
         obj = self._synced_objects[path]
         assert obj
 
         def publish_attr_changes(event: EmissionInfo):
-            """Callback that is run whenever a dataclass attribute changes.
-            """
-            if self._in_zenoh_callback: return
+            if self._in_zenoh_callback:
+                return
             attr_path = "/".join((e.attr.rstrip(".") for e in event.path))
             full_path = f"{path}/{attr_path}"
             value = event.args[0]
-            self.zenoh_session.put(full_path, self.type_registry.dumps(value),congestion_control=zenoh.CongestionControl.DROP)
+            value_str = self.type_registry.dumps(value)
+            value_str = value_str.removesuffix("\n...")
+            logger.debug(f"Publishing {full_path}:{value_str}")
+            self.zenoh_session.put(full_path, value_str, congestion_control=zenoh.CongestionControl.DROP)
 
         self.zenoh_session.declare_publisher(f"{path}/**")
         obj.events.connect(publish_attr_changes)
+
         if authoratative:
             handlers = self._synced_object_links[id(obj)]
-            def handle_rehyrdate_request(query: zenoh.Query):
-                """Get the initial state of an object. You don't need to
-                call this if you're using a router that caches results,
-                but this is reliable so you can call it if you suspect
-                that your object is out of sync.
-                """
+
+            def handle_rehydrate_request(query: zenoh.Query):
                 query.reply(query.key_expr, payload=self.type_registry.dumps(obj))
 
-            handlers.add(self.zenoh_session.declare_queryable(path,handle_rehyrdate_request))
+            handlers.add(self.zenoh_session.declare_queryable(path, handle_rehydrate_request))
+
+            type_name = obj.yaml_tag.removeprefix("!")
 
             def handle_metadata(query: zenoh.Query):
-                metadata = {
-                    'path': path,
-                    "type": type(obj).__name__,
-                }
+                metadata = {'path': path, "type": type_name}
                 query.reply(query.key_expr, payload=self.type_registry.dumps(metadata))
 
-            handlers.add(self.zenoh_session.declare_queryable(path+"/sv_metadata", handle_metadata))
-            handlers.add(self.zenoh_session.declare_queryable(path+f"/sv_metadata/{type(obj).__name__}", handle_metadata))
+            handlers.add(self.zenoh_session.declare_queryable(path + "/sv_metadata", handle_metadata))
+            handlers.add(self.zenoh_session.declare_queryable(path + f"/sv_metadata/{type_name}", handle_metadata))
 
             def handle_schema(query: zenoh.Query):
                 schema = get_schema(type(obj))
-                query.reply(query.key_expr,payload=self.type_registry.dumps(schema))
-            handlers.add(self.zenoh_session.declare_queryable(path+"/sv_schema", handle_schema))
+                schema["x-sv-path"] = path
+                query.reply(query.key_expr, payload=self.type_registry.dumps(schema))
 
+            handlers.add(self.zenoh_session.declare_queryable(path + "/sv_object_schema", handle_schema))
 
-    def normalize_path(self,path:str)->str:
-        """Returns path relative to our publishers base topic"""
+    def normalize_path(self, path: str) -> str:
         return "/".join((self.base_topic, path))
 
     def publish_synced_object(self, path: str, obj: "SyncableObject", authoratative=True, auto_register_type=True):
@@ -93,11 +108,17 @@ class Session:
             assert self.is_object_registered(obj)
         elif auto_register_type and not self.is_object_registered(obj):
             self.type_registry.register_class(type(obj))
+            if not hasattr(type(obj), "yaml_tag"):
+                type(obj).yaml_tag = f"!{type(obj).__name__}"
+
+        # Register type-level schema queryable whenever a type is first seen
+        self.register_type_schema(type(obj))  # NEW
+
         full_path = self.normalize_path(path)
         self._synced_objects[full_path] = obj
         self.setup_zenoh(full_path, authoratative=authoratative)
         return full_path
-    
+
     def receive_synced_object(self, path: str, receive_only=False):
         receiver = self.zenoh_session.get(path)
         reply = receiver.recv()
@@ -105,9 +126,9 @@ class Session:
         data = reply.ok.payload
         obj = self.type_registry.load(data)
         if not receive_only:
-            self.publish_synced_object(path,obj,auto_register_type=False,authoratative=False)
+            self.publish_synced_object(path, obj, auto_register_type=False, authoratative=False)
         return obj
-        
+
 @dataclass
 class SyncableObject:
     """A dataclass that can be synced over the zenoh network

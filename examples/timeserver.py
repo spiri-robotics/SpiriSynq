@@ -5,6 +5,7 @@ import time
 
 @dataclass
 class TimeData(SyncableObject):
+    """Simple server that publishes the current time every second"""
     time: datetime.datetime = field(default_factory=datetime.datetime.now)
 
 if __name__ == "__main__":
