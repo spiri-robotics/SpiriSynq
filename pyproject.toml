@@ -1,5 +1,5 @@
 [project]
-name = "spirivector"
+name = "spirisynq"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -12,4 +12,10 @@ dependencies = [
     "ruamel-yaml>=0.19.1",
     "ruamel-yaml-string>=0.1.1",
     "typer>=0.24.1",
+]
+
+[dependency-groups]
+examples = [
+    "imagecodecs>=2026.3.6",
+    "opencv-python-headless>=4.13.0.92",
 ]
