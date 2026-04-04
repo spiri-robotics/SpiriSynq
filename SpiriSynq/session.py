@@ -254,12 +254,25 @@ class SyncableObject:
         return names
 
     @classmethod
+    def all_skip_rehydrate_names(cls):
+        names = set()
+        for klass in cls.__mro__:
+            if "skip_rehydrate" in klass.__dict__:
+                val = klass.__dict__["skip_rehydrate"]
+                if isinstance(val, (set, frozenset, list, tuple)):
+                    names.update(val)
+                else:
+                    names.add(val)
+        return names
+
+    @classmethod
     def to_yaml(cls, representer, data):
         # Only serialize actual dataclass fields, nothing set in __post_init__
         field_names = set()
         reserved_names = cls.all_reserved_names()
+        skip_names = cls.all_skip_rehydrate_names()
         for f in fields(cls):
-            if f.name in reserved_names:
+            if f.name in reserved_names or f.name in skip_names:
                 continue
             field_names.add(f.name)
 
