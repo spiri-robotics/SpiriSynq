@@ -17,5 +17,6 @@ dependencies = [
 [dependency-groups]
 examples = [
     "imagecodecs>=2026.3.6",
+    "nicegui>=3.9.0",
     "opencv-python-headless>=4.13.0.92",
 ]
