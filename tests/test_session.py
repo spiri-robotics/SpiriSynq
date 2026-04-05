@@ -44,7 +44,13 @@ def _wait_for(predicate, timeout=1.0, interval=0.01):
 import gc
 import weakref
 
+
 def test_session_gc():
+    """
+    Sessions should be garbage collected after going out of scope.
+    If this fails, a closure in a zenoh callback is holding a strong
+    reference to the session, preventing __del__ from firing.
+    """
     @dataclass
     class SimpleData(SyncableObject):
         speed: float = 0.0
@@ -65,26 +71,65 @@ def test_session_gc():
     del session_a, session_b, obj, remote_obj
     gc.collect()
 
-    still_alive = {
+    still_alive = {k: v for k, v in {
         "session_a": ref_session_a(),
         "session_b": ref_session_b(),
         "obj": ref_obj(),
         "remote_obj": ref_remote_obj(),
-    }
-    still_alive = {k: v for k, v in still_alive.items() if v is not None}
+    }.items() if v is not None}
 
-    for name, obj in still_alive.items():
-        print(f"\n=== Referrers of {name} ===")
-        import objgraph
-        objgraph.show_most_common_types(limit=5)
-        print("\n--- Direct referrers ---")
-        for ref in gc.get_referrers(obj):
-            if type(ref).__name__ == 'cell':
-                for ref2 in gc.get_referrers(ref):
-                    if inspect.isfunction(ref2):
-                        print(f"  closure: {ref2.__qualname__} at {inspect.getfile(ref2)}:{ref2.__code__.co_firstlineno}")
+    for name, instance in still_alive.items():
+        print(f"\n=== Referrers of {name} ({type(instance).__name__}) ===")
+        print(_format_referrers(instance))
 
     assert not still_alive, f"Objects not garbage collected: {list(still_alive.keys())}"
+
+
+def test_handlers_cleaned_up_when_object_goes_out_of_scope():
+    """
+    Authoritative and non-authoritative handlers should be removed from
+    the session when the synced object goes out of scope, via weakref.finalize.
+    """
+    @dataclass
+    class SimpleData(SyncableObject):
+        speed: float = 0.0
+        name: str = ""
+
+    session_a = Session()
+    session_b = Session()
+
+    obj = SimpleData(speed=1.0, name="test")
+    path = session_a.publish_synced_object("test/obj", obj, authoritative=True)
+    remote_obj = session_b.receive_synced_object(path)
+
+    assert path in session_a._handlers_authoritative, \
+        "Authoritative handlers should be registered on session_a"
+    assert path in session_a._handlers_non_authoritative, \
+        "Non-authoritative handlers should be registered on session_a"
+    assert path in session_b._handlers_non_authoritative, \
+        "Non-authoritative handlers should be registered on session_b"
+
+    ref_obj = weakref.ref(obj)
+    ref_remote_obj = weakref.ref(remote_obj)
+
+    del obj, remote_obj
+    gc.collect()
+
+    assert ref_obj() is None, (
+        f"Published obj not GC'd — handlers cannot have been cleaned up via finalizer.\n"
+        f"Referrers:\n{_format_referrers(ref_obj())}"
+    )
+    assert ref_remote_obj() is None, (
+        f"remote_obj not GC'd — handlers cannot have been cleaned up via finalizer.\n"
+        f"Referrers:\n{_format_referrers(ref_remote_obj())}"
+    )
+
+    assert path not in session_a._handlers_authoritative, \
+        "Authoritative handlers should be removed from session_a after obj GC"
+    assert path not in session_a._handlers_non_authoritative, \
+        "Non-authoritative handlers should be removed from session_a after obj GC"
+    assert path not in session_b._handlers_non_authoritative, \
+        "Non-authoritative handlers should be removed from session_b after remote_obj GC"
 
 
 def test_basic_field_synchronization():
