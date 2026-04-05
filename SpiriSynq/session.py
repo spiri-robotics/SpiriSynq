@@ -31,6 +31,43 @@ class Session:
         self._synced_objects = weakref.WeakValueDictionary() #Path:obj mapping
         self._handlers_authoritative = defaultdict(set) #Authorative handler only run on one node. Include things like schema registration and metadata
         self._handlers_non_authoritative = defaultdict(set) #Non-authorative handlers synchronize attributes, every node runs them.
+        self.setup_default_serializers()
+
+    def setup_default_serializers(self):
+        """Register YAML representers and constructors for evented container types."""
+        from psygnal.containers import EventedList, EventedDict, EventedSet
+
+        # Representers
+        def represent_evented_list(dumper, data):
+            # Use plain sequence representation with custom tag
+            return dumper.represent_sequence('!EventedList', list(data), flow_style=None)
+        def represent_evented_dict(dumper, data):
+            return dumper.represent_mapping('!EventedDict', dict(data), flow_style=None)
+        def represent_evented_set(dumper, data):
+            # YAML set representation: mapping with each key -> null
+            mapping = {item: None for item in data}
+            return dumper.represent_mapping('!EventedSet', mapping, flow_style=None)
+
+        self.type_registry.representer.add_representer(EventedList, represent_evented_list)
+        self.type_registry.representer.add_representer(EventedDict, represent_evented_dict)
+        self.type_registry.representer.add_representer(EventedSet, represent_evented_set)
+
+        # Constructors
+        def construct_evented_list(loader, node):
+            data = loader.construct_sequence(node, deep=True)
+            return EventedList(data)
+        def construct_evented_dict(loader, node):
+            data = loader.construct_mapping(node, deep=True)
+            return EventedDict(data)
+        def construct_evented_set(loader, node):
+            # node is a mapping node
+            mapping = loader.construct_mapping(node, deep=True)
+            # keys are the set elements
+            return EventedSet(mapping.keys())
+
+        self.type_registry.constructor.add_constructor('!EventedList', construct_evented_list)
+        self.type_registry.constructor.add_constructor('!EventedDict', construct_evented_dict)
+        self.type_registry.constructor.add_constructor('!EventedSet', construct_evented_set)
 
     def cleanup_authoritative_handlers(self,path):
         logger.info(f"No longer authorative for {path}")
