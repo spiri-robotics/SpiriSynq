@@ -281,3 +281,33 @@ def test_rehydrate_endpoint():
     time.sleep(0.1)
     # snapshot should stay unchanged
     assert snapshot.value == 100
+
+
+def test_large_bytes_sync():
+    """
+    Sync a 4 MiB bytes field to verify that large binary payloads are handled correctly.
+    """
+    @dataclass
+    class LargeBytes(SyncableObject):
+        data: bytes = b""
+
+    session_a = Session()
+    session_b = Session()
+
+    # 4 MiB of data
+    size = 4 * 1024 * 1024
+    large_data = b"x" * size
+
+    obj = LargeBytes(data=large_data)
+    path = session_a.publish_synced_object("test/large_bytes", obj, authoritative=True)
+
+    remote = session_b.receive_synced_object(path)
+
+    # Initial state should match exactly
+    assert len(remote.data) == size
+    assert remote.data == large_data
+
+    # Update with different pattern
+    new_data = b"y" * size
+    obj.data = new_data
+    assert _wait_for(lambda: remote.data == new_data, timeout=5.0), "Timeout waiting for large bytes update"
