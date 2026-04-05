@@ -120,7 +120,13 @@ class Session:
             container_path_parts = []
             found_index = False
             for e in event.path:
-                attr = e.attr.rstrip(".")
+                # Determine the string representation of this path element
+                if hasattr(e, 'attr') and e.attr is not None:
+                    attr_raw = e.attr
+                else:
+                    attr_raw = str(e)
+                # Remove leading/trailing dots that psygnal includes
+                attr = attr_raw.rstrip('.').lstrip('.')
                 # If we haven't found an index yet, navigate into container_obj
                 if not found_index:
                     # Check if this part is an index (starts with '[')
