@@ -26,7 +26,6 @@ import inspect
 @pytest.fixture(autouse=True, scope="session")
 def dump_threads_on_exit():
     gc.collect()
-    gc.collect()
     yield
     print("\n=== Threads still alive ===")
     for t in threading.enumerate():
@@ -121,7 +120,6 @@ def test_basic_field_synchronization():
     # Change a field on the remote side (should propagate back)
     remote_obj.name = "updated"
     assert _wait_for(lambda: obj.name == "updated"), "Timeout waiting for name update"
-
 
 
 def test_nested_dataclass_synchronization():

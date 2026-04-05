@@ -43,11 +43,12 @@ class Session:
             except zenoh.ZError:
                 pass
         for k,v in self._handlers_non_authoritative.items():
-            logger.info(f"Discovered non-authoritative handlers that were not cleaned up for path {k} on node {self.zenoh_session.zid()}")
+            #It's normal for these to be cleaned up if the original object still exists, that's fine.
+            #logger.info(f"Discovered non-authoritative handlers that were not cleaned up for path {k} on node {self.zenoh_session.zid()}: {v}")
             for q in v:
                 q.undeclare()
         for k,v in self._handlers_authoritative.items():
-            logger.info(f"Discovered authoritative handlers that were not cleaned up for path {k} on node {self.zenoh_session.zid()}")
+            #logger.info(f"Discovered authoritative handlers that were not cleaned up for path {k} on node {self.zenoh_session.zid()}: {v}")
             for q in v:
                 q.undeclare()
 
