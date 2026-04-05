@@ -17,6 +17,7 @@ hostname = socket.gethostname()
 PLAIN_CONTAINER_TYPES = (list, dict, set)
 EVENTED_CONTAINER_TYPES = (EventedList, EventedDict, EventedSet)
 
+
 @dataclass
 class Session:
     config: zenoh.Config = field(default_factory=zenoh.Config)
@@ -26,8 +27,36 @@ class Session:
     _in_zenoh_callback: bool = False
     raw_types: tuple[type, ...] = (bytes,) #Raw types get sent as a zenoh.Encoding.APPLICATION_OCTET_STREAM instead of being yaml serialized, this saves us the overhead of base64 encoding them.
 
+    def __del__(self):
+        try:
+            self.close()
+        except zenoh.ZError:
+            #This just means it's already cleaned up.
+            pass
+
+
+    def close(self):
+        logger.info(f"Cleaning up zenoh session on {self.base_topic} with id {self.zenoh_session.zid()}")
+        for q in self._registered_type_queryables.values():
+            try:
+                q.undeclare()
+            except zenoh.ZError:
+                pass
+        for k,v in self._handlers_non_authoritative.items():
+            logger.info(f"Discovered non-authoritative handlers that were not cleaned up for path {k} on node {self.zenoh_session.zid()}")
+            for q in v:
+                q.undeclare()
+        for k,v in self._handlers_authoritative.items():
+            logger.info(f"Discovered authoritative handlers that were not cleaned up for path {k} on node {self.zenoh_session.zid()}")
+            for q in v:
+                q.undeclare()
+
+        self.zenoh_session.close()
+
     def __post_init__(self):
         self.zenoh_session = zenoh.open(self.config)
+        logger.info(f"Staring zenoh session on {self.base_topic} with id {self.zenoh_session.zid()}")
+
         self._synced_objects = weakref.WeakValueDictionary() #Path:obj mapping
         self._handlers_authoritative = defaultdict(set) #Authorative handler only run on one node. Include things like schema registration and metadata
         self._handlers_non_authoritative = defaultdict(set) #Non-authorative handlers synchronize attributes, every node runs them.
@@ -69,15 +98,28 @@ class Session:
         self.type_registry.constructor.add_constructor('!EventedDict', construct_evented_dict)
         self.type_registry.constructor.add_constructor('!EventedSet', construct_evented_set)
 
-    def cleanup_authoritative_handlers(self,path):
-        logger.info(f"No longer authorative for {path}")
-        for handler in self._handlers_authoritative[path]:
-            handler.undeclare()
+    def cleanup_non_authoritative_handlers(self, path):
+        logger.info(f"No longer syncing {path}")
+        for handler in self._handlers_non_authoritative.pop(path, set()):
+            try:
+                handler.undeclare()
+            except zenoh.ZError:
+                pass
 
-    def cleanup_non_authoritative_handlers(self,path):
+    def cleanup_authoritative_handlers(self, path):
+        logger.info(f"No longer authorative for {path}")
+        for handler in self._handlers_authoritative.pop(path, set()):
+            try:
+                handler.undeclare()
+            except zenoh.ZError:
+                pass
+
         logger.info(f"No longer syncing {path}")
         for handler in self._handlers_non_authoritative[path]:
-            handler.undeclare()
+            try:
+                handler.undeclare()
+            except zenoh.ZError:
+                pass 
 
     def cleanup_all_handlers(self,path:str):
         self.cleanup_authoritative_handlers(path)
@@ -86,37 +128,44 @@ class Session:
     def setup_authorative_handlers(self,obj: "SyncableObject", path:str):
         """Handlers that should only run on one node, like schema definition and metadata"""
         handlers = self._handlers_authoritative[path]
+        weakref.finalize(obj, self.cleanup_authoritative_handlers, path)
+        obj_ref = weakref.ref(obj)
+        self_ref = weakref.ref(self)
+
 
         def handle_rehydrate_request(query: zenoh.Query):
-            query.reply(query.key_expr, payload=self.type_registry.dumps(obj))
+            query.reply(query.key_expr, payload=self_ref().type_registry.dumps(obj_ref()))
 
         handlers.add(self.zenoh_session.declare_queryable(path, handle_rehydrate_request))
 
-        type_name = obj.yaml_tag.removeprefix("!")
+        type_name = obj_ref().yaml_tag.removeprefix("!")
 
         def handle_metadata(query: zenoh.Query):
             metadata = {'path': path, "type": type_name}
-            query.reply(query.key_expr, payload=self.type_registry.dumps(metadata))
+            query.reply(query.key_expr, payload=self_ref().type_registry.dumps(metadata))
 
         handlers.add(self.zenoh_session.declare_queryable(path + "/sv_metadata", handle_metadata))
         handlers.add(self.zenoh_session.declare_queryable(path + f"/sv_metadata/{type_name}", handle_metadata))
 
         def handle_schema(query: zenoh.Query):
-            schema = get_schema(type(obj))
+            schema = get_schema(type(obj_ref()))
             schema["x-sv-path"] = path
-            query.reply(query.key_expr, payload=self.type_registry.dumps(schema))
+            query.reply(query.key_expr, payload=self_ref().type_registry.dumps(schema))
 
         handlers.add(self.zenoh_session.declare_queryable(path + "/sv_object_schema", handle_schema))
 
     def setup_non_authorative_handlers(self, obj: "SyncableObject", path:str, receive=True, publish=True):
         """Handlers that run on every node, like subscribers responsible for state changes"""
+        weakref.finalize(obj, self.cleanup_non_authoritative_handlers, path)
+        obj_ref = weakref.ref(obj)
+        self_ref = weakref.ref(self)
 
         def publish_attr_changes(event: EmissionInfo):
-            if self._in_zenoh_callback:
+            if self_ref()._in_zenoh_callback:
                 return
             # Build path parts and detect container index
             parts = []
-            container_obj = obj  # start from the outer object
+            container_obj = obj_ref()  # start from the outer object
             container_path_parts = []
             found_index = False
             for e in event.path:
@@ -155,17 +204,17 @@ class Session:
                 full_path = f"{path}/{attr_path}"
                 value = event.args[0]
 
-            if isinstance(value, self.raw_types):
+            if isinstance(value, self_ref().raw_types):
                 payload = bytes(value)
                 encoding = zenoh.Encoding.APPLICATION_OCTET_STREAM
-                logger.debug(f"Publishing {full_path} (binary, {len(payload)} bytes)")
+                logger.debug(f"Publishing {full_path} (binary, {len(payload)} bytes) on node {self_ref().zenoh_session.zid()}")
             else:
-                value_str = self.type_registry.dumps(value).removesuffix("\n...")
+                value_str = self_ref().type_registry.dumps(value).removesuffix("\n...")
                 payload = value_str.encode()
                 encoding = zenoh.Encoding.TEXT_PLAIN
-                logger.debug(f"Publishing {full_path}:{value_str}")
+                logger.debug(f"Publishing {full_path}:{value_str} {self_ref().zenoh_session.zid()}")
 
-            self.zenoh_session.put(
+            self_ref().zenoh_session.put(
                 full_path,
                 payload,
                 encoding=encoding,
@@ -175,15 +224,15 @@ class Session:
         if publish:
             handler = self.zenoh_session.declare_publisher(f"{path}/**")
             self._handlers_non_authoritative[path].add(handler)
-            self._handlers_non_authoritative[path].add(obj.events.connect(publish_attr_changes))
+            obj_ref().events.connect(publish_attr_changes)
+            #self._handlers_non_authoritative[path].add()
 
-        reserved = type(obj).all_reserved_names()
+        reserved = type(obj_ref()).all_reserved_names()
         allowed_fields: set[str] = {
-            f.name for f in fields(obj) if f.name not in reserved
+            f.name for f in fields(obj_ref()) if f.name not in reserved
         }
 
         def receive_attr_changes(sample = zenoh.Sample):
-            _obj = weakref.proxy(obj)
             key_str = str(sample.key_expr)
 
             # Derive the relative attribute path from the full zenoh key
@@ -201,21 +250,20 @@ class Session:
                 value = sample.payload.to_bytes()
             else:
                 raw = sample.payload.to_bytes().decode()
-                value = self.type_registry.load(raw)    
-            target = obj
+                value = self_ref().type_registry.load(raw)    
+            target = obj_ref()
             for part in parts[:-1]:
                 target = getattr(target, part)
 
             # Apply the change while suppressing the re-publish guard
-            self._in_zenoh_callback = True
+            self_ref()._in_zenoh_callback = True
             try:
                 setattr(target, parts[-1], value)
             finally:
-                self._in_zenoh_callback = False                        
+                self_ref()._in_zenoh_callback = False                        
         if receive:
             sub = self.zenoh_session.declare_subscriber(f"{path}/**", receive_attr_changes)
             self._handlers_non_authoritative[path].add(sub)
-
 
     def is_class_registered(self, cls):
         representer_registered = cls in self.type_registry.representer.yaml_representers
@@ -272,14 +320,15 @@ class Session:
         """Declare a queryable for <base_topic>/sv_type_schema/<type_name> if not already registered."""
         type_name = getattr(cls, 'yaml_tag', f"!{cls.__name__}").removeprefix("!")
         topic = f"{self.base_topic}/sv_type_schema/{type_name}"
+        self_ref = weakref.ref(self)
 
         if type_name in self._registered_type_queryables:
             return  # Already registered
 
         def handle_type_schema(query: zenoh.Query):
             schema = get_schema(cls)
-            schema["x-node-path"]=self.base_topic
-            query.reply(query.key_expr, payload=self.type_registry.dumps(schema))
+            schema["x-node-path"]=self_ref().base_topic
+            query.reply(query.key_expr, payload=self_ref().type_registry.dumps(schema))
 
         self._registered_type_queryables[type_name] = self.zenoh_session.declare_queryable(
             topic, handle_type_schema

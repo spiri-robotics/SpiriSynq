@@ -10,6 +10,27 @@ from psygnal.containers import EventedList, EventedDict
 
 from SpiriSynq.session import Session, SyncableObject
 
+import threading
+import traceback
+import sys
+import pytest
+
+import threading
+import traceback
+import sys
+import pytest
+import gc
+import weakref
+import inspect
+
+@pytest.fixture(autouse=True, scope="session")
+def dump_threads_on_exit():
+    gc.collect()
+    gc.collect()
+    yield
+    print("\n=== Threads still alive ===")
+    for t in threading.enumerate():
+        print(f"  {t.name!r}  daemon={t.daemon}")
 
 def _wait_for(predicate, timeout=1.0, interval=0.01):
     """Poll until predicate returns True or timeout expires."""
@@ -19,6 +40,52 @@ def _wait_for(predicate, timeout=1.0, interval=0.01):
             return True
         time.sleep(interval)
     return False
+
+
+import gc
+import weakref
+
+def test_session_gc():
+    @dataclass
+    class SimpleData(SyncableObject):
+        speed: float = 0.0
+        name: str = ""
+
+    session_a = Session()
+    session_b = Session()
+
+    obj = SimpleData(speed=42.5, name="test")
+    path = session_a.publish_synced_object("test/obj", obj, authoritative=True)
+    remote_obj = session_b.receive_synced_object(path)
+
+    ref_session_a = weakref.ref(session_a)
+    ref_session_b = weakref.ref(session_b)
+    ref_obj = weakref.ref(obj)
+    ref_remote_obj = weakref.ref(remote_obj)
+
+    del session_a, session_b, obj, remote_obj
+    gc.collect()
+
+    still_alive = {
+        "session_a": ref_session_a(),
+        "session_b": ref_session_b(),
+        "obj": ref_obj(),
+        "remote_obj": ref_remote_obj(),
+    }
+    still_alive = {k: v for k, v in still_alive.items() if v is not None}
+
+    for name, obj in still_alive.items():
+        print(f"\n=== Referrers of {name} ===")
+        import objgraph
+        objgraph.show_most_common_types(limit=5)
+        print("\n--- Direct referrers ---")
+        for ref in gc.get_referrers(obj):
+            if type(ref).__name__ == 'cell':
+                for ref2 in gc.get_referrers(ref):
+                    if inspect.isfunction(ref2):
+                        print(f"  closure: {ref2.__qualname__} at {inspect.getfile(ref2)}:{ref2.__code__.co_firstlineno}")
+
+    assert not still_alive, f"Objects not garbage collected: {list(still_alive.keys())}"
 
 
 def test_basic_field_synchronization():
@@ -56,6 +123,7 @@ def test_basic_field_synchronization():
     assert _wait_for(lambda: obj.name == "updated"), "Timeout waiting for name update"
 
 
+
 def test_nested_dataclass_synchronization():
     """
     Nested SyncableObjects should propagate changes across the network,
@@ -89,6 +157,8 @@ def test_nested_dataclass_synchronization():
     remote.label = "changed"
     assert _wait_for(lambda: obj.label == "changed"), "Timeout waiting for outer label update"
 
+    session_a.close()
+    session_b.close()
 
 def test_evented_container_synchronization():
     """

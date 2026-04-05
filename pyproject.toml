@@ -16,6 +16,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "objgraph>=3.6.2",
     "pytest>=9.0.2",
 ]
 examples = [
