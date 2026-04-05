@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field, fields
-from typing import Dict, ClassVar, Set, get_origin, get_type_hints, final
+from typing import Dict, ClassVar, Set, get_origin, get_type_hints, final, get_args
 from SpiriSynq.schema import get_schema
 import zenoh
 from ruamel.yaml import YAML
@@ -229,6 +229,45 @@ class Session:
     def is_object_registered(self, obj):
         return self.is_class_registered(type(obj))
 
+    def _register_type_recursive(self, cls: type) -> None:
+        """Ensure cls and any SyncableObject types appearing in its fields are registered."""
+        visited = set()
+        def _register(t: type) -> None:
+            # Only consider classes that are SyncableObject subclasses (or maybe dataclasses)
+            if not isinstance(t, type):
+                return
+            if t in visited:
+                return
+            visited.add(t)
+            # Check if it's a SyncableObject (has events classvar?)
+            if not (hasattr(t, '__dataclass_fields__') and hasattr(t, 'events')):
+                # Not a SyncableObject, skip
+                return
+            # Register this class if not already
+            if not self.is_class_registered(t):
+                self.type_registry.register_class(t)
+                if not hasattr(t, "yaml_tag"):
+                    t.yaml_tag = f"!{t.__name__}"
+            # Process its fields
+            try:
+                hints = get_type_hints(t)
+            except Exception:
+                hints = {}
+            for field_name, hint in hints.items():
+                # Skip reserved fields
+                if field_name in t.all_reserved_names():
+                    continue
+                origin = get_origin(hint)
+                if origin is None:
+                    # simple type
+                    _register(hint)
+                else:
+                    # generic type, process each argument
+                    for arg in get_args(hint):
+                        if isinstance(arg, type):
+                            _register(arg)
+        _register(cls)
+
     def register_type_schema(self, cls):
         """Declare a queryable for <base_topic>/sv_type_schema/<type_name> if not already registered."""
         type_name = getattr(cls, 'yaml_tag', f"!{cls.__name__}").removeprefix("!")
@@ -255,9 +294,8 @@ class Session:
         if not auto_register_type:
             assert self.is_object_registered(obj)
         elif auto_register_type and not self.is_object_registered(obj):
-            self.type_registry.register_class(type(obj))
-            if not hasattr(type(obj), "yaml_tag"):
-                type(obj).yaml_tag = f"!{type(obj).__name__}"
+            # recursively register the type and its dependencies
+            self._register_type_recursive(type(obj))
 
         # Register type-level schema queryable whenever a type is first seen
         self.register_type_schema(type(obj))
