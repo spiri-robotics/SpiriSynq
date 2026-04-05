@@ -200,9 +200,6 @@ def test_nested_dataclass_synchronization():
     remote.label = "changed"
     assert _wait_for(lambda: obj.label == "changed"), "Timeout waiting for outer label update"
 
-    session_a.close()
-    session_b.close()
-
 def test_evented_container_synchronization():
     """
     Evented containers (EventedList, EventedDict) allow collection mutations
