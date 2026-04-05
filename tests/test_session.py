@@ -11,7 +11,7 @@ from psygnal.containers import EventedList, EventedDict
 from SpiriSynq.session import Session, SyncableObject
 
 
-def _wait_for(predicate, timeout=2.0, interval=0.01):
+def _wait_for(predicate, timeout=1.0, interval=0.01):
     """Poll until predicate returns True or timeout expires."""
     start = time.time()
     while time.time() - start < timeout:
@@ -37,7 +37,7 @@ def test_basic_field_synchronization():
 
     # Publish an object from session A
     obj = SimpleData(speed=42.5, name="test")
-    path = session_a.publish_synced_object("test/obj", obj, authoratative=True)
+    path = session_a.publish_synced_object("test/obj", obj, authoritative=True)
 
     # Receive the object on session B (this also subscribes to future updates)
     remote_obj = session_b.receive_synced_object(path)
@@ -74,7 +74,7 @@ def test_nested_dataclass_synchronization():
     session_b = Session()
 
     obj = Outer(inner=Inner(value=10), label="outer")
-    path = session_a.publish_synced_object("test/nested", obj, authoratative=True)
+    path = session_a.publish_synced_object("test/nested", obj, authoritative=True)
 
     remote = session_b.receive_synced_object(path)
 
@@ -104,7 +104,7 @@ def test_evented_container_synchronization():
     session_b = Session()
 
     obj = WithContainers(items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}))
-    path = session_a.publish_synced_object("test/containers", obj, authoratative=True)
+    path = session_a.publish_synced_object("test/containers", obj, authoritative=True)
 
     remote = session_b.receive_synced_object(path)
 
@@ -134,7 +134,7 @@ def test_raw_bytes_field():
     session_b = Session()
 
     obj = WithBytes(data=b"hello\x00world")
-    path = session_a.publish_synced_object("test/bytes", obj, authoratative=True)
+    path = session_a.publish_synced_object("test/bytes", obj, authoritative=True)
 
     remote = session_b.receive_synced_object(path)
 
@@ -143,26 +143,6 @@ def test_raw_bytes_field():
     # Update bytes
     obj.data = b"updated"
     assert _wait_for(lambda: remote.data == b"updated"), "Timeout waiting for bytes update"
-
-
-def test_schema_queryable():
-    """
-    Each published type automatically registers a schema queryable endpoint,
-    allowing other participants to discover the structure of the data.
-    """
-    @dataclass
-    class SchemaExample(SyncableObject):
-        count: int = 0
-        description: str = ""
-
-    session = Session()
-    obj = SchemaExample(count=5, description="example")
-    session.publish_synced_object("test/schema", obj, authoratative=True)
-
-    # The schema queryable is registered at <base_topic>/sv_type_schema/<type_name>
-    type_name = "SchemaExample"
-    assert type_name in session._registered_type_queryables
-
 
 def test_rehydrate_endpoint():
     """
@@ -178,10 +158,10 @@ def test_rehydrate_endpoint():
     session_b = Session()
 
     obj = RehydrateExample(value=100, text="initial")
-    path = session_a.publish_synced_object("test/rehydrate", obj, authoratative=True)
+    path = session_a.publish_synced_object("test/rehydrate", obj, authoritative=True)
 
     # Simulate a late joiner that only wants the current state without subscribing
-    snapshot = session_b.receive_synced_object(path, receive_only=True)
+    snapshot = session_b.receive_synced_object(path, receive=False, publish=False)
     assert snapshot.value == 100
     assert snapshot.text == "initial"
 

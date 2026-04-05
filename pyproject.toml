@@ -1,5 +1,5 @@
 [project]
-name = "spirisynq"
+name = "SpiriSynq"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -15,8 +15,14 @@ dependencies = [
 ]
 
 [dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
 examples = [
     "imagecodecs>=2026.3.6",
     "nicegui>=3.9.0",
     "opencv-python-headless>=4.13.0.92",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
