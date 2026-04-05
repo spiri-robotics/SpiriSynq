@@ -114,9 +114,40 @@ class Session:
         def publish_attr_changes(event: EmissionInfo):
             if self._in_zenoh_callback:
                 return
-            attr_path = "/".join((e.attr.rstrip(".") for e in event.path))
-            full_path = f"{path}/{attr_path}"
-            value = event.args[0]
+            # Build path parts and detect container index
+            parts = []
+            container_obj = obj  # start from the outer object
+            container_path_parts = []
+            found_index = False
+            for e in event.path:
+                attr = e.attr.rstrip(".")
+                # If we haven't found an index yet, navigate into container_obj
+                if not found_index:
+                    # Check if this part is an index (starts with '[')
+                    if attr.startswith('['):
+                        found_index = True
+                        # Stop adding parts for the full path; we will publish at container_path_parts
+                        # Do not include this index part
+                        break
+                    else:
+                        # It's an attribute name
+                        parts.append(attr)
+                        container_path_parts.append(attr)
+                        # Navigate into container_obj
+                        container_obj = getattr(container_obj, attr)
+                else:
+                    # Already found index earlier, we can ignore further parts
+                    pass
+            if found_index:
+                # Publish the whole container object (container_obj) at path up to container_path_parts
+                attr_path = "/".join(container_path_parts)
+                full_path = f"{path}/{attr_path}"
+                value = container_obj
+            else:
+                # No index found, treat as regular attribute change
+                attr_path = "/".join(parts)
+                full_path = f"{path}/{attr_path}"
+                value = event.args[0]
 
             if isinstance(value, self.raw_types):
                 payload = bytes(value)
