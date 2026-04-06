@@ -17,6 +17,19 @@ console_out = Console(file=sys.stdout, highlight=False)
 # stderr console for logging/status
 console_err = Console(file=sys.stderr)
 
+@app.callback()
+def term_callback(
+    ctx: typer.Context,
+    truncate: bool = typer.Option(None, "--truncate/--no-truncate", help="Truncate long lines (default: yes on TTY, no when piped)"),
+):
+    if not (truncate if truncate is not None else sys.stdout.isatty()):
+        console_err.print("[dim]stdout truncation disabled[/dim]")
+        console_out.soft_wrap = True
+
+
+
+
+
 @topic_app.command("list")
 def topic_list(
     _type: str = typer.Option("", "--type", "-t", help="Filter by type"),
@@ -94,7 +107,7 @@ def topic_watch(
             # No metadata — emit the bare value
             line = json.dumps(value_out, separators=(",", ":"))
 
-        console_out.print(Syntax(line, "json", theme="ansi_dark", background_color="default"))
+        console_out.print(Syntax(line, "json", theme="ansi_dark", background_color="default"),overflow="ellipsis")
 
     def emit_yaml(meta: dict, raw: str, is_binary: bool):
         if meta:
@@ -111,7 +124,7 @@ def topic_watch(
             # No metadata — emit the raw value directly
             out = raw
 
-        console_out.print(Syntax(out, "yaml", theme="ansi_dark", background_color="default"))
+        console_out.print(Syntax(out, "yaml", theme="ansi_dark", background_color="default"),overflow="ellipsis")
 
         # Separate records with a YAML document delimiter when metadata is present
         if meta:

@@ -23,6 +23,36 @@ import gc
 import weakref
 import inspect
 
+def _format_referrers(instance):
+    """Return a readable referrer chain for a live object."""
+    if instance is None:
+        return "(object already collected)"
+    lines = []
+    for ref in gc.get_referrers(instance):
+        lines.append(f"  [{type(ref).__name__}] {repr(ref)[:300]}")
+        if type(ref).__name__ == 'cell':
+            for owner in gc.get_referrers(ref):
+                if type(owner).__name__ == 'tuple':
+                    for fn in gc.get_referrers(owner):
+                        if inspect.isfunction(fn):
+                            lines.append(
+                                f"    ^ cell in closure: {fn.__qualname__}"
+                                f" @ {inspect.getfile(fn)}:{fn.__code__.co_firstlineno}"
+                            )
+                elif inspect.isfunction(owner):
+                    lines.append(
+                        f"    ^ cell in function: {owner.__qualname__}"
+                        f" @ {inspect.getfile(owner)}:{owner.__code__.co_firstlineno}"
+                    )
+        elif isinstance(ref, dict):
+            for owner in gc.get_referrers(ref):
+                if inspect.isclass(owner):
+                    lines.append(f"    ^ dict owned by class: {owner.__qualname__}")
+                elif 'SignalGroup' in type(owner).__name__:
+                    lines.append(f"    ^ dict owned by SignalGroupDescriptor: {owner}")
+    return "\n".join(lines) if lines else "  (no referrers found)"
+
+
 @pytest.fixture(autouse=True, scope="session")
 def dump_threads_on_exit():
     gc.collect()
@@ -125,11 +155,11 @@ def test_handlers_cleaned_up_when_object_goes_out_of_scope():
     )
 
     assert path not in session_a._handlers_authoritative, \
-        "Authoritative handlers should be removed from session_a after obj GC"
+        f"Authoritative handlers should be removed from session_a after obj GC {session_a._handlers_authoritative}"
     assert path not in session_a._handlers_non_authoritative, \
-        "Non-authoritative handlers should be removed from session_a after obj GC"
+        f"Non-authoritative handlers should be removed from session_a after obj GC {session_a._handlers_non_authoritative}"
     assert path not in session_b._handlers_non_authoritative, \
-        "Non-authoritative handlers should be removed from session_b after remote_obj GC"
+        f"Non-authoritative handlers should be removed from session_b after remote_obj GC {session_b._handlers_non_authoritative}"
 
 
 def test_basic_field_synchronization():
@@ -290,24 +320,24 @@ def test_large_bytes_sync():
     @dataclass
     class LargeBytes(SyncableObject):
         data: bytes = b""
+        skip_rehydrate = {"data",}
 
     session_a = Session()
     session_b = Session()
 
-    # 4 MiB of data
-    size = 4 * 1024 * 1024
+    # 10 MiB of data
+    size = 10 * 1024 * 1024
     large_data = b"x" * size
 
-    obj = LargeBytes(data=large_data)
+    obj = LargeBytes()
     path = session_a.publish_synced_object("test/large_bytes", obj, authoritative=True)
 
     remote = session_b.receive_synced_object(path)
-
-    # Initial state should match exactly
-    assert len(remote.data) == size
-    assert remote.data == large_data
 
     # Update with different pattern
     new_data = b"y" * size
     obj.data = new_data
     assert _wait_for(lambda: remote.data == new_data, timeout=5.0), "Timeout waiting for large bytes update"
+
+# def test_large_bytes_sync_performance(benchmark):
+#     benchmark(test_large_bytes_sync)

@@ -17,7 +17,7 @@ hostname = socket.gethostname()
 PLAIN_CONTAINER_TYPES = (list, dict, set)
 EVENTED_CONTAINER_TYPES = (EventedList, EventedDict, EventedSet)
 
-
+finalizers = set()
 @dataclass
 class Session:
     config: zenoh.Config = field(default_factory=zenoh.Config)
@@ -106,6 +106,9 @@ class Session:
                 handler.undeclare()
             except zenoh.ZError:
                 pass
+        try:
+            del self._handlers_non_authoritative[path]
+        except KeyError: pass #Might already be cleaned up if close was called manually
 
     def cleanup_authoritative_handlers(self, path):
         logger.info(f"No longer authorative for {path}")
@@ -114,13 +117,10 @@ class Session:
                 handler.undeclare()
             except zenoh.ZError:
                 pass
-
-        logger.info(f"No longer syncing {path}")
-        for handler in self._handlers_non_authoritative[path]:
-            try:
-                handler.undeclare()
-            except zenoh.ZError:
-                pass 
+        try:
+            del self._handlers_authoritative[path]
+        except KeyError: pass
+                
 
     def cleanup_all_handlers(self,path:str):
         self.cleanup_authoritative_handlers(path)
@@ -129,7 +129,7 @@ class Session:
     def setup_authorative_handlers(self,obj: "SyncableObject", path:str):
         """Handlers that should only run on one node, like schema definition and metadata"""
         handlers = self._handlers_authoritative[path]
-        weakref.finalize(obj, self.cleanup_authoritative_handlers, path)
+        finalizers.add(weakref.finalize(obj, self.cleanup_authoritative_handlers, path))
         obj_ref = weakref.ref(obj)
         self_ref = weakref.ref(self)
 
