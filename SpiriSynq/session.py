@@ -18,11 +18,38 @@ PLAIN_CONTAINER_TYPES = (list, dict, set)
 EVENTED_CONTAINER_TYPES = (EventedList, EventedDict, EventedSet)
 
 finalizers = set()
+
+from ruamel.yaml import YAML
+from ruamel.yaml.constructor import SafeConstructor
+from ruamel.yaml.representer import SafeRepresenter
+
+def make_isolated_yaml() -> YAML:
+    """Create a YAML instance with its own isolated constructor/representer state.
+
+    Work around for https://sourceforge.net/p/ruamel-yaml/tickets/341/
+
+    This isn't super nessesary, but has some minor security implications for
+    republishers. Since crossing the boundary between two SynqSessions is
+    generally security critical, we'll be extra careful here.
+    """
+
+    class IsolatedConstructor(SafeConstructor):
+        yaml_constructors = SafeConstructor.yaml_constructors.copy()
+
+    class IsolatedRepresenter(SafeRepresenter):
+        yaml_representers = SafeRepresenter.yaml_representers.copy()
+
+    y = YAML(typ=["string","string"])
+    y.Constructor = IsolatedConstructor
+    y.Representer = IsolatedRepresenter
+    return y
+
+
 @dataclass
 class Session:
     config: zenoh.Config = field(default_factory=zenoh.Config)
     base_topic: str = hostname
-    type_registry: YAML = field(default_factory=lambda: YAML(typ=["safe", "string"]))
+    type_registry: YAML = field(default_factory=make_isolated_yaml)
     _registered_type_queryables: Dict[str, zenoh.Queryable] = field(default_factory=dict)
     _in_zenoh_callback: bool = False
     raw_types: tuple[type, ...] = (bytes,) #Raw types get sent as a zenoh.Encoding.APPLICATION_OCTET_STREAM instead of being yaml serialized, this saves us the overhead of base64 encoding them.
@@ -144,7 +171,7 @@ class Session:
         type_name = obj_ref().yaml_tag.removeprefix("!")
 
         def handle_metadata(query: zenoh.Query):
-            metadata = {'path': path, "type": type_name}
+            metadata = {'path': path, "type": type_name, "node": str(self_ref().zenoh_session.zid())}
             query.reply(query.key_expr, payload=self_ref().type_registry.dumps(metadata))
 
         handlers.add(self.zenoh_session.declare_queryable(path + "/sv_metadata", handle_metadata))
@@ -282,7 +309,7 @@ class Session:
     def is_object_registered(self, obj):
         return self.is_class_registered(type(obj))
 
-    def _register_type_recursive(self, cls: type) -> None:
+    def register_type_recursive(self, cls: type) -> None:
         """Ensure cls and any SyncableObject types appearing in its fields are registered."""
         visited = set()
         def _register(t: type) -> None:
@@ -349,7 +376,7 @@ class Session:
             assert self.is_object_registered(obj)
         elif auto_register_type and not self.is_object_registered(obj):
             # recursively register the type and its dependencies
-            self._register_type_recursive(type(obj))
+            self.register_type_recursive(type(obj))
 
         # Register type-level schema queryable whenever a type is first seen
         self.register_type_schema(type(obj))
@@ -393,7 +420,7 @@ class Session:
                 metadata = self.type_registry.load(raw)
                 yield metadata
             else:
-                logger.debug(f"Error reply in list_topics: {reply.err}")
+                logger.warning(f"Error reply in list_topics: {reply.err}")
 
 @dataclass
 class SyncableObject:

@@ -22,6 +22,7 @@ import pytest
 import gc
 import weakref
 import inspect
+import zenoh
 
 def _format_referrers(instance):
     """Return a readable referrer chain for a live object."""
@@ -74,6 +75,8 @@ def _wait_for(predicate, timeout=1.0, interval=0.01):
 import gc
 import weakref
 
+# default_config= zenoh.Config()
+# default_config.insert_json5("transport/qos/enabled", "true")
 
 def test_session_gc():
     """
@@ -88,6 +91,8 @@ def test_session_gc():
 
     session_a = Session()
     session_b = Session()
+    session_b.register_type_recursive(SimpleData)
+    
 
     obj = SimpleData(speed=42.5, name="test")
     path = session_a.publish_synced_object("test/obj", obj, authoritative=True)
@@ -127,6 +132,7 @@ def test_handlers_cleaned_up_when_object_goes_out_of_scope():
 
     session_a = Session()
     session_b = Session()
+    session_b.register_type_recursive(SimpleData)
 
     obj = SimpleData(speed=1.0, name="test")
     path = session_a.publish_synced_object("test/obj", obj, authoritative=True)
@@ -175,6 +181,7 @@ def test_basic_field_synchronization():
     # Create two independent sessions (they'll communicate via default zenoh config)
     session_a = Session()
     session_b = Session()
+    session_b.register_type_recursive(SimpleData)
 
     # Publish an object from session A
     obj = SimpleData(speed=42.5, name="test")
@@ -186,6 +193,9 @@ def test_basic_field_synchronization():
     # Initial state should match
     assert remote_obj.speed == 42.5
     assert remote_obj.name == "test"
+
+    assert isinstance(remote_obj, SimpleData)
+    print(f"remote_obj: {remote_obj}")
 
     # Change a field on the published side
     obj.speed = 99.9
@@ -213,12 +223,53 @@ def test_nested_dataclass_synchronization():
 
     session_a = Session()
     session_b = Session()
+    session_b.register_type_recursive(Outer)
+
 
     obj = Outer(inner=Inner(value=10), label="outer")
     path = session_a.publish_synced_object("test/nested", obj, authoritative=True)
 
     remote = session_b.receive_synced_object(path)
 
+    assert remote.inner.value == 10
+    assert remote.label == "outer"
+
+    # Update nested field
+    obj.inner.value = 20
+    assert _wait_for(lambda: remote.inner.value == 20), "Timeout waiting for nested value update"
+
+    # Update outer field
+    remote.label = "changed"
+    assert _wait_for(lambda: obj.label == "changed"), "Timeout waiting for outer label update"
+
+
+
+def test_optional_nested_dataclass():
+    """
+    Test a nested dataclass starting from None and becoming a real dataclass
+    """
+    @dataclass
+    class Inner(SyncableObject):
+        value: int = 0
+
+    @dataclass
+    class Outer(SyncableObject):
+        inner: Inner|None = None
+        label: str = ""
+
+    session_a = Session()
+    session_b = Session()
+    session_b.register_type_recursive(Outer)
+
+
+    obj = Outer(label="outer")
+    path = session_a.publish_synced_object("test/nested", obj, authoritative=True)
+
+    remote = session_b.receive_synced_object(path)
+
+    obj.inner=Inner(value=10)
+
+    _wait_for(lambda: remote.inner is not None)
     assert remote.inner.value == 10
     assert remote.label == "outer"
 
@@ -247,6 +298,8 @@ def test_nested_dataclass_separate_topic():
 
     session_a = Session()
     session_b = Session()
+    session_b.register_type_recursive(Outer)
+
 
     obj = Outer(inner=Inner(value=10), label="outer")
     outer_path = session_a.publish_synced_object("test/nested_separate", obj, authoritative=True)
@@ -275,6 +328,66 @@ def test_nested_dataclass_separate_topic():
     obj.inner.value = 20
     assert _wait_for(lambda: inner_obj.value == 20), "Timeout waiting for inner update via separate topic"
 
+def test_list_topics():
+    """
+    The list_topics method should yield topic metadata dicts for discovered topics.
+    """
+    @dataclass
+    class TestData(SyncableObject):
+        value: int = 0
+
+    session_a = Session()
+    session_b = Session()
+    session_b.register_type_recursive(TestData)
+
+    obj = TestData(value=42)
+    path = session_a.publish_synced_object("test/list_topics", obj, authoritative=True)
+
+    # --- Wait for the published topic to be discoverable ---
+    def _topic_visible():
+        topics = list(session_b.list_topics())
+        return any(t.get('path') == path and t.get('type') == 'TestData' for t in topics)
+
+    assert _wait_for(_topic_visible, timeout=2), "Timeout waiting for metadata to appear"
+
+    # --- Validate metadata fields on all discovered topics ---
+    topics = list(session_b.list_topics())
+    assert any(t.get('path') == path and t.get('type') == 'TestData' for t in topics)
+    for t in topics:
+        assert 'path' in t
+        assert 'type' in t
+
+    # --- Filter by prefix (full path) ---
+    def _prefix_visible():
+        return any(
+            t.get('path') == path
+            for t in session_b.list_topics(prefix=path)
+        )
+
+    assert _wait_for(_prefix_visible, timeout=2), "Timeout waiting for prefix-filtered topic"
+    topics_prefixed = list(session_b.list_topics(prefix=path))
+    assert len(topics_prefixed) >= 1
+    assert topics_prefixed[0]['path'] == path
+
+    # --- Filter by type ---
+    def _type_visible():
+        return any(
+            t.get('type') == 'TestData'
+            for t in session_b.list_topics(type_filter='TestData')
+        )
+
+    assert _wait_for(_type_visible, timeout=2), "Timeout waiting for type-filtered topic"
+    topics_typed = list(session_b.list_topics(type_filter='TestData'))
+    assert any(t['type'] == 'TestData' for t in topics_typed)
+
+    # --- Ensure at least one topic visible with default (empty) prefix ---
+    def _any_visible():
+        return len(list(session_b.list_topics())) >= 1
+
+    assert _wait_for(_any_visible, timeout=2), "Timeout waiting for any topic to appear"
+    topics_all = list(session_b.list_topics())
+    assert len(topics_all) >= 1
+
 
 def test_evented_container_synchronization():
     """
@@ -288,6 +401,8 @@ def test_evented_container_synchronization():
 
     session_a = Session()
     session_b = Session()
+    session_b.register_type_recursive(WithContainers)
+
 
     obj = WithContainers(items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}))
     path = session_a.publish_synced_object("test/containers", obj, authoritative=True)
@@ -318,6 +433,8 @@ def test_raw_bytes_field():
 
     session_a = Session()
     session_b = Session()
+    session_b.register_type_recursive(WithBytes)
+
 
     obj = WithBytes(data=b"hello\x00world")
     path = session_a.publish_synced_object("test/bytes", obj, authoritative=True)
@@ -342,6 +459,8 @@ def test_rehydrate_endpoint():
 
     session_a = Session()
     session_b = Session()
+    session_b.register_type_recursive(RehydrateExample)
+
 
     obj = RehydrateExample(value=100, text="initial")
     path = session_a.publish_synced_object("test/rehydrate", obj, authoritative=True)
@@ -370,6 +489,8 @@ def test_large_bytes_sync():
 
     session_a = Session()
     session_b = Session()
+    session_b.register_type_recursive(LargeBytes)
+
 
     # 10 MiB of data
     size = 10 * 1024 * 1024
@@ -384,48 +505,6 @@ def test_large_bytes_sync():
     new_data = b"y" * size
     obj.data = new_data
     assert _wait_for(lambda: remote.data == new_data, timeout=5.0), "Timeout waiting for large bytes update"
-
-def test_list_topics():
-    """
-    The list_topics method should yield topic metadata dicts for discovered topics.
-    """
-    @dataclass
-    class TestData(SyncableObject):
-        value: int = 0
-
-    session_a = Session()
-    session_b = Session()
-
-    obj = TestData(value=42)
-    path = session_a.publish_synced_object("test/list_topics", obj, authoritative=True)
-
-    # Wait for metadata to be discoverable
-    def _wait_for_match():
-        topics = list(session_b.list_topics())
-        return any(t.get('path') == path and t.get('type') == 'TestData' for t in topics)
-    assert _wait_for(_wait_for_match), "Timeout waiting for metadata to appear"
-
-    # Collect all metadata
-    topics = list(session_b.list_topics())
-    # Should contain at least one entry matching our published object
-    assert any(t.get('path') == path and t.get('type') == 'TestData' for t in topics)
-    # Each metadata dict should have path and type
-    for t in topics:
-        assert 'path' in t
-        assert 'type' in t
-
-    # Filter by prefix (full path)
-    topics_prefixed = list(session_b.list_topics(prefix=path))
-    assert len(topics_prefixed) >= 1
-    assert topics_prefixed[0]['path'] == path
-
-    # Filter by type
-    topics_typed = list(session_b.list_topics(type_filter='TestData'))
-    assert any(t['type'] == 'TestData' for t in topics_typed)
-
-    # Ensure no errors when using empty prefix (default)
-    topics_all = list(session_b.list_topics())
-    assert len(topics_all) >= 1
 
 # def test_large_bytes_sync_performance(benchmark):
 #     benchmark(test_large_bytes_sync)
