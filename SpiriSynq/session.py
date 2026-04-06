@@ -377,6 +377,23 @@ class Session:
 
         return obj
 
+    def list_topics(self, type_filter: str = "", prefix: str = None):
+        """Yield topic metadata dicts for discovered topics.
+
+        Works like the CLI `topic list` command.
+        """
+        query_topic = f"{prefix}/**/sv_metadata/{type_filter}" if prefix else f"**/sv_metadata/{type_filter}"
+        query_topic = query_topic.strip("/").removesuffix("/")
+
+        replies = self.zenoh_session.get(query_topic)
+        for reply in replies:
+            if reply.ok:
+                raw = reply.ok.payload.to_bytes().decode("utf-8")
+                # parse YAML into dict
+                metadata = self.type_registry.load(raw)
+                yield metadata
+            else:
+                logger.debug(f"Error reply in list_topics: {reply.err}")
 
 @dataclass
 class SyncableObject:
