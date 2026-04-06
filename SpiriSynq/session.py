@@ -409,11 +409,11 @@ class SyncableObject:
     _checked_classes: ClassVar[set] = set()  # Track already-warned classes
 
     @final
-    def sv_metadata(self):
+    def sv_metadata(self): # pragma: no cover
         raise TypeError("sv_metadata is reserved by the zenoh transport layer.")
 
     @final
-    def sv_schema(self):
+    def sv_schema(self): # pragma: no cover
         raise TypeError("sv_schema is reserved by the zenoh transport layer")
 
     def __post_init__(self):
