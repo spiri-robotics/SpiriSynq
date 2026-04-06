@@ -339,5 +339,47 @@ def test_large_bytes_sync():
     obj.data = new_data
     assert _wait_for(lambda: remote.data == new_data, timeout=5.0), "Timeout waiting for large bytes update"
 
+def test_list_topics():
+    """
+    The list_topics method should yield topic metadata dicts for discovered topics.
+    """
+    @dataclass
+    class TestData(SyncableObject):
+        value: int = 0
+
+    session_a = Session()
+    session_b = Session()
+
+    obj = TestData(value=42)
+    path = session_a.publish_synced_object("test/list_topics", obj, authoritative=True)
+
+    # Wait for metadata to be discoverable
+    def _wait_for_match():
+        topics = list(session_b.list_topics())
+        return any(t.get('path') == path and t.get('type') == 'TestData' for t in topics)
+    assert _wait_for(_wait_for_match), "Timeout waiting for metadata to appear"
+
+    # Collect all metadata
+    topics = list(session_b.list_topics())
+    # Should contain at least one entry matching our published object
+    assert any(t.get('path') == path and t.get('type') == 'TestData' for t in topics)
+    # Each metadata dict should have path and type
+    for t in topics:
+        assert 'path' in t
+        assert 'type' in t
+
+    # Filter by prefix (full path)
+    topics_prefixed = list(session_b.list_topics(prefix=path))
+    assert len(topics_prefixed) >= 1
+    assert topics_prefixed[0]['path'] == path
+
+    # Filter by type
+    topics_typed = list(session_b.list_topics(type_filter='TestData'))
+    assert any(t['type'] == 'TestData' for t in topics_typed)
+
+    # Ensure no errors when using empty prefix (default)
+    topics_all = list(session_b.list_topics())
+    assert len(topics_all) >= 1
+
 # def test_large_bytes_sync_performance(benchmark):
 #     benchmark(test_large_bytes_sync)
