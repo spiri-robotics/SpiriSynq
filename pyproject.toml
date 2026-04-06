@@ -19,6 +19,7 @@ dev = [
     "objgraph>=3.6.2",
     "pytest>=9.0.2",
     "pytest-benchmark>=5.2.3",
+    "pytest-cov>=7.1.0",
 ]
 examples = [
     "imagecodecs>=2026.3.6",

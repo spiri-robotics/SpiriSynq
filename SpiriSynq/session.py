@@ -128,6 +128,8 @@ class Session:
 
     def setup_authorative_handlers(self,obj: "SyncableObject", path:str):
         """Handlers that should only run on one node, like schema definition and metadata"""
+        if self._handlers_non_authoritative[path]:
+            raise Exception(f"Can't regsiter the same non-authoritative object twice: {path}")        
         handlers = self._handlers_authoritative[path]
         finalizers.add(weakref.finalize(obj, self.cleanup_authoritative_handlers, path))
         obj_ref = weakref.ref(obj)
@@ -156,6 +158,8 @@ class Session:
         handlers.add(self.zenoh_session.declare_queryable(path + "/sv_object_schema", handle_schema))
 
     def setup_non_authorative_handlers(self, obj: "SyncableObject", path:str, receive=True, publish=True):
+        if self._handlers_non_authoritative[path]:
+            raise Exception(f"Can't register the same authoratative object twice: {path}")        
         """Handlers that run on every node, like subscribers responsible for state changes"""
         weakref.finalize(obj, self.cleanup_non_authoritative_handlers, path)
         obj_ref = weakref.ref(obj)
@@ -358,11 +362,16 @@ class Session:
         return full_path
 
     def receive_synced_object(self, path: str, receive=True,publish=True) -> "SyncableObject":
+        if self._synced_objects.get(path) !=None:
+            cached_obj = self._synced_objects[path]
+            logger.debug(f"Found cached object at {path}: {cached_obj}")
+            return cached_obj
         receiver = self.zenoh_session.get(path)
         reply = receiver.recv()
         assert reply.ok
         data = reply.ok.payload
         obj = self.type_registry.load(StringIO(bytes(data).decode("utf-8")))
+        self._synced_objects[path] = obj
 
         self.setup_non_authorative_handlers(obj, path, receive=receive, publish=publish)
 
