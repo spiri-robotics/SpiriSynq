@@ -36,7 +36,7 @@ def topic_list(
     prefix: str = typer.Option(None, "--prefix", "-p", help="Key prefix"),
 ):
     """List all topics"""
-    query_topic = f"{prefix}/**/sv_metadata/{_type}" if prefix else f"**/sv_metadata/{_type}"
+    query_topic = f"{prefix}/**/sr_metadata/{_type}" if prefix else f"**/sr_metadata/{_type}"
     query_topic = query_topic.strip("/").removesuffix("/")
 
     console_err.print(f"[dim]Querying: {query_topic}[/dim]")
@@ -125,7 +125,6 @@ def topic_watch(
             out = "\n".join(parts)
         else:
             out = raw
-
 
         console_out.print(Syntax(out, "yaml", theme="ansi_dark", background_color="default"),overflow="ellipsis")
 
@@ -300,7 +299,7 @@ def topic_schema(
     topic: str = typer.Argument(..., help="Topic path to retrieve schema for"),
 ):
     """Retrieve and display the schema for a topic."""
-    query_path = f"{topic}/sv_object_schema"
+    query_path = f"{topic}/sr_object_schema"
     console_err.print(f"[dim]Querying: {query_path}[/dim]")
 
     replies = session.zenoh_session.get(query_path)
@@ -431,9 +430,9 @@ def meta_type_schema(
     """Retrieve and display the schema for a registered type.
 
     If no type is given, lists all known types across the network.
-    Queries <prefix>/sv_type_schema/<type> across the network.
+    Queries <prefix>/sr_type_schema/<type> across the network.
     """
-    query_path = f"{prefix}/sv_type_schema/{_type}"
+    query_path = f"{prefix}/sr_type_schema/{_type}"
     console_err.print(f"[dim]Querying: {query_path}[/dim]")
 
     replies = session.zenoh_session.get(query_path)

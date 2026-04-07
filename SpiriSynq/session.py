@@ -50,6 +50,7 @@ class Session:
     config: zenoh.Config = field(default_factory=zenoh.Config)
     base_topic: str = hostname
     type_registry: YAML = field(default_factory=make_isolated_yaml)
+    _obj_prefix: str = "sq_"
     _registered_type_queryables: Dict[str, zenoh.Queryable] = field(default_factory=dict)
     _in_zenoh_callback: bool = False
     raw_types: tuple[type, ...] = (bytes,) #Raw types get sent as a zenoh.Encoding.APPLICATION_OCTET_STREAM instead of being yaml serialized, this saves us the overhead of base64 encoding them.
@@ -101,12 +102,12 @@ class Session:
         def represent_evented_dict(dumper, data):
             return dumper.represent_mapping('!EventedDict', dict(data), flow_style=None)
 
-        def represent_evented_set(dumper, data):
-            return dumper.represent_sequence('!EventedSet', list(data), flow_style=None)
+        # def represent_evented_set(dumper, data):
+        #     return dumper.represent_sequence('!EventedSet', list(data), flow_style=None)
 
         self.type_registry.representer.add_representer(EventedList, represent_evented_list)
         self.type_registry.representer.add_representer(EventedDict, represent_evented_dict)
-        self.type_registry.representer.add_representer(EventedSet, represent_evented_set)
+        # self.type_registry.representer.add_representer(EventedSet, represent_evented_set)
 
         # Constructors
         def construct_evented_list(loader, node):
@@ -117,13 +118,13 @@ class Session:
             data = loader.construct_mapping(node, deep=True)
             return EventedDict(data)
 
-        def construct_evented_set(loader, node):
-            data = loader.construct_sequence(node, deep=True)
-            return EventedSet(data)
+        # def construct_evented_set(loader, node):
+        #     data = loader.construct_sequence(node, deep=True)
+        #     return EventedSet(data)
 
         self.type_registry.constructor.add_constructor('!EventedList', construct_evented_list)
         self.type_registry.constructor.add_constructor('!EventedDict', construct_evented_dict)
-        self.type_registry.constructor.add_constructor('!EventedSet', construct_evented_set)
+        #self.type_registry.constructor.add_constructor('!EventedSet', construct_evented_set)
 
 
     def cleanup_non_authoritative_handlers(self, path):
@@ -174,15 +175,15 @@ class Session:
             metadata = {'path': path, "type": type_name, "node": str(self_ref().zenoh_session.zid())}
             query.reply(query.key_expr, payload=self_ref().type_registry.dumps(metadata))
 
-        handlers.add(self.zenoh_session.declare_queryable(path + "/sv_metadata", handle_metadata))
-        handlers.add(self.zenoh_session.declare_queryable(path + f"/sv_metadata/{type_name}", handle_metadata))
+        handlers.add(self.zenoh_session.declare_queryable(path + "/sr_metadata", handle_metadata))
+        handlers.add(self.zenoh_session.declare_queryable(path + f"/sr_metadata/{type_name}", handle_metadata))
 
         def handle_schema(query: zenoh.Query):
             schema = get_schema(type(obj_ref()))
-            schema["x-sv-path"] = path
+            schema["x-sq-path"] = path
             query.reply(query.key_expr, payload=self_ref().type_registry.dumps(schema))
 
-        handlers.add(self.zenoh_session.declare_queryable(path + "/sv_object_schema", handle_schema))
+        handlers.add(self.zenoh_session.declare_queryable(path + "/sr_object_schema", handle_schema))
 
     def setup_non_authorative_handlers(self, obj: "SyncableObject", path:str, receive=True, publish=True):
         if self._handlers_non_authoritative[path]:
@@ -349,9 +350,9 @@ class Session:
         _register(cls)
 
     def register_type_schema(self, cls):
-        """Declare a queryable for <base_topic>/sv_type_schema/<type_name> if not already registered."""
+        """Declare a queryable for <base_topic>/sr_type_schema/<type_name> if not already registered."""
         type_name = getattr(cls, 'yaml_tag', f"!{cls.__name__}").removeprefix("!")
-        topic = f"{self.base_topic}/sv_type_schema/{type_name}"
+        topic = f"{self.base_topic}/sr_type_schema/{type_name}"
         self_ref = weakref.ref(self)
 
         if type_name in self._registered_type_queryables:
@@ -409,7 +410,7 @@ class Session:
 
         Works like the CLI `topic list` command.
         """
-        query_topic = f"{prefix}/**/sv_metadata/{type_filter}" if prefix else f"**/sv_metadata/{type_filter}"
+        query_topic = f"{prefix}/**/sr_metadata/{type_filter}" if prefix else f"**/sr_metadata/{type_filter}"
         query_topic = query_topic.strip("/").removesuffix("/")
 
         replies = self.zenoh_session.get(query_topic)
@@ -418,6 +419,7 @@ class Session:
                 raw = reply.ok.payload.to_bytes().decode("utf-8")
                 # parse YAML into dict
                 metadata = self.type_registry.load(raw)
+                logger.debug(f"Found topic: {metadata}")
                 yield metadata
             else:
                 logger.warning(f"Error reply in list_topics: {reply.err}")
@@ -447,18 +449,18 @@ class SyncableObject:
 
     """
     events: ClassVar[SignalGroupDescriptor] = SignalGroupDescriptor()
-    reserved_names = {"events", "sv_metadata", "sv_schema"}
+    reserved_names = {"events", "sr_metadata", "sr_schema"}
     skip_rehydrate = set()  # Attrs that should not be included in initial rehydration
     warn_non_evented: ClassVar[bool] = True
     _checked_classes: ClassVar[set] = set()  # Track already-warned classes
 
     @final
-    def sv_metadata(self): # pragma: no cover
-        raise TypeError("sv_metadata is reserved by the zenoh transport layer.")
+    def sr_metadata(self): # pragma: no cover
+        raise TypeError("sr_metadata is reserved by the zenoh transport layer.")
 
     @final
-    def sv_schema(self): # pragma: no cover
-        raise TypeError("sv_schema is reserved by the zenoh transport layer")
+    def sr_schema(self): # pragma: no cover
+        raise TypeError("sr_schema is reserved by the zenoh transport layer")
 
     def __post_init__(self):
         cls = type(self)
