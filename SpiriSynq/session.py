@@ -96,14 +96,13 @@ class Session:
 
         # Representers
         def represent_evented_list(dumper, data):
-            # Use plain sequence representation with custom tag
             return dumper.represent_sequence('!EventedList', list(data), flow_style=None)
+
         def represent_evented_dict(dumper, data):
             return dumper.represent_mapping('!EventedDict', dict(data), flow_style=None)
+
         def represent_evented_set(dumper, data):
-            # YAML set representation: mapping with each key -> null
-            mapping = {item: None for item in data}
-            return dumper.represent_mapping('!EventedSet', mapping, flow_style=None)
+            return dumper.represent_sequence('!EventedSet', list(data), flow_style=None)
 
         self.type_registry.representer.add_representer(EventedList, represent_evented_list)
         self.type_registry.representer.add_representer(EventedDict, represent_evented_dict)
@@ -113,18 +112,19 @@ class Session:
         def construct_evented_list(loader, node):
             data = loader.construct_sequence(node, deep=True)
             return EventedList(data)
+
         def construct_evented_dict(loader, node):
             data = loader.construct_mapping(node, deep=True)
             return EventedDict(data)
+
         def construct_evented_set(loader, node):
-            # node is a mapping node
-            mapping = loader.construct_mapping(node, deep=True)
-            # keys are the set elements
-            return EventedSet(mapping.keys())
+            data = loader.construct_sequence(node, deep=True)
+            return EventedSet(data)
 
         self.type_registry.constructor.add_constructor('!EventedList', construct_evented_list)
         self.type_registry.constructor.add_constructor('!EventedDict', construct_evented_dict)
         self.type_registry.constructor.add_constructor('!EventedSet', construct_evented_set)
+
 
     def cleanup_non_authoritative_handlers(self, path):
         logger.info(f"No longer syncing {path}")

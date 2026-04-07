@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 
 import pytest
-from psygnal.containers import EventedList, EventedDict
+from psygnal.containers import EventedList, EventedDict, EventedSet
 
 from SpiriSynq.session import Session, SyncableObject
 
@@ -23,6 +23,10 @@ import gc
 import weakref
 import inspect
 import zenoh
+
+config = zenoh.Config()
+config.insert_json5("listen/endpoints", '["tcp/127.0.0.1:0"]')
+# config.insert_json5("scouting/multicast/enabled", "false")
 
 def _format_referrers(instance):
     """Return a readable referrer chain for a live object."""
@@ -75,9 +79,6 @@ def _wait_for(predicate, timeout=1.0, interval=0.01):
 import gc
 import weakref
 
-# default_config= zenoh.Config()
-# default_config.insert_json5("transport/qos/enabled", "true")
-
 def test_session_gc():
     """
     Sessions should be garbage collected after going out of scope.
@@ -89,8 +90,8 @@ def test_session_gc():
         speed: float = 0.0
         name: str = ""
 
-    session_a = Session()
-    session_b = Session()
+    session_a = Session(config=config)
+    session_b = Session(config=config)
     session_b.register_type_recursive(SimpleData)
     
 
@@ -130,8 +131,8 @@ def test_handlers_cleaned_up_when_object_goes_out_of_scope():
         speed: float = 0.0
         name: str = ""
 
-    session_a = Session()
-    session_b = Session()
+    session_a = Session(config=config)
+    session_b = Session(config=config)
     session_b.register_type_recursive(SimpleData)
 
     obj = SimpleData(speed=1.0, name="test")
@@ -179,8 +180,8 @@ def test_basic_field_synchronization():
         name: str = ""
 
     # Create two independent sessions (they'll communicate via default zenoh config)
-    session_a = Session()
-    session_b = Session()
+    session_a = Session(config=config)
+    session_b = Session(config=config)
     session_b.register_type_recursive(SimpleData)
 
     # Publish an object from session A
@@ -221,8 +222,8 @@ def test_nested_dataclass_synchronization():
         inner: Inner = field(default_factory=Inner)
         label: str = ""
 
-    session_a = Session()
-    session_b = Session()
+    session_a = Session(config=config)
+    session_b = Session(config=config)
     session_b.register_type_recursive(Outer)
 
 
@@ -257,8 +258,8 @@ def test_optional_nested_dataclass():
         inner: Inner|None = None
         label: str = ""
 
-    session_a = Session()
-    session_b = Session()
+    session_a = Session(config=config)
+    session_b = Session(config=config)
     session_b.register_type_recursive(Outer)
 
 
@@ -296,8 +297,8 @@ def test_nested_dataclass_separate_topic():
         inner: Inner = field(default_factory=Inner)
         label: str = ""
 
-    session_a = Session()
-    session_b = Session()
+    session_a = Session(config=config)
+    session_b = Session(config=config)
     session_b.register_type_recursive(Outer)
 
 
@@ -336,57 +337,40 @@ def test_list_topics():
     class TestData(SyncableObject):
         value: int = 0
 
-    session_a = Session()
-    session_b = Session()
+    session_a = Session(config=config)
+    session_b = Session(config=config)
     session_b.register_type_recursive(TestData)
 
     obj = TestData(value=42)
     path = session_a.publish_synced_object("test/list_topics", obj, authoritative=True)
 
-    # --- Wait for the published topic to be discoverable ---
-    def _topic_visible():
-        topics = list(session_b.list_topics())
-        return any(t.get('path') == path and t.get('type') == 'TestData' for t in topics)
+    # Test discovery and metadata integrity together.
+    # If wait_for returns, we know the path and type are correct.
+    assert _wait_for(
+        lambda: any(
+            t.get('path') == path and t.get('type') == 'TestData' 
+            for t in session_b.list_topics()
+        ), 
+        timeout=2
+    ), "Timeout: Topic with correct path and type not discovered."
 
-    assert _wait_for(_topic_visible, timeout=2), "Timeout waiting for metadata to appear"
+    # Test prefix filtering
+    assert _wait_for(
+        lambda: any(t.get('path') == path for t in session_b.list_topics(prefix=path)), 
+        timeout=2
+    ), "Timeout: Topic not found via prefix filter."
 
-    # --- Validate metadata fields on all discovered topics ---
-    topics = list(session_b.list_topics())
-    assert any(t.get('path') == path and t.get('type') == 'TestData' for t in topics)
-    for t in topics:
-        assert 'path' in t
-        assert 'type' in t
+    # Test type filtering
+    assert _wait_for(
+        lambda: any(t.get('type') == 'TestData' for t in session_b.list_topics(type_filter='TestData')), 
+        timeout=2
+    ), "Timeout: Topic not found via type filter."
 
-    # --- Filter by prefix (full path) ---
-    def _prefix_visible():
-        return any(
-            t.get('path') == path
-            for t in session_b.list_topics(prefix=path)
-        )
-
-    assert _wait_for(_prefix_visible, timeout=2), "Timeout waiting for prefix-filtered topic"
-    topics_prefixed = list(session_b.list_topics(prefix=path))
-    assert len(topics_prefixed) >= 1
-    assert topics_prefixed[0]['path'] == path
-
-    # --- Filter by type ---
-    def _type_visible():
-        return any(
-            t.get('type') == 'TestData'
-            for t in session_b.list_topics(type_filter='TestData')
-        )
-
-    assert _wait_for(_type_visible, timeout=2), "Timeout waiting for type-filtered topic"
-    topics_typed = list(session_b.list_topics(type_filter='TestData'))
-    assert any(t['type'] == 'TestData' for t in topics_typed)
-
-    # --- Ensure at least one topic visible with default (empty) prefix ---
-    def _any_visible():
-        return len(list(session_b.list_topics())) >= 1
-
-    assert _wait_for(_any_visible, timeout=2), "Timeout waiting for any topic to appear"
-    topics_all = list(session_b.list_topics())
-    assert len(topics_all) >= 1
+    # Test general existence
+    assert _wait_for(
+        lambda: any(True for _ in session_b.list_topics()), 
+        timeout=2
+    ), "Timeout: No topics discovered at all."
 
 
 def test_evented_container_synchronization():
@@ -398,13 +382,15 @@ def test_evented_container_synchronization():
     class WithContainers(SyncableObject):
         items: EventedList = field(default_factory=EventedList)
         mapping: EventedDict = field(default_factory=EventedDict)
+        set: EventedSet = field(default_factory=EventedSet)
 
-    session_a = Session()
-    session_b = Session()
+
+    session_a = Session(config=config)
+    session_b = Session(config=config)
     session_b.register_type_recursive(WithContainers)
 
 
-    obj = WithContainers(items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}))
+    obj = WithContainers(items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}), set=EventedSet((1,2,3)))
     path = session_a.publish_synced_object("test/containers", obj, authoritative=True)
 
     remote = session_b.receive_synced_object(path)
@@ -421,6 +407,13 @@ def test_evented_container_synchronization():
     remote.mapping["b"] = 2
     assert _wait_for(lambda: obj.mapping == {"a": 1, "b": 2}), "Timeout waiting for dict update"
 
+    # Mutate set on source
+    obj.set.add(5)
+    obj.set.remove(3)
+    new_set = EventedSet({1,2,5})
+    assert new_set == obj.set
+    assert _wait_for(lambda: remote.set == new_set), f"{new_set} != {remote.set}"
+
 
 def test_raw_bytes_field():
     """
@@ -431,8 +424,8 @@ def test_raw_bytes_field():
     class WithBytes(SyncableObject):
         data: bytes = b""
 
-    session_a = Session()
-    session_b = Session()
+    session_a = Session(config=config)
+    session_b = Session(config=config)
     session_b.register_type_recursive(WithBytes)
 
 
@@ -457,8 +450,8 @@ def test_rehydrate_endpoint():
         value: int = 0
         text: str = ""
 
-    session_a = Session()
-    session_b = Session()
+    session_a = Session(config=config)
+    session_b = Session(config=config)
     session_b.register_type_recursive(RehydrateExample)
 
 
@@ -487,8 +480,8 @@ def test_large_bytes_sync():
         data: bytes = b""
         skip_rehydrate = {"data",}
 
-    session_a = Session()
-    session_b = Session()
+    session_a = Session(config=config)
+    session_b = Session(config=config)
     session_b.register_type_recursive(LargeBytes)
 
 

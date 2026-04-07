@@ -113,16 +113,19 @@ def topic_watch(
         if meta:
             parts = [f"{k}: {v}" for k, v in meta.items()]
 
-            # Use YAML block scalar (|) for multiline strings; binary is already a single-line tag
             if is_binary:
                 parts.append(f"value: {raw}")
             else:
-                parts.append(f"value: {raw}")
+                if "\n" in raw:
+                    indented = "\n".join(f"  {line}" for line in raw.splitlines())
+                    parts.append(f"value: |-\n{indented}")
+                else:
+                    parts.append(f"value: {raw}")
 
             out = "\n".join(parts)
         else:
-            # No metadata — emit the raw value directly
             out = raw
+
 
         console_out.print(Syntax(out, "yaml", theme="ansi_dark", background_color="default"),overflow="ellipsis")
 
