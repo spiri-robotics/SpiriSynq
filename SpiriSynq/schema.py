@@ -12,16 +12,18 @@ def get_schema(cls: type) -> dict:
         args = typing.get_args(t)
 
         if origin is list:
-            return {"type": "array", "items": resolve_type(args[0])}
+            item_type = args[0] if args else {}  # fallback to empty schema if unparameterized
+            return {"type": "array", "items": resolve_type(item_type) if args else {}}
         if origin is dict:
-            return {"type": "object", "additionalProperties": resolve_type(args[1])}
+            val_type = args[1] if len(args) > 1 else {}
+            return {"type": "object", "additionalProperties": resolve_type(val_type) if len(args) > 1 else {}}
         if dataclasses.is_dataclass(t):
-            # Recursively collect nested dataclass definitions
             if t.__name__ not in defs:
-                defs[t.__name__] = {}  # placeholder to prevent infinite recursion
+                defs[t.__name__] = {}
                 defs[t.__name__] = _build_schema(t)
             return {"$ref": f"#/$defs/{t.__name__}"}
         return {"type": type_name(t)}
+
 
     def _build_schema(c: type) -> dict:
         properties = {}
