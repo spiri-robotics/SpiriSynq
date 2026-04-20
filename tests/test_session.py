@@ -23,6 +23,7 @@ import gc
 import weakref
 import inspect
 import zenoh
+from loguru import logger
 
 config = zenoh.Config()
 config.insert_json5("listen/endpoints", '["tcp/127.0.0.1:0"]')
@@ -314,6 +315,56 @@ def test_nested_dataclass_separate_topic():
 
     # Collect metadata for both outer and inner
     topics = list(session_b.list_topics())
+    outer_found = any(t['path'] == outer_path and t['type'] == 'Outer' for t in topics)
+    inner_found = any(t['path'] == outer_path + "/inner" and t['type'] == 'Inner' for t in topics)
+    assert outer_found, f"Outer topic not found in {topics}"
+    assert inner_found, f"Inner topic not found in {topics}"
+
+    # Receive inner object directly via its own path
+    inner_path = outer_path + "/inner"
+    inner_obj = session_b.receive_synced_object(inner_path)
+    assert isinstance(inner_obj, Inner)
+    assert inner_obj.value == 10
+
+    # Ensure changes to inner propagate via its own topic
+    obj.inner.value = 20
+    assert _wait_for(lambda: inner_obj.value == 20), "Timeout waiting for inner update via separate topic"
+
+
+def test_nested_dataclass_separate_topic_update():
+    """
+    Nested SyncableObjects should be published as separate topics,
+    enabling independent discovery and subscription.
+    """
+    @dataclass
+    class Inner(SyncableObject):
+        value: int = 0
+
+    @dataclass
+    class Outer(SyncableObject):
+        inner: Inner|None = None
+        label: str = ""
+
+    session_a = Session(config=config)
+    session_b = Session(config=config)
+    session_b.register_type_recursive(Outer)
+
+
+    obj = Outer(label="outer")
+    outer_path = session_a.publish_synced_object("test/nested_separate", obj, authoritative=True)
+    obj.inner = Inner(value=10)
+
+    # Wait for metadata to appear
+    def _wait_for_inner():
+        topics = list(session_b.list_topics())
+        inner_path = outer_path + "/inner"
+        return any(t.get('path') == inner_path and t.get('type') == 'Inner' for t in topics)
+    assert _wait_for(_wait_for_inner), "Timeout waiting for inner topic metadata"
+
+    # Collect metadata for both outer and inner
+    topics = list(session_b.list_topics())
+    logger.debug(topics)
+
     outer_found = any(t['path'] == outer_path and t['type'] == 'Outer' for t in topics)
     inner_found = any(t['path'] == outer_path + "/inner" and t['type'] == 'Inner' for t in topics)
     assert outer_found, f"Outer topic not found in {topics}"

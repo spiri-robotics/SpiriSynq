@@ -22,6 +22,7 @@ finalizers = set()
 from ruamel.yaml import YAML
 from ruamel.yaml.constructor import SafeConstructor
 from ruamel.yaml.representer import SafeRepresenter
+from deepdiff import DeepDiff, Delta
 
 def make_isolated_yaml() -> YAML:
     """Create a YAML instance with its own isolated constructor/representer state.
@@ -87,6 +88,8 @@ class Session:
         logger.info(f"Staring zenoh session on {self.base_topic} with id {self.zenoh_session.zid()}")
 
         self._synced_objects = weakref.WeakValueDictionary() #Path:obj mapping
+        self._authoritative_objects = weakref.WeakValueDictionary() #id(obj):obj mapping, for checking if we are authoratative for an object. Need to use ID due to hashability
+
         self._handlers_authoritative = defaultdict(set) #Authorative handler only run on one node. Include things like schema registration and metadata
         self._handlers_non_authoritative = defaultdict(set) #Non-authorative handlers synchronize attributes, every node runs them.
         self.setup_default_serializers()
@@ -94,6 +97,8 @@ class Session:
     def setup_default_serializers(self):
         """Register YAML representers and constructors for evented container types."""
         from psygnal.containers import EventedList, EventedDict, EventedSet
+
+        #ToDo: EventedSet is broken, likely due to how we handle containers in publish_attr_changes
 
         # Representers
         def represent_evented_list(dumper, data):
@@ -156,6 +161,8 @@ class Session:
 
     def setup_authorative_handlers(self,obj: "SyncableObject", path:str):
         """Handlers that should only run on one node, like schema definition and metadata"""
+        self._authoritative_objects[id(obj)]=obj #Track that we are authoritive for this object, weakvaluedict automatically cleans up
+        #when object goes out of scope.
         if self._handlers_non_authoritative[path]:
             raise Exception(f"Can't regsiter the same non-authoritative object twice: {path}")        
         handlers = self._handlers_authoritative[path]
@@ -198,7 +205,9 @@ class Session:
                 return
             # Build path parts and detect container index
             parts = []
-            container_obj = obj_ref()  # start from the outer object
+            obj = obj_ref()
+
+            container_obj = obj  # start from the outer object
             container_path_parts = []
             found_index = False
             for e in event.path:
@@ -212,6 +221,7 @@ class Session:
                 # If we haven't found an index yet, navigate into container_obj
                 if not found_index:
                     # Check if this part is an index (starts with '[')
+                    #ToDo: This is fragile, we should be directly checking against container datatypes.
                     if attr.startswith('['):
                         found_index = True
                         # Stop adding parts for the full path; we will publish at container_path_parts
@@ -237,6 +247,11 @@ class Session:
                 full_path = f"{path}/{attr_path}"
                 value = event.args[0]
 
+            if isinstance(value, SyncableObject) and id(obj) in self._authoritative_objects.keys():
+                if not full_path in self._handlers_authoritative.keys():
+                    logger.debug(f"Found new sub-syncable {full_path}, adding authorative handlers")
+                    self.setup_authorative_handlers(value,full_path)
+
             if isinstance(value, self_ref().raw_types):
                 payload = bytes(value)
                 encoding = zenoh.Encoding.APPLICATION_OCTET_STREAM
@@ -247,6 +262,7 @@ class Session:
                 encoding = zenoh.Encoding.TEXT_PLAIN
                 logger.debug(f"Publishing {full_path}:{value_str} {self_ref().zenoh_session.zid()}")
 
+            logger.debug(f"received {full_path} {payload} -- {self_ref().zenoh_session.zid()}")
             self_ref().zenoh_session.put(
                 full_path,
                 payload,
@@ -254,15 +270,17 @@ class Session:
                 congestion_control=zenoh.CongestionControl.DROP,
             )
 
+
+
         if publish:
             handler = self.zenoh_session.declare_publisher(f"{path}/**")
             self._handlers_non_authoritative[path].add(handler)
-            obj_ref().events.connect(publish_attr_changes)
+            obj.events.connect(publish_attr_changes)
             #self._handlers_non_authoritative[path].add()
 
-        reserved = type(obj_ref()).all_reserved_names()
+        reserved = type(obj).all_reserved_names()
         allowed_fields: set[str] = {
-            f.name for f in fields(obj_ref()) if f.name not in reserved
+            f.name for f in fields(obj) if f.name not in reserved
         }
 
         def receive_attr_changes(sample = zenoh.Sample):
@@ -283,7 +301,7 @@ class Session:
                 value = sample.payload.to_bytes()
             else:
                 raw = sample.payload.to_bytes().decode()
-                value = self_ref().type_registry.load(raw)    
+                value = self_ref().type_registry.load(raw)
             target = obj_ref()
             for part in parts[:-1]:
                 target = getattr(target, part)
@@ -291,6 +309,18 @@ class Session:
             # Apply the change while suppressing the re-publish guard
             self_ref()._in_zenoh_callback = True
             try:
+                orig = getattr(target, parts[-1], None)
+                if isinstance(value, SyncableObject) and isinstance(value, type(orig)):
+                    #This is a somewhat weird code path, when a nested object changes type we need to change type, but
+                    # we don't want to throw away object identity on the receiving side or stop the receiving side
+                    # from receiving updates. This is also just a bit of a hack to more reliably
+                    # prevent loops.
+                    logger.debug("Received full state update on {sample.key_expr}, patching object to retain identity")
+                    diff = DeepDiff(orig, value, ignore_order=True)
+                    delta = Delta(diff, mutate=True)
+                    orig+delta
+                    return
+                    
                 setattr(target, parts[-1], value)
             finally:
                 self_ref()._in_zenoh_callback = False                        
@@ -413,7 +443,7 @@ class Session:
         query_topic = f"{prefix}/**/sr_metadata/{type_filter}" if prefix else f"**/sr_metadata/{type_filter}"
         query_topic = query_topic.strip("/").removesuffix("/")
 
-        replies = self.zenoh_session.get(query_topic)
+        replies = self.zenoh_session.get(query_topic, consolidation=zenoh.ConsolidationMode.NONE)
         for reply in replies:
             if reply.ok:
                 raw = reply.ok.payload.to_bytes().decode("utf-8")
