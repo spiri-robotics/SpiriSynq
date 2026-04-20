@@ -284,7 +284,7 @@ def test_optional_nested_dataclass():
     assert _wait_for(lambda: obj.label == "changed"), "Timeout waiting for outer label update"
 
 
-def test_nested_dataclass_separate_topic():
+def test_nested_dataclass_separate_topic_init():
     """
     Nested SyncableObjects should be published as separate topics,
     enabling independent discovery and subscription.
@@ -331,7 +331,7 @@ def test_nested_dataclass_separate_topic():
     assert _wait_for(lambda: inner_obj.value == 20), "Timeout waiting for inner update via separate topic"
 
 
-def test_nested_dataclass_separate_topic_update():
+def test_nested_dataclass_separate_topic_runtime():
     """
     Nested SyncableObjects should be published as separate topics,
     enabling independent discovery and subscription.

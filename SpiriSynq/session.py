@@ -402,22 +402,46 @@ class Session:
     def normalize_path(self, path: str) -> str:
         return "/".join((self.base_topic, path))
 
-    def publish_synced_object(self, path: str, obj: "SyncableObject", authoritative=True, auto_register_type=True):
+    def publish_synced_object(self, path: str, obj: "SyncableObject", authoritative=True, listen=True, auto_register_type=True, _visited: set|None = None, _normalize: bool = True):
+        #This method needs to find child syncables and add publishers for them at runtime, which makes it a tricky recursive function.
+        if _visited is None:
+            _visited = set()
+        if id(obj) in _visited:
+            return path
+        _visited.add(id(obj))
+
         if not auto_register_type:
             assert self.is_object_registered(obj)
-        elif auto_register_type and not self.is_object_registered(obj):
-            # recursively register the type and its dependencies
+        elif not self.is_object_registered(obj):
             self.register_type_recursive(type(obj))
 
-        # Register type-level schema queryable whenever a type is first seen
         self.register_type_schema(type(obj))
 
-        full_path = self.normalize_path(path)
+        full_path = self.normalize_path(path) if _normalize else path
         self._synced_objects[full_path] = obj
         if authoritative:
-            self.setup_authorative_handlers(obj,full_path)
-        self.setup_non_authorative_handlers(obj,full_path)
+            self.setup_authorative_handlers(obj, full_path)
+        if listen:
+            self.setup_non_authorative_handlers(obj, full_path)
+
+        if authoritative and hasattr(obj, '__dataclass_fields__'):
+            for field_name in obj.__dataclass_fields__:
+                if field_name in type(obj).all_reserved_names():
+                    continue
+                value = getattr(obj, field_name, None)
+                if isinstance(value, SyncableObject):
+                    self.publish_synced_object(
+                        f"{full_path}/{field_name}", value,
+                        authoritative=True,
+                        auto_register_type=auto_register_type,
+                        listen=False,
+                        _visited=_visited,
+                        _normalize=False  # path already fully qualified
+                    )
+
         return full_path
+
+
 
     def receive_synced_object(self, path: str, receive=True,publish=True) -> "SyncableObject":
         if self._synced_objects.get(path) !=None:
