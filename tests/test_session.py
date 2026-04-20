@@ -306,7 +306,6 @@ def test_nested_dataclass_separate_topic_init():
     obj = Outer(inner=Inner(value=10), label="outer")
     outer_path = session_a.publish_synced_object("test/nested_separate", obj, authoritative=True)
 
-    # Wait for metadata to appear
     def _wait_for_inner():
         topics = list(session_b.list_topics())
         inner_path = outer_path + "/inner"

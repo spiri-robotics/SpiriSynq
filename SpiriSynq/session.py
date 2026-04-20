@@ -45,7 +45,6 @@ def make_isolated_yaml() -> YAML:
     y.Representer = IsolatedRepresenter
     return y
 
-
 @dataclass
 class Session:
     config: zenoh.Config = field(default_factory=zenoh.Config)
@@ -315,8 +314,8 @@ class Session:
                     # we don't want to throw away object identity on the receiving side or stop the receiving side
                     # from receiving updates. This is also just a bit of a hack to more reliably
                     # prevent loops.
-                    logger.debug("Received full state update on {sample.key_expr}, patching object to retain identity")
-                    diff = DeepDiff(orig, value, ignore_order=True)
+                    logger.debug(f"Received full state update on {sample.key_expr}, patching object to retain identity -- {self.zenoh_session.zid()}")
+                    diff = DeepDiff(orig, value, ignore_order=True, report_repetition=True)
                     delta = Delta(diff, mutate=True)
                     orig+delta
                     return
