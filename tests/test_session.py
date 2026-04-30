@@ -290,7 +290,7 @@ def test_nested_dataclass_separate_topic_init():
     enabling independent discovery and subscription.
     """
     @dataclass
-    class Inner(SyncableObject):
+    class Inner():
         value: int = 0
 
     @dataclass
@@ -303,8 +303,13 @@ def test_nested_dataclass_separate_topic_init():
     session_b.register_type_recursive(Outer)
 
 
-    obj = Outer(inner=Inner(value=10), label="outer")
-    outer_path = session_a.publish_synced_object("test/nested_separate", obj, authoritative=True)
+    obj = Outer(session=session_a,
+        topic="test/nested_separate",
+        authoritive=True,
+        label="outer",
+        inner=Inner(value=10), 
+    )
+    #outer_path = session_a.publish_synced_object("test/nested_separate", obj, authoritative=True)
 
     def _wait_for_inner():
         topics = list(session_b.list_topics())
