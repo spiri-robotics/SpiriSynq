@@ -27,9 +27,6 @@ def term_callback(
         console_out.soft_wrap = True
 
 
-
-
-
 @topic_app.command("list")
 def topic_list(
     _type: str = typer.Option("", "--type", "-t", help="Filter by type"),
