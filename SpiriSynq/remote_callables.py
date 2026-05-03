@@ -45,14 +45,18 @@ def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[Syncable
 
         logger.debug(f"RPC called {instance._wrapped}")
         params = dict(query.parameters)
-        result = instance._wrapped(parent, **params)
-        result_enc = parent.session.type_registry.dumps(result)
+        try:
+            result = instance._wrapped(parent, **params)
+            result_enc = parent.session.type_registry.dumps(result)
+            query.reply(
+                query.key_expr,
+                payload=result_enc,
+                encoding=zenoh.Encoding.APPLICATION_YAML,
+            )            
+        except Exception as e:
+            query.reply_err(f"RPC error '{e}'")
+            logger.error(f"Local RPC error '{e}'")
 
-        query.reply(
-            query.key_expr,
-            payload=result_enc,
-            encoding=zenoh.Encoding.APPLICATION_YAML,
-        )
     return callback
 
 
@@ -89,7 +93,8 @@ class RemoteMethod:
 
         logger.debug(f"Calling remote RPC at {selector}")
         reply = instance.session.zenoh_session.get(selector).recv()
-        assert reply.ok
+        if reply.err:
+            raise RpcException(reply.err.payload.to_string())
 
         return instance.session.type_registry.load(reply.ok.payload.to_string())
 
