@@ -10,13 +10,10 @@ from typing import ClassVar, get_type_hints, get_origin, get_args
 from SpiriSynq.remote_callables import RemoteMethod, rpc_call, remote_method
 from psygnal import EmissionInfo, SignalGroupDescriptor
 from loguru import logger
-import inspect
 import weakref
-import threading
 from contextvars import ContextVar
 from contextlib import contextmanager
-import objgraph
-import time
+import atexit
 
 base_path = os.getenv("SPIRI_SYNQ_BASE_TOPIC",socket.gethostname())
 
@@ -136,7 +133,8 @@ class Session:
         _register(cls)
 
     def __post_init__(self):
-        self.zenoh_session = zenoh.open(self.config)        
+        self.zenoh_session = zenoh.open(self.config)
+        atexit.register(self.zenoh_session.close)
 
 current_session: ContextVar[Session] = ContextVar('current_session', default=Session())
 

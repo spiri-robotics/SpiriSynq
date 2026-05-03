@@ -53,7 +53,7 @@ def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[Syncable
             payload=result_enc,
             encoding=zenoh.Encoding.APPLICATION_YAML,
         )
-    return weakref.proxy(callback)
+    return callback
 
 
 class RemoteMethod:
@@ -65,7 +65,7 @@ class RemoteMethod:
     def __get__(self, instance: Any, owner: type):
         if instance is None:
             return self
-        return types.MethodType(self, instance)  # Standard bound method
+        return types.MethodType(self, weakref.proxy(instance))  # Standard bound method
 
     def __call__(self, instance: 'SyncableObject', *args: Any, **kwargs: Any) -> Any:
         if instance.authoritive:
@@ -102,9 +102,14 @@ class RemoteMethod:
             _zenoh_callback(weakref.ref(self), weakref.ref(parent)),
         )
 
-        weakref.finalize(parent, queryable.undeclare)
-        weakref.finalize(parent, lambda: logger.debug(f"Undeclared {key}"))
+        weakref.finalize(parent, undeclare(key, queryable))
 
+
+def undeclare(key, queryable):
+    def _undeclare():
+        logger.debug(f"Undeclaring {key}")
+        queryable.undeclare()
+    return _undeclare
 
 def remote_method(func: Callable[..., T]) -> Callable[..., T]:
     return RemoteMethod(func)
