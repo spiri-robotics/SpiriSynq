@@ -1,20 +1,16 @@
 import asyncio
 import zenoh
-from typing import TYPE_CHECKING, Dict, Any, overload, Callable, TypeVar
+from typing import TYPE_CHECKING, Dict, Any, Callable, TypeVar, cast, Iterator, types
 import inspect
 from loguru import logger
 import functools
-import datetime
 import weakref
 from weakref import ref
 
 if TYPE_CHECKING:
     from SpiriSynq.session import SyncableObject, Session
-
-
 class RpcException(Exception):
     pass
-
 
 @logger.catch
 def rpc_call(topic: str, session: 'Session', kwargs: Dict[str, Any] | None = None):
@@ -37,88 +33,78 @@ def rpc_call(topic: str, session: 'Session', kwargs: Dict[str, Any] | None = Non
         logger.error(f"Error making remote call on {selector}: {e}")
         raise e
 
-
 T = TypeVar('T')
 
-class _BoundRemoteMethod:
-    """Wraps a RemoteMethod descriptor bound to an instance."""
-    # __slots__ = ('_descriptor', '_instance', )
+def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[SyncableObject]'):
+    def callback(query: zenoh.Query):
+        instance = instance_ref()
+        parent = parent_ref()
+        if instance is None or parent is None:
+            logger.warning("RPC callback fired after owner was collected; ignoring.")
+            return
 
-    def __init__(self, descriptor: 'RemoteMethod', instance: Any):
-        self._descriptor = descriptor
-        self._instance = instance
-        functools.update_wrapper(self, descriptor._wrapped)
+        logger.debug(f"RPC called {instance._wrapped}")
+        params = dict(query.parameters)
+        result = instance._wrapped(parent, **params)
+        result_enc = parent.session.type_registry.dumps(result)
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        # Prepend the bound instance so the underlying function receives 'self'
-        return self._descriptor(self._instance, *args, **kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        # Proxy attribute access back to the descriptor (e.g. setup_zenoh_callbacks)
-        return getattr(self._descriptor, name)
-
-
-def zenoh_callback(instance_ref,  parent_ref: ref['SyncableObject'], query:zenoh.Query):
-    instance = instance_ref()
-    parent = parent_ref()
-    logger.debug(f"RPC called {instance._wrapped}")
-    params = dict(query.parameters)
-    result = instance._wrapped(parent, **params)
-    result_enc = parent.session.type_registry.dumps(result)
-    query.reply(query.key_expr,payload=result_enc,encoding=zenoh.Encoding.APPLICATION_YAML)
+        query.reply(
+            query.key_expr,
+            payload=result_enc,
+            encoding=zenoh.Encoding.APPLICATION_YAML,
+        )
+    return weakref.proxy(callback)
 
 
 class RemoteMethod:
     def __init__(self, wrapped: Callable[..., T]):
         self._wrapped = wrapped
         functools.update_wrapper(self, wrapped)
-        self.queryables = {}
-        # Cache the signature for performance
         self._signature = inspect.signature(wrapped)
 
     def __get__(self, instance: Any, owner: type):
         if instance is None:
             return self
-        return _BoundRemoteMethod(self, instance)
+        return types.MethodType(self, instance)  # Standard bound method
 
-    def __call__(self, instance: "SyncableObject", *args: Any, **kwargs: Any) -> Any:
+    def __call__(self, instance: 'SyncableObject', *args: Any, **kwargs: Any) -> Any:
         if instance.authoritive:
-            return self._wrapped(instance, *args, **kwargs)       
-        # Bind all args to parameter names, converting positional to kwargs
-        # Now all_kwargs contains all named parameters         
+            return self._wrapped(instance, *args, **kwargs)
+
+        assert instance.session
+
         bound = self._signature.bind(instance, *args, **kwargs)
         bound.apply_defaults()
-        all_kwargs = dict(bound.arguments)
 
-        all_kwargs.pop('self', None)
-        all_kwargs = {k:instance.session.type_registry.dumps(v).removesuffix("\n...") for k,v in all_kwargs.items()}
-        params = zenoh.Parameters(all_kwargs)
-        # ... rest of your RPC logic using all_kwargs for serialization
-        path = f"{instance.absolute_path}/{self._wrapped.__name__}"
-        selector = zenoh.Selector(path, parameters=params)
+        all_kwargs = {
+            k: instance.session.type_registry.dumps(v).removesuffix("\n...")
+            for k, v in bound.arguments.items()
+            if k != 'self'
+        }
+
+        selector = zenoh.Selector(
+            f"{instance.absolute_path}/{self._wrapped.__name__}",
+            parameters=zenoh.Parameters(all_kwargs),
+        )
+
         logger.debug(f"Calling remote RPC at {selector}")
         reply = instance.session.zenoh_session.get(selector).recv()
         assert reply.ok
+
         return instance.session.type_registry.load(reply.ok.payload.to_string())
 
-    def setup_zenoh_callback(self, parent: 'SyncableObject', path: str|None=None, name: str|None=None):
-        path = path or parent.absolute_path
-        name = name or self._wrapped.__name__
-        logger.debug(f"Exposing RPC on {path}/{name}")
-        parent_ref = weakref.ref(parent)
-        instance_ref = weakref.ref(self)
+    def setup_zenoh_callback(self, parent: 'SyncableObject', path: str | None = None, name: str | None = None):
+        key = f"{path or parent.absolute_path}/{name or self._wrapped.__name__}"
+        logger.debug(f"Exposing RPC on {key}")
+
         queryable = parent.session.zenoh_session.declare_queryable(
-            f"{path}/{name}",
-            lambda query: zenoh_callback(instance_ref, parent_ref, query)
+            key,
+            _zenoh_callback(weakref.ref(self), weakref.ref(parent)),
         )
-        self.queryables[f"{path}/{name}"] = queryable
 
-    def __del__(self):
-        for key, value in self.queryables.items():  # Fixed: .items()
-            value.undeclare()
-
+        weakref.finalize(parent, queryable.undeclare)
+        weakref.finalize(parent, lambda: logger.warning(f"Undeclared {key}"))
 
 
 def remote_method(func: Callable[..., T]) -> Callable[..., T]:
-
     return RemoteMethod(func)

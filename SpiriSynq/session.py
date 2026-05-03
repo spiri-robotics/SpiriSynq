@@ -12,8 +12,11 @@ from psygnal import EmissionInfo, SignalGroupDescriptor
 from loguru import logger
 import inspect
 import weakref
+import threading
 from contextvars import ContextVar
 from contextlib import contextmanager
+import objgraph
+import time
 
 base_path = os.getenv("SPIRI_SYNQ_BASE_TOPIC",socket.gethostname())
 
@@ -74,7 +77,6 @@ class Session:
         new_obj = rpc_call(f"{topic}/sr_rehydrate",self)
         return new_obj    
 
-
     def list_topics(self, type_filter: str = "", prefix: str = ""):
         """Yield topic metadata dicts for discovered topics.
 
@@ -95,46 +97,46 @@ class Session:
                 logger.warning(f"Error reply in list_topics: {reply.err.payload.to_string()}")
 
     def register_type_recursive(self, cls: type) -> None:
-            """Ensure cls and any SyncableObject types appearing in its fields are registered."""
-            visited = set()
-            def _register(t: type) -> None:
-                # Only consider classes that are SyncableObject subclasses (or maybe dataclasses)
-                if not isinstance(t, type):
-                    return
-                if t in visited:
-                    return
-                visited.add(t)
-                # Check if it's a SyncableObject (has events classvar?)
-                if not (hasattr(t, '__dataclass_fields__') and hasattr(t, 'events')):
-                    # Not a SyncableObject, skip
-                    return
-                # Register this class if not already
-                if not self.is_class_registered(t):
-                    self.type_registry.register_class(t)
-                    if not hasattr(t, "yaml_tag"):
-                        t.yaml_tag = f"!{t.__name__}"
-                # Process its fields
-                try:
-                    hints = get_type_hints(t)
-                except Exception:
-                    hints = {}
-                for field_name, hint in hints.items():
-                    # Skip reserved fields
-                    if field_name in t.all_skip_rehydrate():
-                        continue
-                    origin = get_origin(hint)
-                    if origin is None:
-                        # simple type
-                        _register(hint)
-                    else:
-                        # generic type, process each argument
-                        for arg in get_args(hint):
-                            if isinstance(arg, type):
-                                _register(arg)
-            _register(cls)
+        """Ensure cls and any SyncableObject types appearing in its fields are registered."""
+        visited = set()
+        def _register(t: type) -> None:
+            # Only consider classes that are SyncableObject subclasses (or maybe dataclasses)
+            if not isinstance(t, type):
+                return
+            if t in visited:
+                return
+            visited.add(t)
+            # Check if it's a SyncableObject (has events classvar?)
+            if not (hasattr(t, '__dataclass_fields__') and hasattr(t, 'events')):
+                # Not a SyncableObject, skip
+                return
+            # Register this class if not already
+            if not self.is_class_registered(t):
+                self.type_registry.register_class(t)
+                if not hasattr(t, "yaml_tag"):
+                    t.yaml_tag = f"!{t.__name__}"
+            # Process its fields
+            try:
+                hints = get_type_hints(t)
+            except Exception:
+                hints = {}
+            for field_name, hint in hints.items():
+                # Skip reserved fields
+                if field_name in t.all_skip_rehydrate():
+                    continue
+                origin = get_origin(hint)
+                if origin is None:
+                    # simple type
+                    _register(hint)
+                else:
+                    # generic type, process each argument
+                    for arg in get_args(hint):
+                        if isinstance(arg, type):
+                            _register(arg)
+        _register(cls)
 
     def __post_init__(self):
-        self.zenoh_session = zenoh.open(self.config)    
+        self.zenoh_session = zenoh.open(self.config)        
 
 current_session: ContextVar[Session] = ContextVar('current_session', default=Session())
 
@@ -148,6 +150,7 @@ class SyncableObject:
     # a mirror.
     skip_rehydrate = set()
     skip_sync = {"events", "session", "authoritive", "absolute_path"}
+    # _callbacks: dict[str,zenoh.Queryable] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.session:
@@ -158,13 +161,13 @@ class SyncableObject:
         self.session.register_type_recursive(type(self))
         self.session.objects[self.absolute_path] = self
 
-        # FIXED: Iterate class, not instance — avoids triggering __get__ on descriptors
         for name in dir(type(self)):
             value = getattr(type(self), name, None)
             if isinstance(value, RemoteMethod):
                 # Only bind and setup if we're authoritive
                 if self.authoritive:
                     value.setup_zenoh_callback(self)
+                    # self._callbacks[key]=queryable
 
         tags = self.type_tags()
         logger.debug(f"{tags}")
@@ -172,6 +175,7 @@ class SyncableObject:
         for tag in tags:
             tag = tag.removeprefix("!")
             self.sr_metadata.setup_zenoh_callback(self,path=self.absolute_path,name=f"sr_metadata/{tag}")
+            # self._callbacks[key]=queryable
 
     def _zenoh_publish_changes(self, event: EmissionInfo):
         """Publish changes from a remote zenoh object"""
@@ -259,4 +263,4 @@ class SyncableObject:
         self.__init__(**state)
 
     def __del__(self):
-        logger.debug(f"Cleaning up {self.absolute_path}")
+        logger.debug(f"cleaned up {self.absolute_path}")
