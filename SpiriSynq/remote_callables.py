@@ -103,7 +103,7 @@ class RemoteMethod:
         )
 
         weakref.finalize(parent, queryable.undeclare)
-        weakref.finalize(parent, lambda: logger.warning(f"Undeclared {key}"))
+        weakref.finalize(parent, lambda: logger.debug(f"Undeclared {key}"))
 
 
 def remote_method(func: Callable[..., T]) -> Callable[..., T]:
