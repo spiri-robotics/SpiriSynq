@@ -96,9 +96,8 @@ def test_session_gc():
     session_b.register_type_recursive(SimpleData)
     
 
-    obj = SimpleData(speed=42.5, name="test")
-    path = session_a.publish_synced_object("test/obj", obj, authoritative=True)
-    remote_obj = session_b.receive_synced_object(path)
+    obj = SimpleData(session=session_a, topic="test/obj", speed=42.5, name="test")
+    remote_obj = SimpleData(session=session_b, topic=obj.absolute_path)
 
     ref_session_a = weakref.ref(session_a)
     ref_session_b = weakref.ref(session_b)
@@ -136,15 +135,14 @@ def test_handlers_cleaned_up_when_object_goes_out_of_scope():
     session_b = Session(config=config)
     session_b.register_type_recursive(SimpleData)
 
-    obj = SimpleData(speed=1.0, name="test")
-    path = session_a.publish_synced_object("test/obj", obj, authoritative=True)
-    remote_obj = session_b.receive_synced_object(path)
+    obj = SimpleData(session=session_a, topic="test/obj", speed=1.0, name="test")
+    remote_obj = SimpleData(session=session_b, topic=obj.absolute_path)
 
-    assert path in session_a._handlers_authoritative, \
+    assert obj.absolute_path in session_a._handlers_authoritative, \
         "Authoritative handlers should be registered on session_a"
-    assert path in session_a._handlers_non_authoritative, \
+    assert obj.absolute_path in session_a._handlers_non_authoritative, \
         "Non-authoritative handlers should be registered on session_a"
-    assert path in session_b._handlers_non_authoritative, \
+    assert obj.absolute_path in session_b._handlers_non_authoritative, \
         "Non-authoritative handlers should be registered on session_b"
 
     ref_obj = weakref.ref(obj)
@@ -162,11 +160,11 @@ def test_handlers_cleaned_up_when_object_goes_out_of_scope():
         f"Referrers:\n{_format_referrers(ref_remote_obj())}"
     )
 
-    assert path not in session_a._handlers_authoritative, \
+    assert obj.absolute_path not in session_a._handlers_authoritative, \
         f"Authoritative handlers should be removed from session_a after obj GC {session_a._handlers_authoritative}"
-    assert path not in session_a._handlers_non_authoritative, \
+    assert obj.absolute_path not in session_a._handlers_non_authoritative, \
         f"Non-authoritative handlers should be removed from session_a after obj GC {session_a._handlers_non_authoritative}"
-    assert path not in session_b._handlers_non_authoritative, \
+    assert obj.absolute_path not in session_b._handlers_non_authoritative, \
         f"Non-authoritative handlers should be removed from session_b after remote_obj GC {session_b._handlers_non_authoritative}"
 
 
@@ -186,11 +184,9 @@ def test_basic_field_synchronization():
     session_b.register_type_recursive(SimpleData)
 
     # Publish an object from session A
-    obj = SimpleData(speed=42.5, name="test")
-    path = session_a.publish_synced_object("test/obj", obj, authoritative=True)
-
+    obj = SimpleData(session=session_a, topic="test/obj", speed=42.5, name="test")
     # Receive the object on session B (this also subscribes to future updates)
-    remote_obj = session_b.receive_synced_object(path)
+    remote_obj = SimpleData(session=session_b, topic=obj.absolute_path)
 
     # Initial state should match
     assert remote_obj.speed == 42.5
@@ -228,10 +224,8 @@ def test_nested_dataclass_synchronization():
     session_b.register_type_recursive(Outer)
 
 
-    obj = Outer(inner=Inner(value=10), label="outer")
-    path = session_a.publish_synced_object("test/nested", obj, authoritative=True)
-
-    remote = session_b.receive_synced_object(path)
+    obj = Outer(session=session_a, topic="test/nested", inner=Inner(value=10), label="outer")
+    remote = Outer(session=session_b, topic=obj.absolute_path)
 
     assert remote.inner.value == 10
     assert remote.label == "outer"
@@ -264,10 +258,8 @@ def test_optional_nested_dataclass():
     session_b.register_type_recursive(Outer)
 
 
-    obj = Outer(label="outer")
-    path = session_a.publish_synced_object("test/nested", obj, authoritative=True)
-
-    remote = session_b.receive_synced_object(path)
+    obj = Outer(session=session_a, topic="test/nested", label="outer")
+    remote = Outer(session=session_b, topic=obj.absolute_path)
 
     obj.inner=Inner(value=10)
 
@@ -305,11 +297,10 @@ def test_nested_dataclass_separate_topic_init():
 
     obj = Outer(session=session_a,
         topic="test/nested_separate",
-        authoritive=True,
         label="outer",
         inner=Inner(value=10), 
     )
-    #outer_path = session_a.publish_synced_object("test/nested_separate", obj, authoritative=True)
+    outer_path = obj.absolute_path
 
     def _wait_for_inner():
         topics = list(session_b.list_topics())
@@ -354,8 +345,8 @@ def test_nested_dataclass_separate_topic_runtime():
     session_b.register_type_recursive(Outer)
 
 
-    obj = Outer(label="outer")
-    outer_path = session_a.publish_synced_object("test/nested_separate", obj, authoritative=True)
+    obj = Outer(session=session_a, topic="test/nested_separate", label="outer")
+    outer_path = obj.absolute_path
     obj.inner = Inner(value=10)
 
     # Wait for metadata to appear
@@ -396,8 +387,8 @@ def test_list_topics():
     session_b = Session(config=config)
     session_b.register_type_recursive(TestData)
 
-    obj = TestData(value=42)
-    path = session_a.publish_synced_object("test/list_topics", obj, authoritative=True)
+    obj = TestData(session=session_a, topic="test/list_topics", value=42)
+    path = obj.absolute_path
 
     # Test discovery and metadata integrity together.
     # If wait_for returns, we know the path and type are correct.
@@ -445,11 +436,8 @@ def test_evented_container_synchronization():
     session_b.register_type_recursive(WithContainers)
 
     # obj = WithContainers(items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}), set=EventedSet((1,2,3)))
-    obj = WithContainers(items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}))
-
-    path = session_a.publish_synced_object("test/containers", obj, authoritative=True)
-
-    remote = session_b.receive_synced_object(path)
+    obj = WithContainers(session=session_a, topic="test/containers", items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}))
+    remote = WithContainers(session=session_b, topic=obj.absolute_path)
 
     # Initial state
     assert remote.items == [1, 2, 3]
@@ -485,10 +473,8 @@ def test_raw_bytes_field():
     session_b.register_type_recursive(WithBytes)
 
 
-    obj = WithBytes(data=b"hello\x00world")
-    path = session_a.publish_synced_object("test/bytes", obj, authoritative=True)
-
-    remote = session_b.receive_synced_object(path)
+    obj = WithBytes(session=session_a, topic="test/bytes", data=b"hello\x00world")
+    remote = WithBytes(session=session_b, topic=obj.absolute_path)
 
     assert remote.data == b"hello\x00world"
 
@@ -511,11 +497,9 @@ def test_rehydrate_endpoint():
     session_b.register_type_recursive(RehydrateExample)
 
 
-    obj = RehydrateExample(value=100, text="initial")
-    path = session_a.publish_synced_object("test/rehydrate", obj, authoritative=True)
-
+    obj = RehydrateExample(session=session_a, topic="test/rehydrate", value=100, text="initial")
     # Simulate a late joiner that only wants the current state without subscribing
-    snapshot = session_b.receive_synced_object(path, receive=False, publish=False)
+    snapshot = RehydrateExample(session=session_b, topic=obj.absolute_path, receive=False, publish=False)
     assert snapshot.value == 100
     assert snapshot.text == "initial"
 
@@ -545,10 +529,8 @@ def test_large_bytes_sync():
     size = 10 * 1024 * 1024
     large_data = b"x" * size
 
-    obj = LargeBytes()
-    path = session_a.publish_synced_object("test/large_bytes", obj, authoritative=True)
-
-    remote = session_b.receive_synced_object(path)
+    obj = LargeBytes(session=session_a, topic="test/large_bytes")
+    remote = LargeBytes(session=session_b, topic=obj.absolute_path)
 
     # Update with different pattern
     new_data = b"y" * size
