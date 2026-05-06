@@ -282,7 +282,7 @@ def test_nested_dataclass_separate_topic_init():
     enabling independent discovery and subscription.
     """
     @dataclass
-    class Inner():
+    class Inner(SyncableObject):
         value: int = 0
 
     @dataclass
@@ -317,7 +317,7 @@ def test_nested_dataclass_separate_topic_init():
 
     # Receive inner object directly via its own path
     inner_path = outer_path + "/inner"
-    inner_obj = session_b.receive_synced_object(inner_path)
+    inner_obj = Inner(session=session_b, topic=inner_path)
     assert isinstance(inner_obj, Inner)
     assert inner_obj.value == 10
 
@@ -367,7 +367,7 @@ def test_nested_dataclass_separate_topic_runtime():
 
     # Receive inner object directly via its own path
     inner_path = outer_path + "/inner"
-    inner_obj = session_b.receive_synced_object(inner_path)
+    inner_obj = Inner(session=session_b, topic=inner_path)
     assert isinstance(inner_obj, Inner)
     assert inner_obj.value == 10
 
