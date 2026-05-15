@@ -11,7 +11,7 @@ dependencies = [
     "psygnal>=0.15.1",
     "rich>=14.3.3",
     "ruamel-yaml>=0.19.1",
-    "ruamel-yaml-string>=0.1.1",
+    # "ruamel-yaml-string>=0.1.1", #This module is cursed, do not use.
     "typer>=0.24.1",
 ]
 

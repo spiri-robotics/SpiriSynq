@@ -14,7 +14,7 @@ This document describes what a node must implement to be a first-class SpiriSynq
 
 ## The Four Mandatory Queryables
 
-Every syncable object must respond to four key patterns. These are plain Zenoh queryables — nothing magic. [^4]
+Every syncable object must respond to four key patterns. These are plain Zenoh queryables — nothing magic.
 
 | Queryable Key | Trigger | Must Return |
 |---|---|---|
@@ -32,22 +32,11 @@ Plus: publish field changes as individual puts to `<topic>/<field>`.
 All payloads are **UTF-8 YAML strings**. Keep it simple — no binary encoding required unless a field value is itself binary.
 
 ```
-# sr_metadata/<TypeName> response
-type: ArmState
-topic: robot/arm/state
 
-# sr_object_schema response
-position: float
-velocity: float
-
-# sr_type_schema/<TypeName> response
-position: float
-velocity: float
-
-# rehydrate response (full snapshot)
-position: 1.57
-velocity: 0.0
 ```
 
-We support optionally sending data binary encoded, important for things like raw image or audio data where we don't want the overhead
-of a yaml binary field.
+We support optionally sending data binary encoded, important for things like raw image or audio data where we don't want the overhead of a yaml binary field.
+
+# Errata
+
+You must handle all your exceptions, or the zenoh thread will will deadlock.

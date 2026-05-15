@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 import pytest
 from psygnal.containers import EventedList, EventedDict, EventedSet
 
-from SpiriSynq.session import Session, SyncableObject
+from SpiriSynq.syncable_objects import SyncableObject
+from SpiriSynq.session import Session
 
 import threading
 import traceback
@@ -96,8 +97,8 @@ def test_session_gc():
     session_b.register_type_recursive(SimpleData)
     
 
-    obj = SimpleData(session=session_a, topic="test/obj", speed=42.5, name="test")
-    remote_obj = SimpleData(session=session_b, topic=obj.absolute_path)
+    obj = SimpleData(synq_session=session_a, synq_topic="test/obj", speed=42.5, name="test")
+    remote_obj = SimpleData(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     ref_session_a = weakref.ref(session_a)
     ref_session_b = weakref.ref(session_b)
@@ -135,14 +136,14 @@ def test_handlers_cleaned_up_when_object_goes_out_of_scope():
     session_b = Session(config=config)
     session_b.register_type_recursive(SimpleData)
 
-    obj = SimpleData(session=session_a, topic="test/obj", speed=1.0, name="test")
-    remote_obj = SimpleData(session=session_b, topic=obj.absolute_path)
+    obj = SimpleData(synq_session=session_a, synq_topic="test/obj", speed=1.0, name="test")
+    remote_obj = SimpleData(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
-    assert obj.absolute_path in session_a._handlers_authoritative, \
+    assert obj.synq_absolute_path in session_a._handlers_authoritative, \
         "Authoritative handlers should be registered on session_a"
-    assert obj.absolute_path in session_a._handlers_non_authoritative, \
+    assert obj.synq_absolute_path in session_a._handlers_non_authoritative, \
         "Non-authoritative handlers should be registered on session_a"
-    assert obj.absolute_path in session_b._handlers_non_authoritative, \
+    assert obj.synq_absolute_path in session_b._handlers_non_authoritative, \
         "Non-authoritative handlers should be registered on session_b"
 
     ref_obj = weakref.ref(obj)
@@ -185,9 +186,9 @@ def test_basic_field_synchronization():
     session_b.register_type_recursive(SimpleData)
 
     # Publish an object from session A
-    obj = SimpleData(session=session_a, topic="test/obj", speed=42.5, name="test")
+    obj = SimpleData(synq_session=session_a, synq_topic="test/obj", speed=42.5, name="test")
     # Receive the object on session B (this also subscribes to future updates)
-    remote_obj = SimpleData(session=session_b, topic=obj.absolute_path)
+    remote_obj = SimpleData(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     # Initial state should match
     assert remote_obj.speed == 42.5
@@ -225,8 +226,8 @@ def test_nested_dataclass_synchronization():
     session_b.register_type_recursive(Outer)
 
 
-    obj = Outer(session=session_a, topic="test/nested", inner=Inner(value=10), label="outer")
-    remote = Outer(session=session_b, topic=obj.absolute_path)
+    obj = Outer(synq_session=session_a, synq_topic="test/nested", inner=Inner(value=10), label="outer")
+    remote = Outer(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     assert remote.inner.value == 10
     assert remote.label == "outer"
@@ -259,8 +260,8 @@ def test_optional_nested_dataclass():
     session_b.register_type_recursive(Outer)
 
 
-    obj = Outer(session=session_a, topic="test/nested", label="outer")
-    remote = Outer(session=session_b, topic=obj.absolute_path)
+    obj = Outer(synq_session=session_a, synq_topic="test/nested", label="outer")
+    remote = Outer(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     obj.inner=Inner(value=10)
 
@@ -296,12 +297,12 @@ def test_nested_dataclass_separate_topic_init():
     session_b.register_type_recursive(Outer)
 
 
-    obj = Outer(session=session_a,
-        topic="test/nested_separate",
+    obj = Outer(synq_session=session_a,
+        synq_topic="test/nested_separate",
         label="outer",
         inner=Inner(value=10), 
     )
-    outer_path = obj.absolute_path
+    outer_path = obj.synq_absolute_path
 
     def _wait_for_inner():
         topics = list(session_b.list_topics())
@@ -318,7 +319,7 @@ def test_nested_dataclass_separate_topic_init():
 
     # Receive inner object directly via its own path
     inner_path = outer_path + "/inner"
-    inner_obj = Inner(session=session_b, topic=inner_path)
+    inner_obj = Inner(synq_session=session_b, synq_topic=inner_path)
     assert isinstance(inner_obj, Inner)
     assert inner_obj.value == 10
 
@@ -346,8 +347,8 @@ def test_nested_dataclass_separate_topic_runtime():
     session_b.register_type_recursive(Outer)
 
 
-    obj = Outer(session=session_a, topic="test/nested_separate", label="outer")
-    outer_path = obj.absolute_path
+    obj = Outer(synq_session=session_a, synq_topic="test/nested_separate", label="outer")
+    outer_path = obj.synq_absolute_path
     obj.inner = Inner(value=10)
 
     # Wait for metadata to appear
@@ -368,7 +369,7 @@ def test_nested_dataclass_separate_topic_runtime():
 
     # Receive inner object directly via its own path
     inner_path = outer_path + "/inner"
-    inner_obj = Inner(session=session_b, topic=inner_path)
+    inner_obj = Inner(synq_session=session_b, synq_topic=inner_path)
     assert isinstance(inner_obj, Inner)
     assert inner_obj.value == 10
 
@@ -388,8 +389,8 @@ def test_list_topics():
     session_b = Session(config=config)
     session_b.register_type_recursive(TestData)
 
-    obj = TestData(session=session_a, topic="test/list_topics", value=42)
-    path = obj.absolute_path
+    obj = TestData(synq_session=session_a, synq_topic="test/list_topics", value=42)
+    path = obj.synq_absolute_path
 
     # Test discovery and metadata integrity together.
     # If wait_for returns, we know the path and type are correct.
@@ -437,8 +438,8 @@ def test_evented_container_synchronization():
     session_b.register_type_recursive(WithContainers)
 
     # obj = WithContainers(items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}), set=EventedSet((1,2,3)))
-    obj = WithContainers(session=session_a, topic="test/containers", items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}))
-    remote = WithContainers(session=session_b, topic=obj.absolute_path)
+    obj = WithContainers(synq_session=session_a, synq_topic="test/containers", items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}))
+    remote = WithContainers(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     # Initial state
     assert remote.items == [1, 2, 3]
@@ -474,8 +475,8 @@ def test_raw_bytes_field():
     session_b.register_type_recursive(WithBytes)
 
 
-    obj = WithBytes(session=session_a, topic="test/bytes", data=b"hello\x00world")
-    remote = WithBytes(session=session_b, topic=obj.absolute_path)
+    obj = WithBytes(synq_session=session_a, synq_topic="test/bytes", data=b"hello\x00world")
+    remote = WithBytes(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     assert remote.data == b"hello\x00world"
 
@@ -498,9 +499,9 @@ def test_rehydrate_endpoint():
     session_b.register_type_recursive(RehydrateExample)
 
 
-    obj = RehydrateExample(session=session_a, topic="test/rehydrate", value=100, text="initial")
+    obj = RehydrateExample(synq_session=session_a, synq_topic="test/rehydrate", value=100, text="initial")
     # Simulate a late joiner that only wants the current state without subscribing
-    snapshot = RehydrateExample(session=session_b, topic=obj.absolute_path, receive=False, publish=False)
+    snapshot = RehydrateExample(synq_session=session_b, synq_topic=obj.synq_absolute_path, synq_receive=False, synq_publish=False)
     assert snapshot.value == 100
     assert snapshot.text == "initial"
 
@@ -530,8 +531,8 @@ def test_large_bytes_sync():
     size = 10 * 1024 * 1024
     large_data = b"x" * size
 
-    obj = LargeBytes(session=session_a, topic="test/large_bytes")
-    remote = LargeBytes(session=session_b, topic=obj.absolute_path)
+    obj = LargeBytes(synq_session=session_a, synq_topic="test/large_bytes")
+    remote = LargeBytes(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     # Update with different pattern
     new_data = b"y" * size
