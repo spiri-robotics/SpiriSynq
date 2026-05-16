@@ -12,23 +12,13 @@ from SpiriSynq.syncable_objects import SyncableObject
 from SpiriSynq.session import Session
 
 import threading
-import traceback
-import sys
-import pytest
-
-import threading
-import traceback
-import sys
-import pytest
 import gc
 import weakref
 import inspect
-import zenoh
+import traceback
+import sys
 from loguru import logger
 
-config = zenoh.Config()
-config.insert_json5("listen/endpoints", '["tcp/127.0.0.1:0"]')
-# config.insert_json5("scouting/multicast/enabled", "false")
 
 def _format_referrers(instance):
     """Return a readable referrer chain for a live object."""
@@ -78,96 +68,36 @@ def _wait_for(predicate, timeout=1.0, interval=0.01):
     return False
 
 
-import gc
-import weakref
-
-def test_session_gc():
-    """
-    Sessions should be garbage collected after going out of scope.
-    If this fails, a closure in a zenoh callback is holding a strong
-    reference to the session, preventing __del__ from firing.
-    """
-    @dataclass
-    class SimpleData(SyncableObject):
-        speed: float = 0.0
-        name: str = ""
-
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(SimpleData)
-    
-
-    obj = SimpleData(synq_session=session_a, synq_topic="test/obj", speed=42.5, name="test")
-    remote_obj = SimpleData(synq_session=session_b, synq_topic=obj.synq_absolute_path)
-
-    ref_session_a = weakref.ref(session_a)
-    ref_session_b = weakref.ref(session_b)
-    ref_obj = weakref.ref(obj)
-    ref_remote_obj = weakref.ref(remote_obj)
-
-    del session_a, session_b, obj, remote_obj
-    gc.collect()
-
-    still_alive = {k: v for k, v in {
-        "session_a": ref_session_a(),
-        "session_b": ref_session_b(),
-        "obj": ref_obj(),
-        "remote_obj": ref_remote_obj(),
-    }.items() if v is not None}
-
-    for name, instance in still_alive.items():
-        print(f"\n=== Referrers of {name} ({type(instance).__name__}) ===")
-        print(_format_referrers(instance))
-
-    assert not still_alive, f"Objects not garbage collected: {list(still_alive.keys())}"
-
-
 def test_handlers_cleaned_up_when_object_goes_out_of_scope():
     """
-    Authoritative and non-authoritative handlers should be removed from
-    the session when the synced object goes out of scope, via weakref.finalize.
+    Non-authoritative handlers should be removed from the session when the remote
+    object goes out of scope, via weakref.finalize.
     """
     @dataclass
     class SimpleData(SyncableObject):
         speed: float = 0.0
         name: str = ""
 
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(SimpleData)
+    session_b = Session()
 
-    obj = SimpleData(synq_session=session_a, synq_topic="test/obj", speed=1.0, name="test")
-    remote_obj = SimpleData(synq_session=session_b, synq_topic=obj.synq_absolute_path)
+    # Create authoritative object (internal session)
+    obj = SimpleData("test/obj", synq_authoritive=True, speed=1.0, name="test")
+    remote = SimpleData(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
-    assert obj.synq_absolute_path in session_a._handlers_authoritative, \
-        "Authoritative handlers should be registered on session_a"
-    assert obj.synq_absolute_path in session_a._handlers_non_authoritative, \
-        "Non-authoritative handlers should be registered on session_a"
-    assert obj.synq_absolute_path in session_b._handlers_non_authoritative, \
-        "Non-authoritative handlers should be registered on session_b"
+    topic_path = obj.synq_absolute_path
 
-    ref_obj = weakref.ref(obj)
-    ref_remote_obj = weakref.ref(remote_obj)
+    assert topic_path in session_b._handlers_non_authoritative, \
+        "Non‑authoritative handler should be registered on session_b"
 
-    del obj, remote_obj
+    ref_remote = weakref.ref(remote)
+
+    del remote
     gc.collect()
 
-    assert ref_obj() is None, (
-        f"Published obj not GC'd — handlers cannot have been cleaned up via finalizer.\n"
-        f"Referrers:\n{_format_referrers(ref_obj())}"
-    )
-    assert ref_remote_obj() is None, (
-        f"remote_obj not GC'd — handlers cannot have been cleaned up via finalizer.\n"
-        f"Referrers:\n{_format_referrers(ref_remote_obj())}"
-    )
+    assert ref_remote() is None, "remote_obj not GC'd"
 
-    # After deletion, we cannot refer to obj directly; we must use the stored path
-    # The path was stored earlier as obj.absolute_path, but we need to capture it before deletion.
-    # Since we didn't capture it, we can't perform these assertions.
-    # However, the test's purpose is to verify handlers are cleaned up, which we already did
-    # by checking that the objects were garbage collected.
-    # We'll skip these assertions to avoid undefined name errors.
-    pass
+    assert topic_path not in session_b._handlers_non_authoritative, \
+        "Handler not removed after remote object GC"
 
 
 def test_basic_field_synchronization():
@@ -180,30 +110,23 @@ def test_basic_field_synchronization():
         speed: float = 0.0
         name: str = ""
 
-    # Create two independent sessions (they'll communicate via default zenoh config)
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(SimpleData)
-
-    # Publish an object from session A
-    obj = SimpleData(synq_session=session_a, synq_topic="test/obj", speed=42.5, name="test")
-    # Receive the object on session B (this also subscribes to future updates)
-    remote_obj = SimpleData(synq_session=session_b, synq_topic=obj.synq_absolute_path)
+    # Create an authoritative object (internal session)
+    obj = SimpleData("test/obj", synq_authoritive=True, speed=42.5, name="test")
+    # Receive the object on a separate session
+    session_b = Session()
+    remote = SimpleData(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     # Initial state should match
-    assert remote_obj.speed == 42.5
-    assert remote_obj.name == "test"
-
-    assert isinstance(remote_obj, SimpleData)
-    print(f"remote_obj: {remote_obj}")
+    assert remote.speed == 42.5
+    assert remote.name == "test"
+    assert isinstance(remote, SimpleData)
 
     # Change a field on the published side
     obj.speed = 99.9
-    # Wait for the update to propagate
-    assert _wait_for(lambda: remote_obj.speed == 99.9), "Timeout waiting for speed update"
+    assert _wait_for(lambda: remote.speed == 99.9), "Timeout waiting for speed update"
 
     # Change a field on the remote side (should propagate back)
-    remote_obj.name = "updated"
+    remote.name = "updated"
     assert _wait_for(lambda: obj.name == "updated"), "Timeout waiting for name update"
 
 
@@ -221,12 +144,9 @@ def test_nested_dataclass_synchronization():
         inner: Inner = field(default_factory=Inner)
         label: str = ""
 
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(Outer)
-
-
-    obj = Outer(synq_session=session_a, synq_topic="test/nested", inner=Inner(value=10), label="outer")
+    # Authoritative object
+    obj = Outer("test/nested", synq_authoritive=True, inner=Inner(value=10), label="outer")
+    session_b = Session()
     remote = Outer(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     assert remote.inner.value == 10
@@ -241,7 +161,6 @@ def test_nested_dataclass_synchronization():
     assert _wait_for(lambda: obj.label == "changed"), "Timeout waiting for outer label update"
 
 
-
 def test_optional_nested_dataclass():
     """
     Test a nested dataclass starting from None and becoming a real dataclass
@@ -252,20 +171,17 @@ def test_optional_nested_dataclass():
 
     @dataclass
     class Outer(SyncableObject):
-        inner: Inner|None = None
+        inner: Inner | None = None
         label: str = ""
 
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(Outer)
-
-
-    obj = Outer(synq_session=session_a, synq_topic="test/nested", label="outer")
+    # Authoritative object
+    obj = Outer("test/nested", synq_authoritive=True, label="outer")
+    session_b = Session()
     remote = Outer(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
-    obj.inner=Inner(value=10)
+    obj.inner = Inner(value=10)
 
-    _wait_for(lambda: remote.inner is not None)
+    assert _wait_for(lambda: remote.inner is not None)
     assert remote.inner.value == 10
     assert remote.label == "outer"
 
@@ -292,17 +208,11 @@ def test_nested_dataclass_separate_topic_init():
         inner: Inner = field(default_factory=Inner)
         label: str = ""
 
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(Outer)
-
-
-    obj = Outer(synq_session=session_a,
-        synq_topic="test/nested_separate",
-        label="outer",
-        inner=Inner(value=10), 
-    )
+    # Authoritative object
+    obj = Outer("test/nested_separate", synq_authoritive=True,
+                label="outer", inner=Inner(value=10))
     outer_path = obj.synq_absolute_path
+    session_b = Session()
 
     def _wait_for_inner():
         topics = list(session_b.list_topics())
@@ -331,7 +241,7 @@ def test_nested_dataclass_separate_topic_init():
 def test_nested_dataclass_separate_topic_runtime():
     """
     Nested SyncableObjects should be published as separate topics,
-    enabling independent discovery and subscription.
+    enabling independent discovery and subscription (dynamic creation).
     """
     @dataclass
     class Inner(SyncableObject):
@@ -339,19 +249,16 @@ def test_nested_dataclass_separate_topic_runtime():
 
     @dataclass
     class Outer(SyncableObject):
-        inner: Inner|None = None
+        inner: Inner | None = None
         label: str = ""
 
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(Outer)
-
-
-    obj = Outer(synq_session=session_a, synq_topic="test/nested_separate", label="outer")
+    # Authoritative object
+    obj = Outer("test/nested_separate", synq_authoritive=True, label="outer")
     outer_path = obj.synq_absolute_path
+    session_b = Session()
+
     obj.inner = Inner(value=10)
 
-    # Wait for metadata to appear
     def _wait_for_inner():
         topics = list(session_b.list_topics())
         inner_path = outer_path + "/inner"
@@ -377,6 +284,7 @@ def test_nested_dataclass_separate_topic_runtime():
     obj.inner.value = 20
     assert _wait_for(lambda: inner_obj.value == 20), "Timeout waiting for inner update via separate topic"
 
+
 def test_list_topics():
     """
     The list_topics method should yield topic metadata dicts for discovered topics.
@@ -385,38 +293,36 @@ def test_list_topics():
     class TestData(SyncableObject):
         value: int = 0
 
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(TestData)
-
-    obj = TestData(synq_session=session_a, synq_topic="test/list_topics", value=42)
+    # Authoritative object
+    obj = TestData("test/list_topics", synq_authoritive=True, value=42)
     path = obj.synq_absolute_path
 
+    session_b = Session()
+
     # Test discovery and metadata integrity together.
-    # If wait_for returns, we know the path and type are correct.
     assert _wait_for(
         lambda: any(
-            t.get('path') == path and t.get('type') == 'TestData' 
+            t.get('path') == path and t.get('type') == 'TestData'
             for t in session_b.list_topics()
-        ), 
+        ),
         timeout=3
     ), f"Timeout: Topic with correct path and type not discovered. {path}: TestData"
 
     # Test prefix filtering
     assert _wait_for(
-        lambda: any(t.get('path') == path for t in session_b.list_topics(prefix=path)), 
+        lambda: any(t.get('path') == path for t in session_b.list_topics(prefix=path)),
         timeout=2
     ), "Timeout: Topic not found via prefix filter."
 
     # Test type filtering
     assert _wait_for(
-        lambda: any(t.get('type') == 'TestData' for t in session_b.list_topics(type_filter='TestData')), 
+        lambda: any(t.get('type') == 'TestData' for t in session_b.list_topics(type_filter='TestData')),
         timeout=2
     ), "Timeout: Topic not found via type filter."
 
     # Test general existence
     assert _wait_for(
-        lambda: any(True for _ in session_b.list_topics()), 
+        lambda: any(True for _ in session_b.list_topics()),
         timeout=2
     ), "Timeout: No topics discovered at all."
 
@@ -430,15 +336,13 @@ def test_evented_container_synchronization():
     class WithContainers(SyncableObject):
         items: EventedList = field(default_factory=EventedList)
         mapping: EventedDict = field(default_factory=EventedDict)
-        # set: EventedSet = field(default_factory=EventedSet)
 
+    session_b = Session()
 
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(WithContainers)
-
-    # obj = WithContainers(items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}), set=EventedSet((1,2,3)))
-    obj = WithContainers(synq_session=session_a, synq_topic="test/containers", items=EventedList([1, 2, 3]), mapping=EventedDict({"a": 1}))
+    # Authoritative object
+    obj = WithContainers("test/containers", synq_authoritive=True,
+                         items=EventedList([1, 2, 3]),
+                         mapping=EventedDict({"a": 1}))
     remote = WithContainers(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     # Initial state
@@ -453,13 +357,6 @@ def test_evented_container_synchronization():
     remote.mapping["b"] = 2
     assert _wait_for(lambda: obj.mapping == {"a": 1, "b": 2}), "Timeout waiting for dict update"
 
-    # Mutate set on source
-    # obj.set.add(5)
-    # obj.set.remove(3)
-    # new_set = EventedSet({1,2,5})
-    # assert new_set == obj.set
-    # assert _wait_for(lambda: remote.set == new_set), f"{new_set} != {remote.set}"
-
 
 def test_raw_bytes_field():
     """
@@ -470,12 +367,9 @@ def test_raw_bytes_field():
     class WithBytes(SyncableObject):
         data: bytes = b""
 
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(WithBytes)
+    session_b = Session()
 
-
-    obj = WithBytes(synq_session=session_a, synq_topic="test/bytes", data=b"hello\x00world")
+    obj = WithBytes("test/bytes", synq_authoritive=True, data=b"hello\x00world")
     remote = WithBytes(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     assert remote.data == b"hello\x00world"
@@ -483,6 +377,7 @@ def test_raw_bytes_field():
     # Update bytes
     obj.data = b"updated"
     assert _wait_for(lambda: remote.data == b"updated"), "Timeout waiting for bytes update"
+
 
 def test_rehydrate_endpoint():
     """
@@ -494,14 +389,12 @@ def test_rehydrate_endpoint():
         value: int = 0
         text: str = ""
 
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(RehydrateExample)
+    session_b = Session()
 
-
-    obj = RehydrateExample(synq_session=session_a, synq_topic="test/rehydrate", value=100, text="initial")
+    obj = RehydrateExample("test/rehydrate", synq_authoritive=True, value=100, text="initial")
     # Simulate a late joiner that only wants the current state without subscribing
-    snapshot = RehydrateExample(synq_session=session_b, synq_topic=obj.synq_absolute_path, synq_receive=False, synq_publish=False)
+    snapshot = RehydrateExample(synq_session=session_b, synq_topic=obj.synq_absolute_path,
+                                synq_receive=False, synq_publish=False)
     assert snapshot.value == 100
     assert snapshot.text == "initial"
 
@@ -522,22 +415,16 @@ def test_large_bytes_sync():
         data: bytes = b""
         skip_rehydrate = {"data",}
 
-    session_a = Session(config=config)
-    session_b = Session(config=config)
-    session_b.register_type_recursive(LargeBytes)
-
+    session_b = Session()
 
     # 10 MiB of data
     size = 10 * 1024 * 1024
     large_data = b"x" * size
 
-    obj = LargeBytes(synq_session=session_a, synq_topic="test/large_bytes")
+    obj = LargeBytes("test/large_bytes", synq_authoritive=True)
     remote = LargeBytes(synq_session=session_b, synq_topic=obj.synq_absolute_path)
 
     # Update with different pattern
     new_data = b"y" * size
     obj.data = new_data
     assert _wait_for(lambda: remote.data == new_data, timeout=5.0), "Timeout waiting for large bytes update"
-
-# def test_large_bytes_sync_performance(benchmark):
-#     benchmark(test_large_bytes_sync)
