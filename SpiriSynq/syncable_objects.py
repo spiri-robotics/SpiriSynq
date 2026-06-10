@@ -1,4 +1,4 @@
-from SpiriSynq.remote_callables import RemoteMethod, remote_method, rpc_call
+from SpiriSynq.remote_callables import RemoteMethod, remote_method
 from SpiriSynq.session import Session, current_session
 
 import zenoh
@@ -137,7 +137,7 @@ class SyncableObject:
         "_synq_callbacks",
     }
 
-    #_synq_callbacks: dict[str, zenoh.Queryable] = field(default_factory=dict)
+    _synq_callbacks: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.synq_auto_start:
@@ -199,7 +199,7 @@ class SyncableObject:
             return
         if not self.synq_publish:
             return
-        if self.sync_lazy_publish and not self.synq_publisher.matching_status:
+        if self.sync_lazy_publish and (not self.synq_publisher or not self.synq_publisher.matching_status):
             logger.trace(f"{self} not matching subscribers, not publishing")
             return
 
@@ -459,6 +459,40 @@ class SyncableObject:
         # Routes through __init__ -> __post_init__ on yaml deserialize
         self.__init__(**state)
 
+    def close(self):
+        """Undeclare all zenoh resources and disconnect event handlers."""
+        try:
+            self.events.disconnect(self._zenoh_publish_changes)
+        except Exception:
+            pass
+
+        sub = getattr(self, 'synq_subscriber', None)
+        if sub is not None:
+            try:
+                sub.undeclare()
+            except Exception:
+                pass
+            self.synq_subscriber = None
+
+        pub = getattr(self, 'synq_publisher', None)
+        if pub is not None:
+            try:
+                pub.undeclare()
+            except Exception:
+                pass
+            self.synq_publisher = None
+
+        for queryable in list(getattr(self, '_synq_callbacks', {}).values()):
+            try:
+                queryable.undeclare()
+            except Exception:
+                pass
+        if hasattr(self, '_synq_callbacks'):
+            self._synq_callbacks.clear()
+
     def __del__(self):
-        # self._undeclare_all()
-        logger.trace(f"Deleting object at {self.synq_absolute_path}")
+        try:
+            logger.trace(f"Deleting object at {self.synq_absolute_path}")
+        except AttributeError:
+            pass
+        self.close()

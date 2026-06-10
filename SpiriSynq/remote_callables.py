@@ -111,7 +111,7 @@ class RemoteMethod:
             _zenoh_callback(weakref.ref(self), weakref.ref(parent)),
         )
 
-        #parent._synq_callbacks[key]=queryable
+        parent._synq_callbacks[key] = queryable
         
 
 

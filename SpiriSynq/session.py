@@ -8,14 +8,13 @@ from deepdiff import DeepDiff, Delta
 from dataclasses import dataclass, field
 from typing import get_type_hints, get_origin, get_args, Any
 from SpiriSynq.remote_callables import rpc_call
+from SpiriSynq.shutdown import register_session
 from loguru import logger
 import weakref
 from contextvars import ContextVar
 from contextlib import contextmanager
-import atexit
 import io
 from collections import defaultdict
-import threading
 
 base_path = os.getenv("SPIRI_SYNQ_BASE_TOPIC", socket.gethostname())
 
@@ -53,6 +52,7 @@ class IsolatedYAML(YAML):
         self.dump(data, buf)
         #Removesuffix is dirty, but the only way I can convince it not to use explicit ends reliably.
         return buf.getvalue().removesuffix("...\n").removesuffix("\n")
+
 
 @dataclass
 class Session:
@@ -115,6 +115,7 @@ class Session:
                 logger.debug(f"Found topic: {metadata}")
                 yield metadata
             else:
+                assert reply.err, "Reply not OK and no reply err. Weird."
                 logger.warning(
                     f"Error reply in list_topics: {reply.err.payload.to_string()}"
                 )
@@ -169,18 +170,25 @@ class Session:
         self._sequince_number_for_path[path]+=1
         return source_info
 
+    def close(self):
+        try:
+            self.zenoh_session.close()
+        except Exception:
+            pass
+
+    def __del__(self):
+        self.close()
+
     def __post_init__(self):
-        _before = {t.ident for t in threading.enumerate()}
         self.zenoh_session = zenoh.open(self.config)
-        #atexit.register(self.shutdown)
         logger.info(f"Started zenoh session {self.zenoh_session.zid()}")
 
-        # Daemonize only threads spawned by this session open
-        self._pyo3_threads = []
-        for t in threading.enumerate():
-            if t.ident not in _before and 'pyo3' in t.name:
-                t.daemon = True
-                self._pyo3_threads.append(t)
+        # Register for deterministic shutdown. This does NOT keep the session
+        # alive (the registry is weak); it only lets the shutdown hook find and
+        # close it before the interpreter joins zenoh's non-daemon threads. See
+        # SpiriSynq/shutdown.py for why this, and not __del__ / atexit / context
+        # managers, is what works.
+        register_session(self)
 
 
 current_session: ContextVar[Session] = ContextVar("current_session", default=Session())
