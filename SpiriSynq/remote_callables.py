@@ -20,20 +20,21 @@ def rpc_call(topic: str, session: 'Session', kwargs: Dict[str, Any] | None = Non
         kwargs = {}
     yaml = session.type_registry
     z_session = session.zenoh_session
-    params = zenoh.Parameters(kwargs)
-    selector = zenoh.Selector(topic, params)
-    logger.trace(f"Calling {selector}")
-    try:
-        reply = z_session.get(selector).recv()
-        if not reply.ok:
-            assert reply.err, "RPC reply not OK and remote didn't return an error message"
-            raise RpcException(reply.err.payload.to_string())
-        if reply.ok.encoding == zenoh.Encoding.APPLICATION_YAML:
-            return yaml.load(reply.ok.payload.to_string())
-        raise RpcException(f"Not yaml encoded: {reply.ok.encoding} {reply}")
-    except Exception as e:
-        logger.error(f"Error making remote call on {selector}: {e}")
-        raise e
+    with session.as_default():
+        params = zenoh.Parameters(kwargs)
+        selector = zenoh.Selector(topic, params)
+        logger.trace(f"Calling {selector}")
+        try:
+            reply = z_session.get(selector).recv()
+            if not reply.ok:
+                assert reply.err, "RPC reply not OK and remote didn't return an error message"
+                raise RpcException(reply.err.payload.to_string())
+            if reply.ok.encoding == zenoh.Encoding.APPLICATION_YAML:
+                return yaml.load(reply.ok.payload.to_string())
+            raise RpcException(f"Not yaml encoded: {reply.ok.encoding} {reply}")
+        except Exception as e:
+            logger.error(f"Error making remote call on {selector}: {e}")
+            raise e
 
 T = TypeVar('T')
 
@@ -110,8 +111,7 @@ class RemoteMethod:
             _zenoh_callback(weakref.ref(self), weakref.ref(parent)),
         )
 
-        weakref.finalize(parent, undeclare(key, queryable))
-        parent._synq_callbacks[key]=queryable
+        #parent._synq_callbacks[key]=queryable
         
 
 

@@ -15,6 +15,7 @@ from contextlib import contextmanager
 import atexit
 import io
 from collections import defaultdict
+import threading
 
 base_path = os.getenv("SPIRI_SYNQ_BASE_TOPIC", socket.gethostname())
 
@@ -53,19 +54,6 @@ class IsolatedYAML(YAML):
         #Removesuffix is dirty, but the only way I can convince it not to use explicit ends reliably.
         return buf.getvalue().removesuffix("...\n").removesuffix("\n")
 
-
-
-@contextmanager
-def with_session(session: "Session"):
-    """
-    Sets the default session for newly created objects.
-    """
-    token = current_session.set(session)
-    try:
-        yield session
-    finally:
-        current_session.reset(token)
-
 @dataclass
 class Session:
     config: zenoh.Config = field(default_factory=zenoh.Config)
@@ -77,11 +65,16 @@ class Session:
     )
     _sequince_number_for_path: dict[str,int] = field(default_factory=lambda: defaultdict(lambda:0))
 
-    def shutdown(self):
-        logger.info(f"Shutting down zenoh session {self.zenoh_session.zid()}")
-        for obj in self.objects.values():
-            del obj
-        self.zenoh_session.close()
+    @contextmanager
+    def as_default(self: "Session"):
+        """
+        Sets the default session for newly created objects.
+        """
+        token = current_session.set(self)
+        try:
+            yield self
+        finally:
+            current_session.reset(token)
 
     def is_class_registered(self, cls):
         representer_registered = cls in self.type_registry.representer.yaml_representers
@@ -177,9 +170,17 @@ class Session:
         return source_info
 
     def __post_init__(self):
+        _before = {t.ident for t in threading.enumerate()}
         self.zenoh_session = zenoh.open(self.config)
-        atexit.register(self.shutdown)
+        #atexit.register(self.shutdown)
         logger.info(f"Started zenoh session {self.zenoh_session.zid()}")
+
+        # Daemonize only threads spawned by this session open
+        self._pyo3_threads = []
+        for t in threading.enumerate():
+            if t.ident not in _before and 'pyo3' in t.name:
+                t.daemon = True
+                self._pyo3_threads.append(t)
 
 
 current_session: ContextVar[Session] = ContextVar("current_session", default=Session())

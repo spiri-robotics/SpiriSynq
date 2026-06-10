@@ -329,6 +329,7 @@ def topic_rehydrate(
 
     Emits a full yaml object instead of changes to sub topics.
     """
+    topic = f"{topic}/sr_rehydrate"
     console_err.print(f"[dim]Querying: {topic}[/dim]")
 
     replies = session.zenoh_session.get(topic)
