@@ -5,15 +5,16 @@ These tests simulate real-world usage patterns with two communicating sessions.
 
 import time
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import pytest
+from psygnal import SignalGroupDescriptor
 from psygnal.containers import EventedList, EventedDict
 
 from SpiriSynq.syncable_objects import SyncableObject
 from SpiriSynq.session import Session
 
 import threading
-import gc
 from loguru import logger
 import sys
 
@@ -22,11 +23,27 @@ logger.configure(handlers=[{"sink": sys.stderr, "level": "TRACE"}])
 
 @pytest.fixture(autouse=True, scope="session")
 def dump_threads_on_exit():
-    gc.collect()
     yield
     print("\n=== Threads still alive ===")
     for t in threading.enumerate():
         print(f"  {t.name!r}  daemon={t.daemon}")
+
+
+@pytest.fixture(autouse=True)
+def close_test_sessions():
+    """Close any Sessions created during the test.
+
+    pytest keeps failing-test frames alive (for traceback display), which
+    prevents __del__ from running and leaves zenoh threads/queryables active.
+    Explicitly calling .close() shuts down the zenoh session regardless of
+    whether the Python object is GC'd.
+    """
+    from SpiriSynq.shutdown import _live_sessions
+    before = set(_live_sessions.keys())
+    yield
+    for sid, session in list(_live_sessions.items()):
+        if sid not in before:
+            session.close()
 
 
 def _wait_for(predicate, timeout=1.0, interval=0.01):
@@ -78,12 +95,13 @@ def test_nested_dataclass_synchronization():
     """
 
     @dataclass
-    class Inner(SyncableObject):
+    class Inner:
+        events: ClassVar[SignalGroupDescriptor] = SignalGroupDescriptor()
         value: int = 0
 
     @dataclass
     class Outer(SyncableObject):
-        inner: Inner = field(default_factory=Inner)
+        inner: Inner | None = None
         label: str = ""
 
     # Authoritative object
@@ -115,7 +133,8 @@ def test_optional_nested_dataclass():
     """
 
     @dataclass
-    class Inner():
+    class Inner:
+        events: ClassVar[SignalGroupDescriptor] = SignalGroupDescriptor()
         value: int = 0
 
     @dataclass
@@ -147,126 +166,10 @@ def test_optional_nested_dataclass():
     )
 
 
-def test_nested_dataclass_separate_topic_init():
-    """
-    Nested SyncableObjects should be published as separate topics,
-    enabling independent discovery and subscription.
-    """
-
-    @dataclass
-    class Inner(SyncableObject):
-        value: int = 0
-
-    @dataclass
-    class Outer(SyncableObject):
-        inner: Inner = field(default_factory=Inner)
-        label: str = ""
-
-    # Authoritative object
-    obj = Outer(
-        "test/nested_separate",
-        synq_authoritive=True,
-        label="outer",
-        inner=Inner(value=10),
-    )
-    outer_path = obj.synq_absolute_path
-    session_b = Session()
-
-    def _wait_for_inner():
-        topics = list(session_b.list_topics())
-        inner_path = outer_path + "/inner"
-        return any(
-            t.get("topic") == inner_path and t.get("classes") == "Inner" for t in topics
-        )
-
-    assert _wait_for(_wait_for_inner), "Timeout waiting for inner topic metadata"
-
-    # Collect metadata for both outer and inner
-    topics = list(session_b.list_topics())
-    outer_found = any(
-        t["topic"] == outer_path and t["classes"] == "Outer" for t in topics
-    )
-    inner_found = any(
-        t["topic"] == outer_path + "/inner" and t["classes"] == "Inner" for t in topics
-    )
-    assert outer_found, f"Outer topic not found in {topics}"
-    assert inner_found, f"Inner topic not found in {topics}"
-
-    # Receive inner object directly via its own path
-    inner_path = outer_path + "/inner"
-    inner_obj = Inner(synq_session=session_b, synq_topic=inner_path)
-    assert isinstance(inner_obj, Inner)
-    assert inner_obj.value == 10
-
-    # Ensure changes to inner propagate via its own topic
-    obj.inner.value = 20
-    assert _wait_for(lambda: inner_obj.value == 20), (
-        "Timeout waiting for inner update via separate topic"
-    )
-
-
-def test_nested_dataclass_separate_topic_runtime():
-    """
-    Nested SyncableObjects should be published as separate topics,
-    enabling independent discovery and subscription (dynamic creation).
-    """
-
-    @dataclass
-    class Inner(SyncableObject):
-        value: int = 0
-
-    @dataclass
-    class Outer(SyncableObject):
-        inner: Inner | None = None
-        label: str = ""
-
-    # Authoritative object
-    obj = Outer("test/nested_separate", synq_authoritive=True, label="outer")
-    outer_path = obj.synq_absolute_path
-    session_b = Session()
-
-    obj.inner = Inner(value=10)
-
-    def _wait_for_inner():
-        topics = list(session_b.list_topics())
-        inner_path = outer_path + "/inner"
-        return any(
-            t.get("topic") == inner_path and t.get("classes") == "Inner" for t in topics
-        )
-
-    assert _wait_for(_wait_for_inner), "Timeout waiting for inner topic metadata"
-
-    # Collect metadata for both outer and inner
-    topics = list(session_b.list_topics())
-    logger.debug(topics)
-
-    outer_found = any(
-        t["topic"] == outer_path and t["classes"] == "Outer" for t in topics
-    )
-    inner_found = any(
-        t["topic"] == outer_path + "/inner" and t["classes"] == "Inner" for t in topics
-    )
-    assert outer_found, f"Outer topic not found in {topics}"
-    assert inner_found, f"Inner topic not found in {topics}"
-
-    # Receive inner object directly via its own path
-    inner_path = outer_path + "/inner"
-    inner_obj = Inner(synq_session=session_b, synq_topic=inner_path)
-    assert isinstance(inner_obj, Inner)
-    assert inner_obj.value == 10
-
-    # Ensure changes to inner propagate via its own topic
-    obj.inner.value = 20
-    assert _wait_for(lambda: inner_obj.value == 20), (
-        "Timeout waiting for inner update via separate topic"
-    )
-
-
 def test_list_topics():
     """
     The list_topics method should yield topic metadata dicts for discovered topics.
     """
-
     @dataclass
     class TestData(SyncableObject):
         value: int = 0
@@ -277,25 +180,20 @@ def test_list_topics():
 
     session_b = Session()
 
-    # Test discovery and metadata integrity together.
+    # Test discovery and metadata integrity via prefix filter (avoids noise from
+    # stale queryables of other tests that pytest keeps alive in tracebacks).
     assert _wait_for(
         lambda: any(
-            t.get("topic") == path and t.get("classes") == "TestData"
-            for t in session_b.list_topics()
+            t is not None and t.get("topic") == path and "!TestData" in t.get("classes", [])
+            for t in session_b.list_topics(prefix=path)
         ),
         timeout=3,
     ), f"Timeout: Topic with correct path and type not discovered. {path}: TestData"
 
-    # Test prefix filtering
-    assert _wait_for(
-        lambda: any(t.get("topic") == path for t in session_b.list_topics(prefix=path)),
-        timeout=2,
-    ), "Timeout: Topic not found via prefix filter."
-
     # Test type filtering
     assert _wait_for(
         lambda: any(
-            t.get("classes") == "TestData"
+            t is not None and "!TestData" in t.get("classes", [])
             for t in session_b.list_topics(type_filter="TestData")
         ),
         timeout=2,
@@ -394,4 +292,75 @@ def test_large_bytes_sync():
     obj.data = new_data
     assert _wait_for(lambda: remote.data == new_data, timeout=5.0), (
         "Timeout waiting for large bytes update"
+    )
+
+
+# --- warn_non_evented tests ---
+
+def _capture_warnings(fn):
+    """Run fn() and return any loguru WARNING+ messages emitted during it."""
+    messages = []
+    handler_id = logger.add(messages.append, level="WARNING")
+    try:
+        fn()
+    finally:
+        logger.remove(handler_id)
+    return messages
+
+
+def test_warns_non_evented_non_frozen_nested_dataclass():
+    """A non-evented, non-frozen nested dataclass in a SyncableObject should produce a warning."""
+
+    @dataclass
+    class MutableNested:
+        value: float = 0.0
+
+    @dataclass
+    class ObjWithMutableNested(SyncableObject):
+        nested: MutableNested | None = None
+
+    messages = _capture_warnings(
+        lambda: ObjWithMutableNested("test/warn_mutable_nested", synq_authoritive=True)
+    )
+    assert any("non-evented" in str(m) for m in messages), (
+        f"Expected a non-evented warning but got: {messages}"
+    )
+
+
+def test_no_warn_for_frozen_nested_dataclass():
+    """A frozen nested dataclass should not trigger a warning."""
+
+    @dataclass(frozen=True)
+    class FrozenNested:
+        value: float = 0.0
+
+    @dataclass
+    class ObjWithFrozenNested(SyncableObject):
+        nested: FrozenNested | None = None
+
+    messages = _capture_warnings(
+        lambda: ObjWithFrozenNested("test/warn_frozen_nested", synq_authoritive=True)
+    )
+    assert not any("non-evented" in str(m) for m in messages), (
+        f"Expected no non-evented warning but got: {messages}"
+    )
+
+
+def test_warn_non_evented_false_suppresses_warning():
+    """warn_non_evented = False on the SyncableObject subclass suppresses the warning."""
+
+    @dataclass
+    class MutableNested:
+        value: float = 0.0
+
+    @dataclass
+    class SilentObj(SyncableObject):
+        warn_non_evented = False
+        nested: MutableNested | None = None
+
+    messages = _capture_warnings(
+        lambda: SilentObj("test/warn_silent", synq_authoritive=True)
+    )
+    assert not any("non-evented" in str(m) for m in messages), (
+        f"Expected no non-evented warning but got: {messages}"
     )

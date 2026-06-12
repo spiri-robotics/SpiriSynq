@@ -121,5 +121,5 @@ def undeclare(key, queryable):
         queryable.undeclare()
     return _undeclare
 
-def remote_method(func: Callable[..., T]) -> Callable[..., T]:
+def remote_method(func: Callable[..., T]) -> RemoteMethod:
     return RemoteMethod(func)

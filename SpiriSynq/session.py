@@ -47,10 +47,20 @@ class IsolatedYAML(YAML):
         self.Representer = IsolatedRepresenter
 
     def dumps(self, data):
-        """Thread-safe string dump using fresh StringIO each call."""
+        """Serialize data to a YAML string."""
         buf = io.StringIO()
-        self.dump(data, buf)
-        #Removesuffix is dirty, but the only way I can convince it not to use explicit ends reliably.
+        # Must be set before __enter__: YAMLContextManager.__init__ captures
+        # self._output from the YAML instance.
+        self._output = buf
+        # Use the context-manager protocol instead of dump(data, stream).
+        # A failed dump (e.g. RepresenterError for an unregistered type) leaves
+        # _context_manager/_output/_emitter/_serializer in a half-finished state;
+        # on the next plain dump() call, ruamel sees _context_manager is non-None,
+        # takes the context-manager branch, and raises AttributeError because
+        # _output hasn't been re-initialised yet.  __exit__ unconditionally calls
+        # teardown_output(), which resets all of that state even when the body raises.
+        with self:
+            self.dump(data)
         return buf.getvalue().removesuffix("...\n").removesuffix("\n")
 
 
@@ -58,7 +68,7 @@ class IsolatedYAML(YAML):
 class Session:
     config: zenoh.Config = field(default_factory=zenoh.Config)
     base_topic: str = base_path
-    type_registry: YAML = field(default_factory=IsolatedYAML)
+    type_registry: IsolatedYAML = field(default_factory=IsolatedYAML)
     zenoh_session: zenoh.Session = field(init=False)
     objects: weakref.WeakValueDictionary = field(
         default_factory=weakref.WeakValueDictionary

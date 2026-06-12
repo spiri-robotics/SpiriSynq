@@ -10,14 +10,21 @@ from dataclasses import dataclass, field, fields
 from typing import ClassVar
 
 import dataclasses
+import types as _types
 import typing
-from typing import get_args, get_origin, Union
+from typing import Self, TypedDict, get_args, get_origin, Union
 from deepdiff import Delta
 
 import threading
 from contextlib import contextmanager
 from psygnal import Signal
 import weakref
+
+
+class SyncableObjectMetadata(TypedDict):
+    topic: str
+    classes: list[str]
+    authoritive_node: str
 
 
 def _unwrap_dataclass_types(annotation) -> list[type]:
@@ -27,7 +34,7 @@ def _unwrap_dataclass_types(annotation) -> list[type]:
     Pure static analysis — no instances involved.
     """
     origin = get_origin(annotation)
-    if origin is Union:
+    if origin is Union or origin is _types.UnionType:
         return [
             a
             for a in get_args(annotation)
@@ -43,6 +50,8 @@ def _collect_valid_sync_paths(
     skip: set[str],
     prefix: str = "",
     _visited: frozenset = frozenset(),
+    root_cls: type | None = None,
+    warn: bool = False,
 ) -> set[str]:
     """
     Recursively collect all valid sync paths for a dataclass class.
@@ -66,9 +75,23 @@ def _collect_valid_sync_paths(
 
         annotation = hints.get(f.name, f.type)
         for nested_cls in _unwrap_dataclass_types(annotation):
+            if warn:
+                is_frozen = getattr(getattr(nested_cls, "__dataclass_params__", None), "frozen", False)
+                is_evented = any(
+                    isinstance(c.__dict__.get("events"), SignalGroupDescriptor)
+                    for c in nested_cls.mro()
+                )
+                if not is_frozen and not is_evented:
+                    logger.warning(
+                        f"{(root_cls or cls).__name__}: field '{cls.__name__}.{f.name}' is a "
+                        f"non-evented, non-frozen dataclass ({nested_cls.__name__!r}). In-place "
+                        f"mutations to its fields won't trigger sync — replace the whole object, "
+                        f"use @dataclass(frozen=True), or add a SignalGroupDescriptor."
+                    )
             valid_paths.update(
                 _collect_valid_sync_paths(
-                    nested_cls, skip, prefix=path, _visited=_visited
+                    nested_cls, skip, prefix=path, _visited=_visited,
+                    root_cls=root_cls or cls, warn=warn,
                 )
             )
 
@@ -124,7 +147,6 @@ class SyncableObject:
     synq_auto_start: bool = True
     synq_check_receive_types = True
     synq_signal_typeerror = Signal(zenoh.Query)
-    # warn_non_evented: bool = True
     synq_skip_rehydrate = set()
     synq_skip_sync = {
         "sync_lazy_publish",
@@ -150,6 +172,7 @@ class SyncableObject:
         if self.synq_authoritive and not self.synq_base_topic:
             self.synq_base_topic = self.synq_session.base_topic
         self.synq_session.register_type_recursive(type(self))
+        type(self).valid_sync_paths()  # warm cache; emits warn_non_evented warnings once per class
         self.synq_session.objects[self.synq_absolute_path] = self
 
         if self.synq_authoritive:
@@ -225,6 +248,7 @@ class SyncableObject:
     def _zenoh_receive_changes(self, sample: zenoh.Sample):
         """Receive changes from a remote zenoh"""
         with _receiving():
+            assert self.synq_session
             # This checks that we did not publish this ourselves.
             if (
                 sample.source_info
@@ -292,7 +316,7 @@ class SyncableObject:
             )
 
             try:
-                self + delta  # applies delta in-place to self
+                self + delta  # type: ignore[operator]  # mutate=True applies delta in-place
                 logger.trace(f"applied {relative_path} = {obj}")
             except Exception as e:
                 logger.error(f"Failed to apply delta for {relative_path}: {e}")
@@ -325,7 +349,9 @@ class SyncableObject:
         return tags
 
     @remote_method
-    def sr_metadata(self):
+    def sr_metadata(self) -> SyncableObjectMetadata:
+        """Returns topic path, YAML type tags, and authoritative node ID."""
+        assert self.synq_session
         return {
             "topic": self.synq_absolute_path,
             "classes": self.synq_type_tags(),
@@ -333,8 +359,15 @@ class SyncableObject:
         }
 
     @remote_method
-    def sr_rehydrate(self):
+    def sr_rehydrate(self) -> Self:
+        """Returns the full current state of this object."""
         return self
+
+    @remote_method
+    def sr_object_schema(self) -> dict:
+        """Returns the JSON Schema for this object's syncable fields and RPC endpoints."""
+        from SpiriSynq.schema import get_schema
+        return get_schema(type(self))
 
     @classmethod
     def all_skip_rehydrate(cls) -> set:
@@ -361,7 +394,11 @@ class SyncableObject:
             if hasattr(c, "synq_skip_sync"):
                 skip.update(c.synq_skip_sync)
 
-        result = frozenset(_collect_valid_sync_paths(cls, skip))
+        warn = next(
+            (c.__dict__["warn_non_evented"] for c in cls.mro() if "warn_non_evented" in c.__dict__),
+            True,
+        )
+        result = frozenset(_collect_valid_sync_paths(cls, skip, warn=warn))
         setattr(cls, cache_attr, result)
         return result
 
@@ -372,7 +409,7 @@ class SyncableObject:
         Returns a tuple of valid types (for use with isinstance), or None if path is invalid.
         """
         cache_attr = "_synq_type_cache"
-        cache: dict[str, tuple[type, ...]] = getattr(cls, cache_attr, None)
+        cache: dict[str, tuple[type, ...] | None] | None = getattr(cls, cache_attr, None)
         if cache is None:
             cache = {}
             setattr(cls, cache_attr, cache)
@@ -453,6 +490,7 @@ class SyncableObject:
 
     def sync_dumps(self) -> str:
         """Canonical yaml representation of this object"""
+        assert self.synq_session
         return self.synq_session.type_registry.dumps(self)
 
     def __setstate__(self, state):
