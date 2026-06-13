@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 .aider*
+
+# Sphinx
+docs/_build/

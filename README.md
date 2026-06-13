@@ -36,7 +36,3 @@ All payloads are **UTF-8 YAML strings**. Keep it simple — no binary encoding r
 ```
 
 We support optionally sending data binary encoded, important for things like raw image or audio data where we don't want the overhead of a yaml binary field.
-
-# Errata
-
-You must handle all your exceptions, or the zenoh thread will will deadlock.

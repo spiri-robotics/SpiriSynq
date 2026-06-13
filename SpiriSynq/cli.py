@@ -291,6 +291,57 @@ def topic_put(
         process_document("".join(buffer))
 
 
+@topic_app.command("rpc")
+def topic_rpc(
+    prefix: str = typer.Option(None, "--prefix", "-p", help="Key prefix to search under"),
+    topic: str = typer.Argument(None, help="Specific topic path (omit to search all topics)"),
+):
+    """List all RPC endpoints across topics.
+
+    Queries sr_object_schema for each topic and extracts x-rpc-endpoints.
+    Use --prefix to narrow the search, or pass a specific topic path as an argument.
+    """
+    if topic:
+        query_topic = f"{topic}/sr_object_schema"
+    elif prefix:
+        query_topic = f"{prefix}/**/sr_object_schema"
+    else:
+        query_topic = "**/sr_object_schema"
+
+    console_err.print(f"[dim]Querying: {query_topic}[/dim]")
+
+    replies = session.zenoh_session.get(query_topic)
+
+    found = 0
+    for reply in replies:
+        if reply.ok:
+            topic_path = str(reply.ok.key_expr).removesuffix("/sr_object_schema")
+            raw = reply.ok.payload.to_bytes().decode("utf-8")
+            try:
+                schema = session.type_registry.load(raw)
+            except Exception as e:
+                console_err.print(f"[red]Failed to parse schema for {topic_path}:[/red] {e}")
+                continue
+
+            if not isinstance(schema, dict):
+                continue
+
+            rpc_endpoints = schema.get("x-rpc-endpoints", {})
+            if not rpc_endpoints:
+                continue
+
+            record = {"topic": topic_path, "endpoints": rpc_endpoints}
+            out = session.type_registry.dumps(record).strip()
+            syntax = Syntax(out, "yaml", theme="ansi_dark", background_color="default")
+            console_out.print(syntax)
+            console_out.print("---")
+            found += 1
+        else:
+            console_err.print(f"[red]Error reply:[/red] {reply.err}")
+
+    console_err.print(f"[dim]{found} topic(s) with RPC endpoints[/dim]")
+
+
 @topic_app.command("schema")
 def topic_schema(
     topic: str = typer.Argument(..., help="Topic path to retrieve schema for"),
