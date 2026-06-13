@@ -14,6 +14,7 @@ from psygnal.containers import EventedList, EventedDict
 from SpiriSynq.syncable_objects import SyncableObject
 from SpiriSynq.session import Session
 
+
 import threading
 from loguru import logger
 import sys
