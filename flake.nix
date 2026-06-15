@@ -13,10 +13,11 @@
           # fonts
           cmap cm-super lm collection-fontsrecommended
           # sphinx latex template deps
-          capt-of fancyhdr fancybox fncychap float framed geometry
-          hyperref multirow needspace oberdiek parskip
-          tabulary titlesec upquote varwidth wrapfig
-          amsmath eqparbox threeparttable mdwtools etoolbox;
+          capt-of fancyhdr fancybox fancyvrb fncychap float framed geometry
+          hyperref listings multirow needspace oberdiek parskip pict2e ellipse
+          tabulary titlesec upquote varwidth wrapfig xcolor
+          amsmath eqparbox threeparttable mdwtools etoolbox
+          collection-latexrecommended;
       };
     in
     {
