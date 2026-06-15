@@ -345,6 +345,115 @@ def test_generator_remote_method_as_async():
     assert asyncio.run(collect()) == [0, 2, 4, 6]
 
 
+def test_client_transform_applied_on_remote_call():
+    """
+    @method.client should post-process the return value on non-authoritative callers.
+    """
+    @dataclass
+    class WithClient(SyncableObject):
+        @remote_method
+        def get_value(self) -> int:
+            return 10
+
+        @get_value.client
+        def get_value(self, result: int) -> int:
+            return result * 2
+
+    obj = WithClient("test/rpc_client_basic", synq_authoritive=True)
+    session_b = Session()
+    remote = WithClient.from_topic(obj.synq_absolute_path, session=session_b)
+
+    assert remote.get_value() == 20
+
+
+def test_client_transform_not_applied_on_authoritative():
+    """
+    @method.client should NOT run when called on the authoritative object.
+    """
+    @dataclass
+    class WithClient(SyncableObject):
+        @remote_method
+        def get_value(self) -> int:
+            return 10
+
+        @get_value.client
+        def get_value(self, result: int) -> int:
+            return result * 2
+
+    obj = WithClient("test/rpc_client_authoritative", synq_authoritive=True)
+    assert obj.get_value() == 10
+
+
+def test_client_transform_receives_self():
+    """
+    The client func receives the non-authoritative instance as `self`.
+    """
+    @dataclass
+    class WithClientSelf(SyncableObject):
+        multiplier: int = 3
+
+        @remote_method
+        def get_value(self) -> int:
+            return 7
+
+        @get_value.client
+        def get_value(self, result: int) -> int:
+            return result * self.multiplier
+
+    obj = WithClientSelf("test/rpc_client_self", synq_authoritive=True, multiplier=3)
+    session_b = Session()
+    remote = WithClientSelf.from_topic(obj.synq_absolute_path, session=session_b)
+
+    assert remote.get_value() == 21
+
+
+def test_client_transform_on_generator():
+    """
+    @method.client on a generator method applies the transform per yielded item.
+    """
+    @dataclass
+    class WithClientGen(SyncableObject):
+        @remote_method
+        def numbers(self, n: int):
+            for i in range(n):
+                yield i
+            return "done"
+
+        @numbers.client
+        def numbers(self, item: int) -> str:
+            return f"item:{item}"
+
+    obj = WithClientGen("test/rpc_client_gen", synq_authoritive=True)
+    session_b = Session()
+    remote = WithClientGen.from_topic(obj.synq_absolute_path, session=session_b)
+
+    assert list(remote.numbers(3)) == ["item:0", "item:1", "item:2"]
+
+
+def test_client_transform_on_async_remote():
+    """
+    @method.client applies the transform when using .as_async on a remote call.
+    """
+    import asyncio
+
+    @dataclass
+    class WithClientAsync(SyncableObject):
+        @remote_method
+        def double(self, x: int) -> int:
+            return x * 2
+
+        @double.client
+        def double(self, result: int) -> int:
+            return result + 1
+
+    obj = WithClientAsync("test/rpc_client_async", synq_authoritive=True)
+    session_b = Session()
+    remote = WithClientAsync.from_topic(obj.synq_absolute_path, session=session_b)
+
+    result = asyncio.run(remote.double.as_async(5))
+    assert result == 11  # (5*2) + 1
+
+
 def test_timeout_chaining():
     """
     .timeout(n).sync(args) and .timeout(n).as_async(args) should work

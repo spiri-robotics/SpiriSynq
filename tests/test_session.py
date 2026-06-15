@@ -365,3 +365,51 @@ def test_warn_non_evented_false_suppresses_warning():
     assert not any("non-evented" in str(m) for m in messages), (
         f"Expected no non-evented warning but got: {messages}"
     )
+
+
+def test_synq_receive_false_blocks_updates():
+    """
+    synq_receive=False should prevent incoming changes from being applied to the mirror.
+    """
+
+    @dataclass
+    class ReceiveData(SyncableObject):
+        value: int = 0
+
+    obj = ReceiveData("test/receive_false", synq_authoritive=True, value=1)
+    session_b = Session()
+    mirror = ReceiveData.from_topic(obj.synq_absolute_path, session=session_b)
+
+    assert mirror.value == 1
+
+    mirror.synq_receive = False
+    obj.value = 99
+    time.sleep(0.1)
+
+    assert mirror.value == 1, "Mirror should not update while synq_receive=False"
+
+
+def test_synq_rehydrate():
+    """
+    synq_rehydrate() should apply the full current state from the authoritative
+    object onto a mirror that has fallen out of sync.
+    """
+
+    @dataclass
+    class RehydrateData(SyncableObject):
+        value: int = 0
+
+    obj = RehydrateData("test/rehydrate", synq_authoritive=True, value=1)
+    session_b = Session()
+    mirror = RehydrateData.from_topic(obj.synq_absolute_path, session=session_b)
+
+    assert mirror.value == 1
+
+    # Disable receive to simulate falling out of sync
+    mirror.synq_receive = False
+    obj.value = 99
+    time.sleep(0.1)  # let any in-flight messages settle
+    assert mirror.value == 1, "Mirror should not have updated while synq_receive=False"
+
+    mirror.sr_rehydrate()
+    assert mirror.value == 99

@@ -32,8 +32,8 @@ class Counter(SyncableObject):
 counter = Counter("myapp/counter", synq_authoritive=True)
 print(f"Publishing on: {counter.synq_absolute_path}")
 
-for i in range(20):
-    counter.value = i
+while True:
+    counter.value += 1
     time.sleep(1)
 ```
 
@@ -176,6 +176,58 @@ for value in mirror.count_down(from_value=5):
     print(value)
 ```
 
+Use `@method.client` to post-process the return value on the mirror side only — useful for decoding, unit conversion, or any transform you don't want to run on the server:
+
+```python
+@remote_method
+def get_reading(self) -> bytes:
+    return self._sensor.read_raw()
+
+@get_reading.client
+def get_reading(self, raw: bytes) -> float:
+    return struct.unpack("f", raw)[0]
+
+value = mirror.get_reading()  # float, decoded on the caller
+```
+
+See [Concepts — Client-side transforms](concepts.md#client-side-transforms) for full details including generator and async support.
+
 ## Cleanup
 
 Objects undeclare their Zenoh resources when garbage collected. For deterministic cleanup, call `obj.close()` explicitly.
+
+## Integrating with existing code
+
+SpiriSynq does not own the main loop. Zenoh I/O runs on its own background threads, so you can drop a `SyncableObject` into any existing application — an asyncio service, a robotics framework, a game loop — without yielding control.
+
+For a long-running producer, spin up your own thread and write to the object's fields from it.
+
+```python
+import threading
+from dataclasses import dataclass
+from SpiriSynq.syncable_objects import SyncableObject
+
+@dataclass
+class Sensor(SyncableObject):
+    reading: float = 0.0
+
+sensor = Sensor("myapp/sensor", synq_authoritive=True)
+
+def read_loop():
+    while True:
+        sensor.reading = hardware.read()
+
+threading.Thread(target=read_loop, daemon=True).start()
+
+# your existing main loop continues here uninterrupted
+```
+
+For asyncio, use `.as_async()` on remote method calls so you don't block the event loop:
+
+```python
+mirror = Sensor.from_topic("myhost/myapp/sensor")
+
+async def main():
+    result = await mirror.calibrate.as_async()
+```
+

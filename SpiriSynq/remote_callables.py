@@ -142,6 +142,21 @@ class BoundRemoteMethod:
     def timeout(self, seconds: float) -> 'BoundRemoteMethod':
         return BoundRemoteMethod(self._remote_method, self._instance, _timeout=seconds)
 
+    # --- client-side transforms ---
+
+    def _apply_client(self, result):
+        func = self._remote_method._client_func
+        if func is None:
+            return result
+        return func(self._instance, result)
+
+    def _wrap_gen_with_client(self, gen):
+        func = self._remote_method._client_func
+        if func is None:
+            return (yield from gen)
+        for item in gen:
+            yield func(self._instance, item)
+
     # --- remote dispatch (all read self._timeout directly) ---
 
     def _build_selector(self, *args, **kwargs):
@@ -189,7 +204,8 @@ class BoundRemoteMethod:
         if instance.synq_authoritive:
             return await rm._execute_local_async(instance, *args, **kwargs)
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, functools.partial(self._execute_remote, *args, **kwargs))
+        result = await loop.run_in_executor(None, functools.partial(self._execute_remote, *args, **kwargs))
+        return self._apply_client(result)
 
     async def _async_gen(self, *args, **kwargs):
         rm = self._remote_method
@@ -213,7 +229,7 @@ class BoundRemoteMethod:
                 value = await loop.run_in_executor(None, next, gen, _EXHAUSTED)
                 if value is _EXHAUSTED:
                     return
-                yield value
+                yield self._apply_client(value)
 
     # --- public interface ---
 
@@ -226,8 +242,8 @@ class BoundRemoteMethod:
             return rm._execute_local(instance, *args, **kwargs)
         assert instance.synq_session
         if rm._is_generator or rm._is_async_gen:
-            return self._remote_generator(*args, **kwargs)
-        return self._execute_remote(*args, **kwargs)
+            return self._wrap_gen_with_client(self._remote_generator(*args, **kwargs))
+        return self._apply_client(self._execute_remote(*args, **kwargs))
 
     def sync(self, *args, **kwargs):
         return self(*args, **kwargs)
@@ -249,8 +265,13 @@ class RemoteMethod:
         self._is_generator = inspect.isgeneratorfunction(wrapped)
         self._is_async_gen = inspect.isasyncgenfunction(wrapped)
         self._is_async = asyncio.iscoroutinefunction(wrapped)  # excludes async generators
+        self._client_func: Callable | None = None
         functools.update_wrapper(self, wrapped)
         self._signature = inspect.signature(wrapped)
+
+    def client(self, func: Callable) -> 'RemoteMethod':
+        self._client_func = func
+        return self
 
     @overload
     def __get__(self, instance: None, owner: type) -> 'RemoteMethod': ...

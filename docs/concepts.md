@@ -133,6 +133,54 @@ The return value of a generator method (the value passed to `StopIteration`) is 
 
 Async generators cannot carry a return value — the final reply payload is `None`.
 
+### Client-side transforms
+
+`@method.client` registers a post-processing function that runs on the mirror side after the RPC reply is received. It is never called on the authoritative side.
+
+```python
+@dataclass
+class Camera(SyncableObject):
+
+    @remote_method
+    def capture(self) -> bytes:
+        return self._device.read_frame()
+
+    @capture.client
+    def capture(self, raw: bytes) -> np.ndarray:
+        return decode_jpeg(raw)
+```
+
+The client function receives `self` (the mirror instance) and the deserialized return value, and returns the transformed result. Having access to `self` lets you use instance state in the transform — a local calibration matrix, a unit preference, etc.
+
+```python
+mirror = Camera.from_topic("robot/camera")
+frame = mirror.capture()  # returns np.ndarray on the caller, bytes never leaves the library
+```
+
+On the authoritative object, `capture()` returns `bytes` directly and the client function is not invoked.
+
+For generator methods the client function is applied **per yielded item**:
+
+```python
+@dataclass
+class Sensor(SyncableObject):
+
+    @remote_method
+    def stream(self):
+        while True:
+            yield self._read_raw()
+
+    @stream.client
+    def stream(self, raw: bytes) -> float:
+        return struct.unpack("f", raw)[0]
+
+# Mirror side — each item is already decoded
+for value in mirror.stream():
+    print(value)  # float
+```
+
+Client transforms also apply when using `.as_async()`.
+
 ### Errors
 
 If the authoritative side raises an exception, the mirror receives an `RpcException` with the error message as its string. The original traceback is logged on the authoritative side.
