@@ -60,21 +60,90 @@ When you call `SyncableObject.from_topic()` or `session.register_type_recursive(
 
 ## Remote methods
 
-`@remote_method` turns a regular method into a descriptor that behaves differently depending on whether you're on the authoritative or mirror side:
+`@remote_method` turns a regular method into a descriptor that behaves differently depending on which side you're on:
 
 - **Authoritative**: calls the method directly in the same process.
-- **Mirror**: serialises arguments to YAML, sends a Zenoh query to `<topic>/<method_name>`, and deserialises the reply.
+- **Mirror**: serialises arguments to YAML query parameters, sends a Zenoh `get` to `<topic>/<method_name>`, and deserialises the reply.
 
-This is transparent to the caller. The same `robot.arm()` call works whether `robot` is authoritative or a mirror.
+The call is transparent — `mirror.reset()` works identically whether the instance is authoritative or a mirror. The `Counter` from [Getting Started](getting_started.md) already shows this pattern:
 
-**Generators** — if the decorated function is a generator, the mirror receives a Python generator that yields values as each Zenoh reply arrives. Zenoh consolidation is disabled for these calls so no intermediate values are dropped.
+```python
+@dataclass
+class Counter(SyncableObject):
+    value: int = 0
 
-**Async** — `@remote_method` works on `async def` functions and async generators. Use `.as_async()` on the bound method to get an awaitable or async generator on the mirror side.
+    @remote_method
+    def reset(self, to: int = 0) -> int:
+        self.value = to
+        return self.value
+```
 
-**Timeouts** — use `.timeout(seconds)` to get a bound method with a custom timeout:
+```python
+mirror = Counter.from_topic("myhost/myapp/counter")
+result = mirror.reset(to=0)  # routed to the authoritative process
+```
+
+### Sync vs async
+
+`@remote_method` works on regular, `async def`, generator, and async generator functions. The method signature drives the behaviour on both sides:
+
+| Function type | Authoritative side | Mirror side (sync call) | Mirror side (`.as_async()`) |
+|---|---|---|---|
+| `def f()` | called directly | blocks until reply | `await`able coroutine |
+| `async def f()` | awaited in a new event loop | blocks until reply | `await`able coroutine |
+| `def f()` with `yield` | called directly, returns generator | returns generator; blocks per `next()` | async generator |
+| `async def f()` with `yield` | iterated in a new event loop | returns generator; blocks per `next()` | async generator |
+
+On the authoritative side, `async def` methods are always run to completion synchronously (via `asyncio.run`) when called from a sync context. On the mirror side, the Zenoh round-trip is always blocking by default — use `.as_async()` to avoid blocking an event loop.
+
+```python
+# Sync call — blocks until the authoritative node replies
+result = mirror.reset(to=0)
+
+# Async call — awaitable, doesn't block the event loop
+result = await mirror.reset.as_async(to=0)
+```
+
+### Generator methods
+
+If the decorated function uses `yield`, the mirror receives a regular Python generator that streams values as each Zenoh reply arrives. Zenoh consolidation is disabled for these calls so no intermediate values are dropped.
+
+```python
+@dataclass
+class Counter(SyncableObject):
+    value: int = 0
+
+    @remote_method
+    def count_down(self, from_value: int = 10):
+        for i in range(from_value, -1, -1):
+            self.value = i
+            yield i
+        return "done"
+
+# Mirror side — iterates as replies arrive
+for value in mirror.count_down(from_value=5):
+    print(value)
+
+# Or async
+async for value in mirror.count_down.as_async(from_value=5):
+    print(value)
+```
+
+The return value of a generator method (the value passed to `StopIteration`) is transmitted as the final reply and is accessible as the `StopIteration` value if you iterate manually with `next()`.
+
+Async generators cannot carry a return value — the final reply payload is `None`.
+
+### Errors
+
+If the authoritative side raises an exception, the mirror receives an `RpcException` with the error message as its string. The original traceback is logged on the authoritative side.
+
+### Timeouts
+
+`.timeout(seconds)` returns a bound method with a custom timeout. The default is the Zenoh session default.
 
 ```python
 result = robot.arm.timeout(5.0)(mode="manual")
+await robot.arm.timeout(5.0).as_async(mode="manual")
 ```
 
 ## Lifecycle and garbage collection
@@ -82,6 +151,19 @@ result = robot.arm.timeout(5.0)(mode="manual")
 Zenoh resources (publishers, subscribers, queryables) are tied to the `SyncableObject` instance. When the object is garbage collected, `__del__` calls `close()` to undeclare them. SpiriSynq uses weak references for internal callbacks so that objects are not kept alive by their own Zenoh subscriptions.
 
 The `Session` object is similarly cleaned up on GC, and is also registered with a shutdown hook so that Zenoh's non-daemon threads don't prevent interpreter exit.
+
+## Publish and receive flags
+
+Four boolean fields on `SyncableObject` control whether an instance participates in the pub/sub exchange:
+
+| Field | Default | Effect |
+|---|---|---|
+| `synq_publish` | `True` | Publish local field changes to Zenoh. Set to `False` for a receive-only instance. |
+| `synq_receive` | `True` | Apply incoming changes from Zenoh. Set to `False` for a publish-only instance. |
+| `sync_lazy_publish` | `False` | Skip publishing when there are no active subscribers. Reduces network traffic at the cost of subscribers that join late potentially missing updates. |
+| `synq_auto_start` | `True` | Call `sync()` automatically in `__post_init__`. Set to `False` if you need to finish configuring the object before it begins synchronising. |
+
+`synq_check_receive_types` (default `True`) validates that incoming values match the field's type annotation before applying them. A mismatch logs a warning and discards the update. Disable it only if you are deliberately receiving subtypes or loosely-typed values.
 
 ## Multiple sessions
 

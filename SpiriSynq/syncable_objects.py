@@ -141,11 +141,21 @@ class SyncableObject:
     synq_session: Session | None = field(default_factory=current_session.get)
     synq_authoritive: bool = False  # Whether we're the "owner" of the object, or
     # a mirror.
-    sync_lazy_publish: bool = False  # Only publish if there are subscribers
+    sync_lazy_publish: bool = False
+    """Only publish changes if there are active subscribers on the zenoh network.
+    Useful for reducing unnecessary network traffic when no one is listening."""
     synq_publish: bool = True
+    """Whether this object should publish its changes to zenoh. Set to False to
+    make this object receive-only."""
     synq_receive: bool = True
+    """Whether this object should apply incoming changes from zenoh. Set to False
+    to make this object publish-only."""
     synq_auto_start: bool = True
+    """Automatically call sync() in __post_init__. Set to False if you need to
+    configure the object before starting synchronization."""
     synq_check_receive_types = True
+    """Validate that received values match the expected type annotation before
+    applying them. Logs a warning and skips the update on type mismatch."""
     synq_signal_typeerror = Signal(zenoh.Query)
     synq_skip_rehydrate = set()
     synq_skip_sync = {
