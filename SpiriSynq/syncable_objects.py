@@ -381,7 +381,7 @@ class SyncableObject:
         return self
 
     @sr_rehydrate.client(raw=True)
-    def sr_rehydrate(self, payload: str) -> Self:
+    def sr_rehydrate_client(self, reply) -> Self:
         cls = self.__class__
         skip: set[str] = set()
         for c in cls.mro():
@@ -398,7 +398,8 @@ class SyncableObject:
         plain_yaml.constructor.add_multi_constructor(
             '', lambda loader, _tag, node: loader.construct_mapping(node, deep=True)
         )
-        updated = plain_yaml.load(payload)
+        assert reply.ok, f"RPC error: {reply.err.payload.to_string()}"
+        updated = plain_yaml.load(reply.ok.payload.to_string())
 
         current = {f: getattr(self, f) for f in to_sync}
         diff = DeepDiff(current, updated, include_paths=to_sync)

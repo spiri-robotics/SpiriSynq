@@ -198,9 +198,9 @@ class BoundRemoteMethod:
                 ).recv()
                 if reply.err:
                     raise RpcException(reply.err.payload.to_string())
-                raw = reply.ok.payload.to_string()
                 if self._remote_method._client_func_raw:
-                    return raw
+                    return reply
+                raw = reply.ok.payload.to_string()
                 return self._instance.synq_session.type_registry.load(raw)
             except RpcException:
                 raise
