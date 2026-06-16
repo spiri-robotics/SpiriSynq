@@ -77,6 +77,15 @@ def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[Syncable
             return
 
         logger.trace(f"RPC called {query.key_expr}?{query.parameters}")
+
+        if instance._server_func is not None:
+            try:
+                instance._server_func(parent, query)
+            except Exception as e:
+                query.reply_err(f"RPC error '{e}'")
+                logger.error(f"Local RPC error '{e}'")
+            return
+
         registry = parent.synq_session.type_registry
         params = {k: registry.load(v) for k, v in dict(query.parameters).items()}
         try:
@@ -295,6 +304,7 @@ class RemoteMethod:
         self._is_async = asyncio.iscoroutinefunction(wrapped)  # excludes async generators
         self._client_func: Callable | None = None
         self._client_func_raw: bool = False
+        self._server_func: Callable | None = None
         functools.update_wrapper(self, wrapped)
         self._signature = inspect.signature(wrapped)
 
@@ -302,6 +312,12 @@ class RemoteMethod:
         def _register(f: Callable) -> 'RemoteMethod':
             self._client_func = f
             self._client_func_raw = raw
+            return self
+        return _register
+
+    def server(self) -> Callable:
+        def _register(f: Callable) -> 'RemoteMethod':
+            self._server_func = f
             return self
         return _register
 

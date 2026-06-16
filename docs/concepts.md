@@ -205,6 +205,41 @@ class Robot(SyncableObject):
 
 This is useful when the return type is a `SyncableObject` subclass and you want to avoid the full deserialisation cost (which would otherwise start a new Zenoh session), or when you need to apply the result to `self` in-place rather than returning a new object.
 
+### Server-side transforms
+
+`@method.server()` registers a function that intercepts the raw Zenoh query before the default dispatch logic runs. It receives `self` (the authoritative instance) and the raw `zenoh.Query` object, and is fully responsible for calling the underlying method, encoding the result, and sending the reply.
+
+```python
+import zenoh
+
+@dataclass
+class Robot(SyncableObject):
+
+    @remote_method()
+    def move(self, x: float, y: float) -> bool:
+        return self._actuator.go(x, y)
+
+    @move.server()
+    def move(self, query: zenoh.Query):
+        registry = self.synq_session.type_registry
+        params = {k: registry.load(v) for k, v in dict(query.parameters).items()}
+        if not self._auth.check(params.get("token")):
+            query.reply_err("Unauthorized")
+            return
+        result = self.move.__wrapped__(self, **{k: v for k, v in params.items() if k != "token"})
+        query.reply(query.key_expr, payload=registry.dumps(result), encoding=zenoh.Encoding.APPLICATION_YAML)
+```
+
+The server function is **only** invoked by the Zenoh callback — direct local calls on an authoritative instance skip it entirely and call the original method directly. This keeps local usage fast and unaffected.
+
+Common uses:
+
+- **Authentication / authorisation** — inspect query parameters or payload before dispatching.
+- **Custom encoding** — accept or return binary payloads that the default YAML path cannot handle.
+- **Streaming from external sources** — send multiple replies (e.g. from a hardware buffer) without requiring a generator on the Python side.
+
+If the server function raises an exception, SpiriSynq catches it and calls `query.reply_err()` automatically, matching the behaviour of the default path.
+
 ### Errors
 
 If the authoritative side raises an exception, the mirror receives an `RpcException` with the error message as its string. The original traceback is logged on the authoritative side.
