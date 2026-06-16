@@ -141,7 +141,7 @@ class SyncableObject:
     synq_session: Session | None = field(default_factory=current_session.get)
     synq_authoritive: bool = False  # Whether we're the "owner" of the object, or
     # a mirror.
-    sync_lazy_publish: bool = False
+    synq_lazy_publish: bool = False
     """Only publish changes if there are active subscribers on the zenoh network.
     Useful for reducing unnecessary network traffic when no one is listening."""
     synq_publish: bool = True
@@ -232,7 +232,7 @@ class SyncableObject:
             return
         if not self.synq_publish:
             return
-        if self.sync_lazy_publish and (not self.synq_publisher or not self.synq_publisher.matching_status):
+        if self.synq_lazy_publish and (not self.synq_publisher or not self.synq_publisher.matching_status):
             logger.trace(f"{self} not matching subscribers, not publishing")
             return
 
