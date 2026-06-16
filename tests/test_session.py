@@ -267,7 +267,7 @@ def test_raw_bytes_field():
     assert _wait_for(lambda: len(received) > 0), "No sample received"
     sub.undeclare()
 
-    assert received[0].encoding == zenoh.Encoding.APPLICATION_OCTET_STREAM
+    assert received[0].encoding == zenoh.Encoding.ZENOH_BYTES
     assert received[0].payload.to_bytes() == b"hello\x00world"
 
     # Verify the decode path: a mirror on session_b receives and applies the bytes correctly.

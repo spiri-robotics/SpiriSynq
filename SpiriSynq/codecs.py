@@ -47,10 +47,10 @@ class BytesCodec(Codec):
     """
 
     python_type = bytes
-    zenoh_schema = zenoh.Encoding.APPLICATION_OCTET_STREAM
+    zenoh_schema = zenoh.Encoding.ZENOH_BYTES
 
     def encode(self, value: bytes) -> tuple[bytes, zenoh.Encoding]:
-        return value, zenoh.Encoding.APPLICATION_OCTET_STREAM
+        return value, zenoh.Encoding.ZENOH_BYTES
 
     def decode(self, sample: zenoh.Sample) -> bytes:
         return sample.payload.to_bytes()

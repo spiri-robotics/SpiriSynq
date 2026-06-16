@@ -75,7 +75,7 @@ def topic_watch(
 
     def decode_payload(sample) -> tuple[str, bool]:
         """Return (raw_string, is_binary) for a sample's payload."""
-        if sample.encoding == zenoh.Encoding.APPLICATION_OCTET_STREAM:
+        if sample.encoding == zenoh.Encoding.ZENOH_BYTES:
             b64 = base64.b64encode(sample.payload.to_bytes()).decode("ascii")
             return f"!!binary {b64}", True
         return sample.payload.to_bytes().decode("utf-8").strip(), False
