@@ -1,5 +1,5 @@
 from SpiriSynq.remote_callables import RemoteMethod, remote_method
-from SpiriSynq.session import Session, current_session
+from SpiriSynq.session import Session, IsolatedYAML, current_session
 
 import zenoh
 from loguru import logger
@@ -13,7 +13,7 @@ import dataclasses
 import types as _types
 import typing
 from typing import Self, TypedDict, get_args, get_origin, Union
-from deepdiff import Delta
+from deepdiff import DeepDiff, Delta
 
 import threading
 from contextlib import contextmanager
@@ -358,7 +358,7 @@ class SyncableObject:
         tags.sort()
         return tags
 
-    @remote_method
+    @remote_method()
     def sr_metadata(self) -> SyncableObjectMetadata:
         """Returns topic path, YAML type tags, and authoritative node ID."""
         assert self.synq_session
@@ -368,12 +368,50 @@ class SyncableObject:
             "authoritive_node": str(self.synq_session.zenoh_session.zid()),
         }
 
-    @remote_method
+    @remote_method()
     def sr_rehydrate(self) -> Self:
         """Returns the full current state of this object."""
         return self
 
-    @remote_method
+    @sr_rehydrate.client(raw=True)
+    def sr_rehydrate(self, payload: str) -> Self:
+        cls = self.__class__
+        skip: set[str] = set()
+        for c in cls.mro():
+            if hasattr(c, "synq_skip_sync"):
+                skip.update(c.synq_skip_sync)
+            if hasattr(c, "synq_skip_rehydrate"):
+                skip.update(c.synq_skip_rehydrate)
+        syncable = {p for p in cls.valid_sync_paths() if "/" not in p}
+        to_sync = list(syncable - skip)
+
+        # Deserialize as a plain dict — catch-all multi-constructor ignores
+        # the YAML tag and returns a mapping, avoiding a new zenoh session.
+        plain_yaml = IsolatedYAML()
+        plain_yaml.constructor.add_multi_constructor(
+            '', lambda loader, _tag, node: loader.construct_mapping(node, deep=True)
+        )
+        updated = plain_yaml.load(payload)
+
+        current = {f: getattr(self, f) for f in to_sync}
+        diff = DeepDiff(current, updated, include_paths=to_sync)
+        if not diff:
+            return self
+
+        delta = Delta(diff, mutate=True, raise_errors=True)
+        current + delta  # type: ignore[operator]
+
+        for f in to_sync:
+            new_v = current[f]
+            if new_v != getattr(self, f):
+                self + Delta(  # type: ignore[operator]
+                    flat_dict_list=[{"path": f"root.{f}", "action": "values_changed", "value": new_v}],
+                    mutate=True,
+                    raise_errors=True,
+                )
+        return self
+
+    @remote_method()
     def sr_object_schema(self) -> dict:
         """Returns the JSON Schema for this object's syncable fields and RPC endpoints."""
         from SpiriSynq.schema import get_schema
@@ -381,11 +419,11 @@ class SyncableObject:
 
     @classmethod
     def all_skip_rehydrate(cls) -> set:
-        """Returns skip rehyrdate on this and all parent classes merged"""
+        """Returns synq_skip_rehydrate on this and all parent classes merged"""
         result = set()
         for c in cls.mro():
-            if hasattr(c, "skip_rehydrate"):
-                result.update(c.skip_rehydrate)
+            if hasattr(c, "synq_skip_rehydrate"):
+                result.update(c.synq_skip_rehydrate)
         return result
 
     @classmethod
@@ -476,10 +514,7 @@ class SyncableObject:
 
     @classmethod
     def to_yaml(cls, representer, data):
-        skip = set(cls.all_skip_rehydrate())
-        for c in cls.mro():
-            if hasattr(c, "synq_skip_rehydrate"):
-                skip.update(c.synq_skip_rehydrate)
+        skip = cls.all_skip_rehydrate()
         # Reuse valid_sync_paths to get the top-level field names to serialize
         # (only direct fields, not nested paths)
         syncable = {p for p in cls.valid_sync_paths() if "/" not in p}

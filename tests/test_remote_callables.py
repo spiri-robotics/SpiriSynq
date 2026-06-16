@@ -38,7 +38,7 @@ def test_remote_method_basic_call():
     """
     @dataclass
     class WithRpc(SyncableObject):
-        @remote_method
+        @remote_method()
         def hello(self, name: str) -> str:
             return f"hello {name}"
 
@@ -59,7 +59,7 @@ def test_remote_method_authoritative_executes_locally():
 
     @dataclass
     class TrackingRpc(SyncableObject):
-        @remote_method
+        @remote_method()
         def increment(self) -> int:
             call_count["n"] += 1
             return call_count["n"]
@@ -79,7 +79,7 @@ def test_remote_method_side_effects():
     class WithMutableRpc(SyncableObject):
         value: int = 0
 
-        @remote_method
+        @remote_method()
         def set_value(self, new_value: int) -> None:
             self.value = new_value
 
@@ -99,7 +99,7 @@ def test_remote_method_exception_propagation():
     """
     @dataclass
     class WithCrash(SyncableObject):
-        @remote_method
+        @remote_method()
         def crash(self) -> None:
             raise ValueError("intentional crash")
 
@@ -157,7 +157,7 @@ def test_builtin_sr_object_schema():
     class SchemaTest(SyncableObject):
         speed: float = 0.0
 
-        @remote_method
+        @remote_method()
         def set_speed(self, new_speed: float) -> None:
             self.speed = new_speed
 
@@ -179,7 +179,7 @@ def test_async_remote_method_sync_call():
     """
     @dataclass
     class WithAsync(SyncableObject):
-        @remote_method
+        @remote_method()
         async def greet(self, name: str) -> str:
             return f"async hello {name}"
 
@@ -195,7 +195,7 @@ def test_async_remote_method_over_network():
     """
     @dataclass
     class WithAsyncRpc(SyncableObject):
-        @remote_method
+        @remote_method()
         async def compute(self, x: int) -> int:
             return x * 2
 
@@ -216,7 +216,7 @@ def test_as_async_on_sync_method():
 
     @dataclass
     class WithSyncRpc(SyncableObject):
-        @remote_method
+        @remote_method()
         def double(self, x: int) -> int:
             return x * 2
 
@@ -234,7 +234,7 @@ def test_as_async_on_async_method():
 
     @dataclass
     class WithAsyncMethod(SyncableObject):
-        @remote_method
+        @remote_method()
         async def triple(self, x: int) -> int:
             return x * 3
 
@@ -252,7 +252,7 @@ def test_as_async_remote_call():
 
     @dataclass
     class WithRemoteAsync(SyncableObject):
-        @remote_method
+        @remote_method()
         def add(self, a: int, b: int) -> int:
             return a + b
 
@@ -271,7 +271,7 @@ def test_generator_remote_method_local():
     """
     @dataclass
     class WithGen(SyncableObject):
-        @remote_method
+        @remote_method()
         def count(self, n: int):
             for i in range(n):
                 yield i
@@ -298,7 +298,7 @@ def test_generator_remote_method_over_network():
     """
     @dataclass
     class WithGenRpc(SyncableObject):
-        @remote_method
+        @remote_method()
         def squares(self, n: int):
             for i in range(n):
                 yield i * i
@@ -328,7 +328,7 @@ def test_generator_remote_method_as_async():
     """
     @dataclass
     class WithGenAsync(SyncableObject):
-        @remote_method
+        @remote_method()
         def evens(self, n: int):
             for i in range(n):
                 yield i * 2
@@ -351,11 +351,11 @@ def test_client_transform_applied_on_remote_call():
     """
     @dataclass
     class WithClient(SyncableObject):
-        @remote_method
+        @remote_method()
         def get_value(self) -> int:
             return 10
 
-        @get_value.client
+        @get_value.client()
         def get_value(self, result: int) -> int:
             return result * 2
 
@@ -372,11 +372,11 @@ def test_client_transform_not_applied_on_authoritative():
     """
     @dataclass
     class WithClient(SyncableObject):
-        @remote_method
+        @remote_method()
         def get_value(self) -> int:
             return 10
 
-        @get_value.client
+        @get_value.client()
         def get_value(self, result: int) -> int:
             return result * 2
 
@@ -392,11 +392,11 @@ def test_client_transform_receives_self():
     class WithClientSelf(SyncableObject):
         multiplier: int = 3
 
-        @remote_method
+        @remote_method()
         def get_value(self) -> int:
             return 7
 
-        @get_value.client
+        @get_value.client()
         def get_value(self, result: int) -> int:
             return result * self.multiplier
 
@@ -413,13 +413,13 @@ def test_client_transform_on_generator():
     """
     @dataclass
     class WithClientGen(SyncableObject):
-        @remote_method
+        @remote_method()
         def numbers(self, n: int):
             for i in range(n):
                 yield i
             return "done"
 
-        @numbers.client
+        @numbers.client()
         def numbers(self, item: int) -> str:
             return f"item:{item}"
 
@@ -438,11 +438,11 @@ def test_client_transform_on_async_remote():
 
     @dataclass
     class WithClientAsync(SyncableObject):
-        @remote_method
+        @remote_method()
         def double(self, x: int) -> int:
             return x * 2
 
-        @double.client
+        @double.client()
         def double(self, result: int) -> int:
             return result + 1
 
@@ -461,7 +461,7 @@ def test_timeout_chaining():
     """
     @dataclass
     class WithTimeout(SyncableObject):
-        @remote_method
+        @remote_method()
         def echo(self, x: int) -> int:
             return x
 

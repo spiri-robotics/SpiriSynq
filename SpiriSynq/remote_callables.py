@@ -181,7 +181,10 @@ class BoundRemoteMethod:
         ).recv()
         if reply.err:
             raise RpcException(reply.err.payload.to_string())
-        return self._instance.synq_session.type_registry.load(reply.ok.payload.to_string())
+        raw = reply.ok.payload.to_string()
+        if self._remote_method._client_func_raw:
+            return raw
+        return self._instance.synq_session.type_registry.load(raw)
 
     def _remote_generator(self, *args, **kwargs):
         selector = self._build_selector(*args, **kwargs)
@@ -266,12 +269,16 @@ class RemoteMethod:
         self._is_async_gen = inspect.isasyncgenfunction(wrapped)
         self._is_async = asyncio.iscoroutinefunction(wrapped)  # excludes async generators
         self._client_func: Callable | None = None
+        self._client_func_raw: bool = False
         functools.update_wrapper(self, wrapped)
         self._signature = inspect.signature(wrapped)
 
-    def client(self, func: Callable) -> 'RemoteMethod':
-        self._client_func = func
-        return self
+    def client(self, *, raw: bool = False) -> Callable:
+        def _register(f: Callable) -> 'RemoteMethod':
+            self._client_func = f
+            self._client_func_raw = raw
+            return self
+        return _register
 
     @overload
     def __get__(self, instance: None, owner: type) -> 'RemoteMethod': ...
@@ -317,5 +324,7 @@ def undeclare(key, queryable):
         queryable.undeclare()
     return _undeclare
 
-def remote_method(func: Callable[..., T]) -> RemoteMethod:
-    return RemoteMethod(func)
+def remote_method() -> Callable[[Callable[..., T]], RemoteMethod]:
+    def _decorator(func: Callable[..., T]) -> RemoteMethod:
+        return RemoteMethod(func)
+    return _decorator

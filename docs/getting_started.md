@@ -24,7 +24,7 @@ from SpiriSynq.remote_callables import remote_method
 class Counter(SyncableObject):
     value: int = 0
 
-    @remote_method
+    @remote_method()
     def reset(self, to: int = 0) -> int:
         self.value = to
         return self.value
@@ -76,7 +76,7 @@ from SpiriSynq.remote_callables import remote_method
 class Counter(SyncableObject):
     value: int = 0
 
-    @remote_method
+    @remote_method()
     def reset(self, to: int = 0) -> int:
         self.value = to
         return self.value
@@ -93,7 +93,14 @@ Counter reset, value is now 0
 
 The call is routed to the authoritative process over Zenoh and the return value is sent back. The `counter.py` script will also receive the field update and continue incrementing from 0.
 
-> **Note:** There is no CLI command to invoke RPCs yet — you need a small Python script as shown above.
+You can also call RPCs directly from the CLI without writing a script:
+
+```
+$ python -m SpiriSynq.cli topic call myhost/myapp/counter/reset to=0
+0
+```
+
+Arguments are passed as `key=value` pairs where values are YAML literals (`to=0` sends an integer, `name=world` sends a string, `flag=true` sends a boolean).
 
 To see all objects currently on the network:
 
@@ -166,7 +173,7 @@ print(result)  # 0
 Generator methods are also supported — the caller receives a regular Python generator that streams values from the authoritative node:
 
 ```python
-@remote_method
+@remote_method()
 def count_down(self, from_value: int = 10):
     for i in range(from_value, -1, -1):
         self.value = i
@@ -176,16 +183,29 @@ for value in mirror.count_down(from_value=5):
     print(value)
 ```
 
-Use `@method.client` to post-process the return value on the mirror side only — useful for decoding, unit conversion, or any transform you don't want to run on the server:
+Generator methods also work from the CLI — each yielded value is printed separated by `---`:
+
+```
+$ python -m SpiriSynq.cli topic call myhost/myapp/counter/count_down from_value=3
+3
+---
+2
+---
+1
+---
+0
+```
+
+Use `@method.client()` to post-process the return value on the mirror side only — useful for decoding, unit conversion, or any transform you don't want to run on the server:
 
 ```python
-@remote_method
+@remote_method()
 def get_reading(self) -> bytes:
     return self._sensor.read_raw()
 
-@get_reading.client
-def get_reading(self, raw: bytes) -> float:
-    return struct.unpack("f", raw)[0]
+@get_reading.client()
+def get_reading(self, result: bytes) -> float:
+    return struct.unpack("f", result)[0]
 
 value = mirror.get_reading()  # float, decoded on the caller
 ```

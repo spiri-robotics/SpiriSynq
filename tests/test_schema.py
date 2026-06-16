@@ -147,12 +147,12 @@ def test_syncable_object_rpc_endpoint():
     class WithRpc(SyncableObject):
         value: int = 0
 
-        @remote_method
+        @remote_method()
         def set_value(self, new_value: int) -> None:
             """Set the value."""
             self.value = new_value
 
-        @remote_method
+        @remote_method()
         def get_value(self) -> int:
             """Return the value."""
             return self.value

@@ -196,48 +196,62 @@ class Session:
                     f"Error reply in list_topics: {reply.err.payload.to_string()}"
                 )
 
-    def register_type_recursive(self, cls: type) -> None:  # cls: type[SyncableObject]
-        """Register *cls* and all dataclass types needed to construct it.
+    def register_type_recursive(self, cls: type) -> None:
+        """Register *cls* and every type reachable from its field annotations.
 
-        SpiriSynq uses YAML tags (``!ClassName``) to round-trip typed objects.
-        A type must be registered before its tag can be deserialised. This method
-        walks the full annotation tree of *cls* transitively and registers every
-        dataclass it encounters — including plain frozen dataclasses used as field
-        values — so you only need to call it on the root type.
-
-        *cls* must be a ``SyncableObject`` subclass.
+        Walks all type hints transitively. For each type:
+        - Already representable (via MRO against the YAML representer) → skip.
+        - Otherwise → assign a yaml_tag if missing, call register_class, then
+          verify it took. Raises TypeError if a type cannot be registered so
+          the problem surfaces at sync() time rather than at first serialisation.
         """
-        visited = set()
+        visited: set[type] = set()
+
+        def _is_representable(t: type) -> bool:
+            rep = self.type_registry.representer
+            return any(mro_t in rep.yaml_representers for mro_t in t.__mro__)
 
         def _register(t: type) -> None:
-            if t in visited:
+            if not isinstance(t, type) or t in visited:
                 return
             visited.add(t)
-            if not hasattr(t, "__dataclass_fields__"):
-                return
-            # Register this class if not already
-            if not self.is_class_registered(t):
-                self.type_registry.register_class(t)
+
+            if not _is_representable(t):
                 if not hasattr(t, "yaml_tag"):
                     t.yaml_tag = f"!{t.__name__}"
-            # Process its fields
+                self.type_registry.register_class(t)
+                if not _is_representable(t):
+                    raise TypeError(
+                        f"{t.__qualname__!r} cannot be YAML-serialized. "
+                        f"Add to_yaml / from_yaml class methods or register a "
+                        f"custom representer/constructor before calling sync()."
+                    )
+
             try:
                 hints = get_type_hints(t)
             except Exception:
                 hints = {}
-            skip = t.all_skip_rehydrate() if hasattr(t, "all_skip_rehydrate") else set()
+
+            skip: set[str] = set()
+            for c in getattr(t, "__mro__", [t]):
+                for attr in ("synq_skip_sync", "synq_skip_rehydrate"):
+                    if attr in c.__dict__:
+                        skip.update(c.__dict__[attr])
+
             for field_name, hint in hints.items():
                 if field_name in skip:
                     continue
-                origin = get_origin(hint)
-                if origin is None:
-                    # simple type
-                    _register(hint)
-                else:
-                    # generic type, process each argument
-                    for arg in get_args(hint):
-                        if isinstance(arg, type):
-                            _register(arg)
+                _register_annotation(hint)
+
+        def _register_annotation(annotation) -> None:
+            origin = get_origin(annotation)
+            if origin is None:
+                if isinstance(annotation, type):
+                    _register(annotation)
+            else:
+                for arg in get_args(annotation):
+                    if isinstance(arg, type):
+                        _register(arg)
 
         _register(cls)
 

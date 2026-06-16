@@ -342,6 +342,66 @@ def topic_rpc(
     console_err.print(f"[dim]{found} topic(s) with RPC endpoints[/dim]")
 
 
+@topic_app.command("call")
+def topic_call(
+    topic: str = typer.Argument(..., help="Full RPC path including method name (e.g. my/topic/method_name)"),
+    kwargs: list[str] = typer.Argument(default=None, help="Arguments as key=value pairs (values parsed as YAML)"),
+    timeout: float = typer.Option(None, "--timeout", "-t", help="Timeout in seconds"),
+):
+    """Call an RPC endpoint and display the result.
+
+    Arguments are passed as key=value pairs where values are interpreted as YAML literals.
+    Generator endpoints stream each yielded value separated by ---.
+
+    Examples:
+
+        synq topic call my/robot/move_to x=1.0 y=2.0
+
+        synq topic call my/sensor/read_frames count=10
+    """
+    import zenoh as _zenoh
+    from SpiriSynq.remote_callables import GENERATOR_DONE_ENCODING
+
+    parsed_kwargs = {}
+    for kv in (kwargs or []):
+        if "=" not in kv:
+            console_err.print(f"[red]Error: argument '{kv}' must be in key=value format[/red]")
+            raise typer.Exit(1)
+        k, v = kv.split("=", 1)
+        parsed_kwargs[k] = v
+
+    selector = _zenoh.Selector(topic, _zenoh.Parameters(parsed_kwargs))
+    console_err.print(f"[dim]Calling: {selector}[/dim]")
+
+    get_kwargs: dict = dict(consolidation=_zenoh.QueryConsolidation(_zenoh.ConsolidationMode.NONE))
+    if timeout is not None:
+        get_kwargs["timeout"] = timeout
+
+    item_count = 0
+    for reply in session.zenoh_session.get(selector, **get_kwargs):
+        if reply.err:
+            console_err.print(f"[red]RPC error:[/red] {reply.err.payload.to_string()}")
+            raise typer.Exit(1)
+
+        raw = reply.ok.payload.to_string().strip()
+
+        if reply.ok.encoding == GENERATOR_DONE_ENCODING:
+            if raw and raw not in ("null", "~"):
+                if item_count > 0:
+                    console_out.print("---")
+                syntax = Syntax(raw, "yaml", theme="ansi_dark", background_color="default")
+                console_out.print(syntax)
+            break
+
+        if item_count > 0:
+            console_out.print("---")
+        syntax = Syntax(raw, "yaml", theme="ansi_dark", background_color="default")
+        console_out.print(syntax)
+        item_count += 1
+
+    console_err.print(f"[dim]done[/dim]")
+
+
 @topic_app.command("schema")
 def topic_schema(
     topic: str = typer.Argument(..., help="Topic path to retrieve schema for"),

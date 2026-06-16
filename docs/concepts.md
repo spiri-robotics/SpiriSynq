@@ -72,7 +72,7 @@ The call is transparent — `mirror.reset()` works identically whether the insta
 class Counter(SyncableObject):
     value: int = 0
 
-    @remote_method
+    @remote_method()
     def reset(self, to: int = 0) -> int:
         self.value = to
         return self.value
@@ -113,7 +113,7 @@ If the decorated function uses `yield`, the mirror receives a regular Python gen
 class Counter(SyncableObject):
     value: int = 0
 
-    @remote_method
+    @remote_method()
     def count_down(self, from_value: int = 10):
         for i in range(from_value, -1, -1):
             self.value = i
@@ -135,19 +135,19 @@ Async generators cannot carry a return value — the final reply payload is `Non
 
 ### Client-side transforms
 
-`@method.client` registers a post-processing function that runs on the mirror side after the RPC reply is received. It is never called on the authoritative side.
+`@method.client()` registers a post-processing function that runs on the mirror side after the RPC reply is received. It is never called on the authoritative side.
 
 ```python
 @dataclass
 class Camera(SyncableObject):
 
-    @remote_method
+    @remote_method()
     def capture(self) -> bytes:
         return self._device.read_frame()
 
-    @capture.client
-    def capture(self, raw: bytes) -> np.ndarray:
-        return decode_jpeg(raw)
+    @capture.client()
+    def capture(self, result: bytes) -> np.ndarray:
+        return decode_jpeg(result)
 ```
 
 The client function receives `self` (the mirror instance) and the deserialized return value, and returns the transformed result. Having access to `self` lets you use instance state in the transform — a local calibration matrix, a unit preference, etc.
@@ -165,14 +165,14 @@ For generator methods the client function is applied **per yielded item**:
 @dataclass
 class Sensor(SyncableObject):
 
-    @remote_method
+    @remote_method()
     def stream(self):
         while True:
             yield self._read_raw()
 
-    @stream.client
-    def stream(self, raw: bytes) -> float:
-        return struct.unpack("f", raw)[0]
+    @stream.client()
+    def stream(self, item: bytes) -> float:
+        return struct.unpack("f", item)[0]
 
 # Mirror side — each item is already decoded
 for value in mirror.stream():
@@ -180,6 +180,30 @@ for value in mirror.stream():
 ```
 
 Client transforms also apply when using `.as_async()`.
+
+#### raw=True — take the YAML payload directly
+
+Pass `raw=True` to skip deserialization entirely and receive the raw YAML string instead. The client function is then responsible for parsing it however it needs to.
+
+```python
+@dataclass
+class Robot(SyncableObject):
+
+    @remote_method()
+    def get_state(self) -> Self:
+        return self
+
+    @get_state.client(raw=True)
+    def get_state(self, payload: str) -> dict:
+        from ruamel.yaml import YAML
+        plain = YAML()
+        plain.constructor.add_multi_constructor(
+            '', lambda loader, _tag, node: loader.construct_mapping(node, deep=True)
+        )
+        return plain.load(payload)
+```
+
+This is useful when the return type is a `SyncableObject` subclass and you want to avoid the full deserialisation cost (which would otherwise start a new Zenoh session), or when you need to apply the result to `self` in-place rather than returning a new object.
 
 ### Errors
 
