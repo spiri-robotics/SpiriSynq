@@ -241,18 +241,26 @@ class SyncableObject:
 
         if not event_path in self.valid_sync_paths():
             return
-        enc_data = self.synq_session.type_registry.dumps(event.args[0])  # type: str
 
-        enc_data = enc_data.removesuffix("\n...")
-        logger.trace(
-            f"publishing yaml {self.synq_absolute_path}/{event_path} = {enc_data}"
-        )
-        self.synq_session.zenoh_session.put(
-            f"{self.synq_absolute_path}/{event_path}",
-            enc_data,
-            source_info=self.synq_session.source_info(event_path),
-            encoding=zenoh.Encoding.APPLICATION_YAML,
-        )
+        value = event.args[0]
+        full_path = f"{self.synq_absolute_path}/{event_path}"
+        source_info = self.synq_session.source_info(event_path)
+
+        codec = self.synq_session._encoder_for(value)
+        if codec:
+            payload, encoding = codec.encode(value)
+            logger.trace(f"publishing (codec) {full_path} = {type(value).__name__}")
+            self.synq_session.zenoh_session.put(
+                full_path, payload, source_info=source_info, encoding=encoding,
+            )
+        else:
+            enc_data = self.synq_session.type_registry.dumps(value)
+            enc_data = enc_data.removesuffix("\n...")
+            logger.trace(f"publishing yaml {full_path} = {enc_data}")
+            self.synq_session.zenoh_session.put(
+                full_path, enc_data, source_info=source_info,
+                encoding=zenoh.Encoding.APPLICATION_YAML,
+            )
 
     @logger.catch()
     def _zenoh_receive_changes(self, sample: zenoh.Sample):
@@ -290,17 +298,16 @@ class SyncableObject:
                     f"Path {self.synq_absolute_path} -- {relative_path} not a valid path {self.valid_sync_paths()} "
                 )
                 return
-            payload = sample.payload.to_string()
-            logger.trace(f"received {self.synq_absolute_path} = {payload}")
-            # if payload.startswith("!"):
-            #     logger.warning(f"Rich object decoding not yet available for {payload}")
+            codec = self.synq_session._decoder_for(sample.encoding)
+            if codec:
+                obj = codec.decode(sample)
+                logger.trace(f"received (codec) {self.synq_absolute_path}/{relative_path}")
+            else:
+                payload = sample.payload.to_string()
+                logger.trace(f"received {self.synq_absolute_path} = {payload}")
+                obj = self.synq_session.type_registry.load(payload)
 
-            obj = self.synq_session.type_registry.load(payload)
-
-            # Checks that the type we've received matches the received type. This could still break on subclasses, like if we have foo=None
-            # but we receive foo.bar=value, and foo: None|Bar
-            # ToDo: Auto initial rehydrate requests if this happens, with exponentioal fallback, to notice when we've de-synced and resync
-            if self.synq_check_receive_types and not self.valid_sync_type(
+            if not codec and self.synq_check_receive_types and not self.valid_sync_type(
                 relative_path, obj
             ):
                 logger.warning(

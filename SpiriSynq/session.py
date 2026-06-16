@@ -6,9 +6,10 @@ from ruamel.yaml.constructor import SafeConstructor
 from ruamel.yaml.representer import SafeRepresenter
 from deepdiff import DeepDiff, Delta
 from dataclasses import dataclass, field
-from typing import get_type_hints, get_origin, get_args, Any
+from typing import get_type_hints, get_origin, get_args
 from SpiriSynq.remote_callables import rpc_call
 from SpiriSynq.shutdown import register_session
+from SpiriSynq.codecs import Codec, BUILTIN_CODECS
 from loguru import logger
 import weakref
 from contextvars import ContextVar
@@ -111,6 +112,8 @@ class Session:
     )
     """Weak map of ``absolute_path → SyncableObject`` for all live objects on this session."""
     _sequince_number_for_path: dict[str,int] = field(default_factory=lambda: defaultdict(lambda:0))
+    _codecs: list = field(default_factory=list, repr=False)
+    """Custom codecs registered via :meth:`register_codec`."""
 
     @contextmanager
     def as_default(self: "Session"):
@@ -255,6 +258,45 @@ class Session:
 
         _register(cls)
 
+    def register_codec(self, codec: "Codec") -> None:
+        """Register a custom :class:`Codec` on this session.
+
+        The encoder is selected by matching ``codec.python_type`` against the
+        Python type of the value being published (MRO walk, most-specific first).
+        The decoder is selected by matching ``codec.zenoh_schema`` against the
+        encoding reported by an incoming zenoh sample.
+
+        Example::
+
+            import numpy as np
+            import zenoh
+            from SpiriSynq.session import Codec, current_session
+
+            session = current_session.get()
+            session.register_codec(Codec(
+                python_type=np.ndarray,
+                zenoh_schema=zenoh.Encoding("image/jpeg"),
+                encoder=lambda arr: (encode_jpeg(arr), zenoh.Encoding("image/jpeg")),
+                decoder=lambda sample: decode_jpeg(sample.payload.to_bytes()),
+            ))
+        """
+        self._codecs.append(codec)
+
+    def _encoder_for(self, value) -> "Codec | None":
+        """Return the first registered codec whose python_type matches type(value) via MRO."""
+        for mro_type in type(value).__mro__:
+            for codec in self._codecs:
+                if codec.python_type is mro_type:
+                    return codec
+        return None
+
+    def _decoder_for(self, encoding) -> "Codec | None":
+        """Return the first registered codec whose zenoh_schema matches *encoding*."""
+        for codec in self._codecs:
+            if codec.zenoh_schema == encoding:
+                return codec
+        return None
+
     def source_info(self, path:str):
         #We keep track of per path sequince numbers.
         source_info = zenoh.SourceInfo(
@@ -274,6 +316,7 @@ class Session:
         self.close()
 
     def __post_init__(self):
+        self._codecs.extend(BUILTIN_CODECS)
         self.zenoh_session = zenoh.open(self.config)
         logger.info(f"Started zenoh session {self.zenoh_session.zid()}")
 

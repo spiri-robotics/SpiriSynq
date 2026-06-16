@@ -72,8 +72,7 @@ def test_concurrent_field_writes():
 
     assert not errors, f"Exceptions during concurrent writes: {errors}"
 
-    last_tid = WRITERS - 1
-    last_i = WRITES_PER_THREAD - 1
-    assert _wait_for(lambda: mirror.counter == last_tid * 1000 + last_i, timeout=3.0), (
-        f"Mirror did not converge: counter={mirror.counter}"
+    final_counter = auth.counter
+    assert _wait_for(lambda: mirror.counter == auth.counter, timeout=3.0), (
+        f"Mirror did not converge: mirror.counter={mirror.counter}, auth.counter={auth.counter} (final snapshot: {final_counter})"
     )

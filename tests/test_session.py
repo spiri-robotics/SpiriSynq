@@ -247,25 +247,34 @@ def test_evented_container_synchronization():
 
 def test_raw_bytes_field():
     """
-    Raw bytes fields are transmitted as binary payloads (APPLICATION_OCTET_STREAM)
-    without YAML serialization overhead, useful for large binary data.
+    bytes fields are published as APPLICATION_OCTET_STREAM (raw), not YAML.
     """
+    import zenoh
 
     @dataclass
     class WithBytes(SyncableObject):
         data: bytes = b""
 
+    received: list[zenoh.Sample] = []
     session_b = Session()
+    sub = session_b.zenoh_session.declare_subscriber(
+        "**", lambda s: received.append(s)
+    )
 
-    obj = WithBytes("test/bytes", synq_authoritive=True, data=b"hello\x00world")
+    obj = WithBytes("test/bytes", synq_authoritive=True)
+    obj.data = b"hello\x00world"
+
+    assert _wait_for(lambda: len(received) > 0), "No sample received"
+    sub.undeclare()
+
+    assert received[0].encoding == zenoh.Encoding.APPLICATION_OCTET_STREAM
+    assert received[0].payload.to_bytes() == b"hello\x00world"
+
+    # Verify the decode path: a mirror on session_b receives and applies the bytes correctly.
     remote = WithBytes(synq_session=session_b, synq_topic=obj.synq_absolute_path)
-
-    assert remote.data == b"hello\x00world"
-
-    # Update bytes
-    obj.data = b"updated"
-    assert _wait_for(lambda: remote.data == b"updated"), (
-        "Timeout waiting for bytes update"
+    obj.data = b"updated\x00bytes"
+    assert _wait_for(lambda: remote.data == b"updated\x00bytes"), (
+        "Timeout waiting for decoded bytes update"
     )
 
 

@@ -237,6 +237,75 @@ Four boolean fields on `SyncableObject` control whether an instance participates
 
 `synq_check_receive_types` (default `True`) validates that incoming values match the field's type annotation before applying them. A mismatch logs a warning and discards the update. Disable it only if you are deliberately receiving subtypes or loosely-typed values.
 
+## Codecs
+
+By default, SpiriSynq serialises every field value as YAML before putting it on the Zenoh network. For most types this is fine, but for binary data — images, audio, raw sensor buffers — YAML base64-encodes the bytes, adding roughly 33 % size overhead and a full YAML parse on receive.
+
+Codecs let you register a custom serialiser/deserialiser pair on a `Session` for a specific Python type. When a codec is registered, it takes over from YAML for that type in both directions.
+
+### How codec selection works
+
+- **Encoding (publish)**: when a field value is about to be put to Zenoh, SpiriSynq walks the value's MRO and picks the first registered codec whose `python_type` matches. If none matches, it falls back to YAML.
+- **Decoding (receive)**: when a sample arrives, SpiriSynq checks the sample's Zenoh encoding against each registered codec's `zenoh_schema`. If one matches, that codec's `decode` method is called instead of the YAML parser.
+
+This means the encoding carried in the Zenoh message is the unambiguous signal for which decoder to use — no out-of-band negotiation required.
+
+### Built-in codecs
+
+`BytesCodec` is registered on every `Session` by default. It transmits `bytes` fields as raw `APPLICATION_OCTET_STREAM` payloads, bypassing YAML entirely:
+
+```python
+@dataclass
+class Camera(SyncableObject):
+    frame: bytes = b""  # published as raw binary, not base64 YAML
+```
+
+No configuration is needed — any `bytes`-typed field is automatically handled.
+
+### Writing a custom codec
+
+Subclass `Codec`, set `python_type` and `zenoh_schema` as class attributes, and implement `encode` and `decode`:
+
+```python
+import numpy as np
+import zenoh
+from SpiriSynq.codecs import Codec
+
+class JpegCodec(Codec):
+    python_type = np.ndarray
+    zenoh_schema = zenoh.Encoding.IMAGE_JPEG
+
+    def encode(self, value: np.ndarray) -> tuple[bytes, zenoh.Encoding]:
+        ok, buf = cv2.imencode(".jpg", value)
+        return buf.tobytes(), zenoh.Encoding.IMAGE_JPEG
+
+    def decode(self, sample: zenoh.Sample) -> np.ndarray:
+        buf = np.frombuffer(sample.payload.to_bytes(), dtype=np.uint8)
+        return cv2.imdecode(buf, cv2.IMREAD_COLOR)
+```
+
+Then register it on the session before any objects are created:
+
+```python
+from SpiriSynq.session import Session
+
+session = Session()
+session.register_codec(JpegCodec())
+
+@dataclass
+class Camera(SyncableObject):
+    frame: np.ndarray | None = None  # encoded as JPEG, decoded back to ndarray
+```
+
+Codecs are checked in registration order; the first match wins. Built-in codecs are prepended, so user-registered codecs take priority over them.
+
+### What codecs do not cover
+
+Codecs apply only to the field pub/sub path. They do not affect:
+
+- **RPC parameters and replies** — `@remote_method` arguments and return values are always YAML-serialised.
+- **`sr_rehydrate`** — the full-state snapshot uses YAML. If a `bytes` field should be excluded from rehydration snapshots (e.g. a large image), add it to `synq_skip_rehydrate`.
+
 ## Multiple sessions
 
 Most applications use the default session created at import time and never touch `Session` directly. If you need to connect to multiple Zenoh networks in one process, you can create additional `Session` instances and pass them via `synq_session=`, or use `session.as_default()` as a context manager to set the default for a block of code.

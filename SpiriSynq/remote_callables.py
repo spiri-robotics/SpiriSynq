@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+import time
 import zenoh
 from typing import TYPE_CHECKING, Dict, Any, Callable, TypeVar, overload
 import inspect
@@ -23,7 +24,7 @@ GENERATOR_DONE_ENCODING = zenoh.Encoding("x-spirisynq/generator-done")
 _EXHAUSTED = object()
 
 
-def rpc_call(topic: str, session: 'Session', kwargs: Dict[str, Any] | None = None):
+def rpc_call(topic: str, session: 'Session', kwargs: Dict[str, Any] | None = None, retries: int = 3):
     if not kwargs:
         kwargs = {}
     yaml = session.type_registry
@@ -32,17 +33,26 @@ def rpc_call(topic: str, session: 'Session', kwargs: Dict[str, Any] | None = Non
         params = zenoh.Parameters(kwargs)
         selector = zenoh.Selector(topic, params)
         logger.trace(f"Calling {selector}")
-        try:
-            reply = z_session.get(selector).recv()
-            if not reply.ok:
-                assert reply.err, "RPC reply not OK and remote didn't return an error message"
-                raise RpcException(reply.err.payload.to_string())
-            if reply.ok.encoding == zenoh.Encoding.APPLICATION_YAML:
-                return yaml.load(reply.ok.payload.to_string())
-            raise RpcException(f"Not yaml encoded: {reply.ok.encoding} {reply}")
-        except Exception as e:
-            logger.error(f"Error making remote call on {selector}: {e}")
-            raise e
+        last_exc: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                reply = z_session.get(selector).recv()
+                if not reply.ok:
+                    assert reply.err, "RPC reply not OK and remote didn't return an error message"
+                    raise RpcException(reply.err.payload.to_string())
+                if reply.ok.encoding == zenoh.Encoding.APPLICATION_YAML:
+                    return yaml.load(reply.ok.payload.to_string())
+                raise RpcException(f"Not yaml encoded: {reply.ok.encoding} {reply}")
+            except RpcException:
+                raise
+            except Exception as e:
+                last_exc = e
+                if attempt < retries:
+                    logger.warning(f"RPC attempt {attempt + 1} failed on {selector}: {e}, retrying...")
+                    time.sleep(0.1)
+                else:
+                    logger.error(f"Error making remote call on {selector}: {e}")
+        raise last_exc  # type: ignore[misc]
 
 T = TypeVar('T')
 
@@ -133,14 +143,18 @@ def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[Syncable
 class BoundRemoteMethod:
     """A RemoteMethod bound to a specific instance, exposing both sync and async interfaces."""
 
-    def __init__(self, remote_method: 'RemoteMethod', instance: Any, *, _timeout: float | None = None):
+    def __init__(self, remote_method: 'RemoteMethod', instance: Any, *, _timeout: float | None = None, _retries: int = 3):
         self._remote_method = remote_method
         self._instance = instance
         self._timeout = _timeout
+        self._retries = _retries
         functools.update_wrapper(self, remote_method._wrapped)
 
     def timeout(self, seconds: float) -> 'BoundRemoteMethod':
-        return BoundRemoteMethod(self._remote_method, self._instance, _timeout=seconds)
+        return BoundRemoteMethod(self._remote_method, self._instance, _timeout=seconds, _retries=self._retries)
+
+    def retries(self, n: int) -> 'BoundRemoteMethod':
+        return BoundRemoteMethod(self._remote_method, self._instance, _timeout=self._timeout, _retries=n)
 
     # --- client-side transforms ---
 
@@ -176,15 +190,26 @@ class BoundRemoteMethod:
 
     def _execute_remote(self, *args, **kwargs):
         selector = self._build_selector(*args, **kwargs)
-        reply = self._instance.synq_session.zenoh_session.get(
-            selector, timeout=self._timeout
-        ).recv()
-        if reply.err:
-            raise RpcException(reply.err.payload.to_string())
-        raw = reply.ok.payload.to_string()
-        if self._remote_method._client_func_raw:
-            return raw
-        return self._instance.synq_session.type_registry.load(raw)
+        last_exc: Exception | None = None
+        for attempt in range(self._retries + 1):
+            try:
+                reply = self._instance.synq_session.zenoh_session.get(
+                    selector, timeout=self._timeout
+                ).recv()
+                if reply.err:
+                    raise RpcException(reply.err.payload.to_string())
+                raw = reply.ok.payload.to_string()
+                if self._remote_method._client_func_raw:
+                    return raw
+                return self._instance.synq_session.type_registry.load(raw)
+            except RpcException:
+                raise
+            except Exception as e:
+                last_exc = e
+                if attempt < self._retries:
+                    logger.warning(f"RPC attempt {attempt + 1} failed on {selector}: {e}, retrying...")
+                    time.sleep(0.1)
+        raise last_exc  # type: ignore[misc]
 
     def _remote_generator(self, *args, **kwargs):
         selector = self._build_selector(*args, **kwargs)
