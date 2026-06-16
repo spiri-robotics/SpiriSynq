@@ -251,3 +251,65 @@ async def main():
     result = await mirror.calibrate.as_async()
 ```
 
+## Reacting to field changes
+
+Instead of polling, connect a callback to the field's signal. The callback runs on Zenoh's background I/O thread whenever a change arrives — whether it came from the network or from a local assignment.
+
+```python
+from dataclasses import dataclass
+from SpiriSynq.syncable_objects import SyncableObject
+
+@dataclass
+class Sensor(SyncableObject):
+    reading: float = 0.0
+
+mirror = Sensor.from_topic("myhost/myapp/sensor")
+
+def on_reading(value: float):
+    print(f"reading changed to {value}")
+
+mirror.events.reading.connect(on_reading)
+```
+
+To react to **any** field change on a single object, connect to the group signal. The callback receives a psygnal `EmissionInfo` that carries the field name and the new value:
+
+```python
+from psygnal import EmissionInfo
+
+def on_any_change(event: EmissionInfo):
+    field = event.path[0].attr
+    value = event.args[0]
+    print(f"{field} changed to {value}")
+
+mirror.events.connect(on_any_change)
+```
+
+To stop receiving notifications, call `disconnect` with the same callable:
+
+```python
+mirror.events.reading.disconnect(on_reading)
+```
+
+### Asyncio integration
+
+Callbacks run on the Zenoh background thread, not the asyncio event loop. To hand off to asyncio safely, use a `Queue` or `run_coroutine_threadsafe`:
+
+```python
+import asyncio
+
+async def main():
+    mirror = Sensor.from_topic("myhost/myapp/sensor")
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[float] = asyncio.Queue()
+
+    mirror.events.reading.connect(
+        lambda value: loop.call_soon_threadsafe(queue.put_nowait, value)
+    )
+
+    while True:
+        value = await queue.get()
+        print(f"reading: {value}")
+```
+
+`call_soon_threadsafe` is the correct bridge — it schedules the `put_nowait` on the event loop from the Zenoh thread without blocking it. Keep signal callbacks short and non-blocking; hand heavy work off to the event loop or a worker thread.
+

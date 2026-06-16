@@ -363,7 +363,7 @@ class SyncableObject:
     def _zenoh_receive_changes(self, sample: zenoh.Sample):
         """Receive changes from a remote zenoh"""
         with _receiving():
-            assert self.synq_session
+            assert self.synq_session, "No Session"
             # This checks that we did not publish this ourselves.
             if (
                 sample.source_info
@@ -379,8 +379,6 @@ class SyncableObject:
             if not sample.payload:
                 logger.warning(f"Update payload not ok")
                 return
-
-            assert self.synq_session, "No session"
 
             if not str(sample.key_expr).startswith(self.synq_absolute_path + "/"):
                 logger.error(
