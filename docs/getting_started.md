@@ -251,7 +251,7 @@ async def main():
     result = await mirror.calibrate.as_async()
 ```
 
-## Reacting to field changes
+### Reacting to field changes
 
 Instead of polling, connect a callback to the field's signal. The callback runs on Zenoh's background I/O thread whenever a change arrives — whether it came from the network or from a local assignment.
 
@@ -290,7 +290,7 @@ To stop receiving notifications, call `disconnect` with the same callable:
 mirror.events.reading.disconnect(on_reading)
 ```
 
-### Asyncio integration
+#### Asyncio integration
 
 Callbacks run on the Zenoh background thread, not the asyncio event loop. To hand off to asyncio safely, use a `Queue` or `run_coroutine_threadsafe`:
 
@@ -312,4 +312,41 @@ async def main():
 ```
 
 `call_soon_threadsafe` is the correct bridge — it schedules the `put_nowait` on the event loop from the Zenoh thread without blocking it. Keep signal callbacks short and non-blocking; hand heavy work off to the event loop or a worker thread.
+
+### Handling bad or unexpected data
+
+Three signals fire when an incoming update can't be applied cleanly. Connecting to them lets you log diagnostics, trigger recovery logic, or surface errors to a monitoring system.
+
+**`synq_signal_unknown_path`** — the incoming path isn't a field on this class at all. This usually means a publisher is sending a field that doesn't exist on the receiver's schema version. The second argument is the raw `zenoh.Sample` (not decoded).
+
+```python
+def on_unknown(path: str, sample):
+    print(f"received unknown field '{path}' — value ignored")
+
+mirror.synq_signal_unknown_path.connect(on_unknown)
+```
+
+**`synq_signal_type_mismatch`** — the path is valid but the decoded value's type doesn't match the field annotation. Fires when `synq_check_receive_types = True` (the default). Both arguments are the relative path and the decoded object.
+
+```python
+def on_type_mismatch(path: str, obj):
+    print(f"wrong type at '{path}': got {type(obj).__name__}")
+
+mirror.synq_signal_type_mismatch.connect(on_type_mismatch)
+```
+
+**`synq_signal_missing_parent`** — the path and type are both valid, but an intermediate nested object is `None`. For example, a publisher sends `bar/value` while this instance has `bar = None`, so the value can't be applied. Both arguments are the relative path and the decoded object.
+
+```python
+@dataclass
+class Robot(SyncableObject):
+    arm: Arm | None = None  # if this is None, arm/position updates will emit this signal
+
+def on_missing_parent(path: str, obj):
+    print(f"can't apply '{path}': parent is None — consider initialising the field first")
+
+mirror.synq_signal_missing_parent.connect(on_missing_parent)
+```
+
+All three signals fire on the Zenoh background thread, so the same asyncio bridging rules apply as above.
 

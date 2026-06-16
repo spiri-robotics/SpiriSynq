@@ -16,6 +16,7 @@ from typing import Self, TypedDict, get_args, get_origin, Union
 from deepdiff import DeepDiff, Delta
 
 import threading
+import time
 from contextlib import contextmanager
 from psygnal import Signal
 import weakref
@@ -215,23 +216,38 @@ class SyncableObject:
     synq_auto_start: bool = True
     """Automatically call sync() in __post_init__. Set to False if you need to
     configure the object before starting synchronization."""
-    synq_check_receive_types = True
+    synq_check_receive_types: bool = True
     """Validate that received values match the expected type annotation before
     applying them. Logs a warning and skips the update on type mismatch."""
-    synq_signal_typeerror = Signal(zenoh.Query)
+    synq_auto_rehydrate_on_missing_parent_timeout: float = 5.0
+    """Seconds between automatic sr_rehydrate calls triggered by missing-parent
+    updates. Set to -1 to disable."""
+    synq_signal_unknown_path = Signal(str, object)
+    """Emitted when a received update targets a path not in valid_sync_paths().
+    Args: (relative_path, zenoh.Sample) — object is not decoded since the path is unknown."""
+    synq_signal_type_mismatch = Signal(str, object)
+    """Emitted when a received value's type doesn't match the field annotation.
+    Args: (relative_path, decoded_obj)"""
+    synq_signal_missing_parent = Signal(str, object)
+    """Emitted when a nested path is valid but an intermediate object is None
+    (e.g. path is 'bar/value' but self.bar is None).
+    Args: (relative_path, decoded_obj)"""
     synq_skip_rehydrate = set()
     synq_skip_sync = {
-        "sync_lazy_publish",
+        "synq_lazy_publish",
         "synq_authoritive",
         "synq_session",
         "synq_publish",
         "synq_receive",
         "synq_auto_start",
         "synq_check_receive_types",
+        "synq_auto_rehydrate_on_missing_parent_timeout",
         "_synq_callbacks",
+        "_synq_last_rehydrate_time",
     }
 
     _synq_callbacks: dict = field(default_factory=dict)
+    _synq_last_rehydrate_time: float = field(default=0.0)
 
     def __post_init__(self):
         if self.synq_auto_start:
@@ -392,6 +408,7 @@ class SyncableObject:
                 logger.warning(
                     f"Path {self.synq_absolute_path} -- {relative_path} not a valid path {self.valid_sync_paths()} "
                 )
+                self.synq_signal_unknown_path.emit(relative_path, sample)
                 return
             codec = self.synq_session._decoder_for(sample.encoding)
             if codec:
@@ -408,8 +425,29 @@ class SyncableObject:
                 logger.warning(
                     f"obj `{obj}` of type {type(obj)} at {sample.key_expr} is not of type {self._resolve_sync_type(relative_path)}"
                 )
-
+                self.synq_signal_type_mismatch.emit(relative_path, obj)
                 return
+
+            # Check for None parents before attempting delta application.
+            # e.g. path "bar/value" is valid but self.bar is None.
+            if "/" in relative_path:
+                cursor = self
+                for seg in relative_path.split("/")[:-1]:
+                    cursor = getattr(cursor, seg, None)
+                    if cursor is None:
+                        logger.debug(
+                            f"Null parent at '{seg}' for path {relative_path} on {self.synq_absolute_path}"
+                        )
+                        self.synq_signal_missing_parent.emit(relative_path, obj)
+                        timeout = self.synq_auto_rehydrate_on_missing_parent_timeout
+                        if timeout >= 0:
+                            now = time.monotonic()
+                            if now - self._synq_last_rehydrate_time >= timeout:
+                                self._synq_last_rehydrate_time = now
+                                threading.Thread(
+                                    target=self.sr_rehydrate, daemon=True
+                                ).start()
+                        return
 
             # Evented containers: update in-place so existing event hooks stay connected.
             if "/" not in relative_path:
