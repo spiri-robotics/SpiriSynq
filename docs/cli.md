@@ -41,6 +41,7 @@ Options:
 - `--json / -j` — emit NDJSON instead of YAML
 - `--timestamp / -t` — include the Zenoh message timestamp
 - `--received-timestamp / -rt` — include the local receive time (default: on)
+- `--count / -n` — exit after receiving N messages (default: 0 = unlimited); useful for scripting or waiting for a topic to appear
 
 Records are separated by `---` when metadata fields are present, making the output valid multi-document YAML and compatible with `topic put`.
 

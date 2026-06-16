@@ -253,6 +253,109 @@ def test_zenoh_scout_exits_zero():
     assert result.exit_code == 0
 
 
+# ── bytes field / codec path ──────────────────────────────────────────────────
+# bytes fields bypass YAML serialisation and are published as ZENOH_BYTES via
+# BytesCodec (registered on every Session by default).  These tests verify that
+# the CLI commands handle objects that carry bytes fields without crashing and
+# that the round-trip through the codec system is intact.
+
+def test_topic_schema_with_bytes_field():
+    """topic schema exits zero for an object whose field type is bytes."""
+    @dataclass
+    class CliBytesSchemaObj(SyncableObject):
+        data: bytes = b""
+
+    obj = CliBytesSchemaObj("cli_test/bytes_schema_obj", synq_authoritive=True)
+    time.sleep(0.1)
+
+    result = runner.invoke(app, ["topic", "schema", obj.synq_absolute_path])
+    assert result.exit_code == 0
+
+
+def test_topic_rehydrate_with_bytes_field():
+    """topic rehydrate exits zero for an object with non-empty bytes content.
+
+    The bytes value is YAML-serialised as !!binary on the rehydrate path; this
+    test ensures the CLI can emit that without crashing.
+    """
+    @dataclass
+    class CliBytesRehydrateObj(SyncableObject):
+        data: bytes = b""
+
+    obj = CliBytesRehydrateObj(
+        "cli_test/bytes_rehydrate_obj",
+        synq_authoritive=True,
+        data=b"\x00\x01\x02\xff",
+    )
+    time.sleep(0.1)
+
+    result = runner.invoke(app, ["topic", "rehydrate", obj.synq_absolute_path])
+    assert result.exit_code == 0
+
+
+def test_topic_watch_count_exits_after_n_messages():
+    """--count N causes topic watch to exit after receiving N messages."""
+    import threading
+
+    @dataclass
+    class CliWatchCountObj(SyncableObject):
+        value: int = 0
+
+    obj = CliWatchCountObj("cli_test/watch_count_obj", synq_authoritive=True, value=0)
+    time.sleep(0.1)
+
+    result_holder = []
+
+    def run_watch():
+        result_holder.append(runner.invoke(
+            app,
+            ["topic", "watch", f"{obj.synq_absolute_path}/**", "--count", "1",
+             "--no-received-timestamp"],
+        ))
+
+    t = threading.Thread(target=run_watch, daemon=True)
+    t.start()
+    time.sleep(0.2)
+
+    obj.value = 42
+
+    t.join(timeout=5.0)
+    assert not t.is_alive(), "topic watch did not exit after --count 1"
+    assert result_holder[0].exit_code == 0
+
+
+def test_topic_watch_bytes_field_decoded_as_binary():
+    """topic watch emits !!binary YAML for ZENOH_BYTES-encoded fields (codec path).
+
+    bytes fields bypass YAML serialisation and are published via BytesCodec as
+    ZENOH_BYTES encoding.  topic watch must detect that encoding and emit the
+    value as a base64 !!binary scalar rather than attempting a UTF-8 decode.
+    """
+    import subprocess
+    import sys
+
+    @dataclass
+    class CliByteWatchObj(SyncableObject):
+        data: bytes = b""
+
+    obj = CliByteWatchObj("cli_test/bytes_watch_obj", synq_authoritive=True, data=b"")
+    time.sleep(0.1)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "SpiriSynq.cli", "topic", "watch",
+         f"{obj.synq_absolute_path}/data", "--count", "1", "--no-received-timestamp"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    time.sleep(0.5)
+    obj.data = b"\xde\xad\xbe\xef"
+
+    stdout, _ = proc.communicate(timeout=5.0)
+    assert proc.returncode == 0
+    assert b"!!binary" in stdout
+
+
 # ── meta type_schema ──────────────────────────────────────────────────────────
 
 def test_meta_type_schema_all_exits_zero():

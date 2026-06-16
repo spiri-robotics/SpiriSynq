@@ -59,10 +59,12 @@ def topic_watch(
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as NDJSON (value kept as raw string)"),
     show_timestamp: bool = typer.Option(False, "--timestamp/--no-timestamp", "-t/-T", help="Include Zenoh message timestamp in output"),
     show_received_timestamp: bool = typer.Option(True, "--received-timestamp/--no-received-timestamp", "-rt/-RT", help="Include when we received the message"),
+    count: int = typer.Option(0, "--count", "-n", help="Exit after receiving N messages (0 = unlimited)"),
 ):
     """Watch a topic for incoming messages as a newline-delimited YAML or JSON stream."""
     import time
     import json
+    import threading
     from datetime import datetime, timezone
 
     # Default to showing paths when using wildcards, since the key helps identify which topic fired
@@ -131,6 +133,9 @@ def topic_watch(
 
     # --- Subscriber callback ---
 
+    done = threading.Event()
+    received = [0]
+
     def on_sample(sample):
         key = str(sample.key_expr)
         raw, is_binary = decode_payload(sample)
@@ -141,13 +146,21 @@ def topic_watch(
         else:
             emit_yaml(meta, raw, is_binary)
 
+        if count:
+            received[0] += 1
+            if received[0] >= count:
+                done.set()
+
     # --- Main loop ---
 
     subscriber = session.zenoh_session.declare_subscriber(topic, on_sample)
 
     try:
-        while True:
-            time.sleep(0.1)
+        if count:
+            done.wait()
+        else:
+            while True:
+                time.sleep(0.1)
     except KeyboardInterrupt:
         console_err.print("\n[dim]Stopped.[/dim]")
     finally:
