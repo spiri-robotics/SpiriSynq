@@ -32,7 +32,7 @@ Requires Python 3.13+. A Zenoh router is optional for local use — peers discov
 
 Each syncable field maps to a Zenoh key expression `<topic>/<field>`. When a field changes, psygnal fires a signal, SpiriSynq serialises the new value to YAML, and publishes it. All subscribers on the same topic receive the update and apply it in-place without echo-looping it back.
 
-Nested dataclass fields sync at the sub-field level: a change to `robot.gps.latitude` publishes to `<topic>/gps/latitude`, not `<topic>/gps`.
+Nested dataclass fields sync at the sub-field level: a change to `robot.gps.latitude` publishes to `<topic>/gps/latitude`, not `<topic>/gps`. Inherit from `SubSyncableDataclass` to make a nested type fully evented without Zenoh overhead; alternatively, use `@dataclass(frozen=True)` for immutable value objects that are replaced atomically.
 
 ## Authoritative vs mirror
 

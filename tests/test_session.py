@@ -5,13 +5,10 @@ These tests simulate real-world usage patterns with two communicating sessions.
 
 import time
 from dataclasses import dataclass, field
-from typing import ClassVar
-
 import pytest
-from psygnal import SignalGroupDescriptor
-from psygnal.containers import EventedList, EventedDict
+from psygnal.containers import EventedList, EventedDict, EventedSet
 
-from SpiriSynq.syncable_objects import SyncableObject
+from SpiriSynq.syncable_objects import SyncableObject, SubSyncableDataclass
 from SpiriSynq.session import Session
 
 
@@ -89,15 +86,14 @@ def test_basic_field_synchronization():
     assert _wait_for(lambda: obj.name == "updated"), "Timeout waiting for name update"
 
 
-def test_nested_dataclass_synchronization():
+def test_sub_syncable_nested_dataclass_synchronization():
     """
-    Nested SyncableObjects should propagate changes across the network,
-    enabling hierarchical data models.
+    A SubSyncableDataclass field syncs correctly when set from the start,
+    and individual sub-field mutations propagate without replacing the whole object.
     """
 
     @dataclass
-    class Inner:
-        events: ClassVar[SignalGroupDescriptor] = SignalGroupDescriptor()
+    class Inner(SubSyncableDataclass):
         value: int = 0
 
     @dataclass
@@ -105,65 +101,101 @@ def test_nested_dataclass_synchronization():
         inner: Inner | None = None
         label: str = ""
 
-    # Authoritative object
     obj = Outer(
-        "test/nested", synq_authoritive=True, inner=Inner(value=10), label="outer"
+        "test/sub_nested", synq_authoritive=True, inner=Inner(value=10), label="outer"
     )
     session_b = Session()
-    remote = Outer(synq_session=session_b, synq_topic=obj.synq_absolute_path)
+    remote = Outer.from_topic(obj.synq_absolute_path, session=session_b)
 
+    assert remote.inner is not None
     assert remote.inner.value == 10
     assert remote.label == "outer"
 
-    # Update nested field
+    # Mutate the sub-field directly — no need to replace the whole object
     obj.inner.value = 20
-    assert _wait_for(lambda: remote.inner.value == 20), (
-        "Timeout waiting for nested value update"
+    assert _wait_for(lambda: remote.inner is not None and remote.inner.value == 20), (
+        "Timeout waiting for sub-field update"
     )
 
-    # Update outer field
     remote.label = "changed"
     assert _wait_for(lambda: obj.label == "changed"), (
         "Timeout waiting for outer label update"
     )
 
 
-def test_optional_nested_dataclass():
+def test_none_to_sub_syncable_dataclass_sync():
     """
-    Test a nested dataclass starting from None and becoming a real dataclass
+    A SubSyncableDataclass | None field that starts as None should correctly
+    transition to an instance on the remote, and subsequent sub-field mutations
+    should propagate.
     """
 
     @dataclass
-    class Inner:
-        events: ClassVar[SignalGroupDescriptor] = SignalGroupDescriptor()
+    class Inner(SubSyncableDataclass):
         value: int = 0
+        name: str = ""
 
     @dataclass
     class Outer(SyncableObject):
         inner: Inner | None = None
-        label: str = ""
 
-    # Authoritative object
-    obj = Outer("test/nested", synq_authoritive=True, label="outer")
+    obj = Outer("test/none_to_sub", synq_authoritive=True)
     session_b = Session()
-    remote = Outer(synq_session=session_b, synq_topic=obj.synq_absolute_path)
+    remote = Outer.from_topic(obj.synq_absolute_path, session=session_b)
 
-    obj.inner = Inner(value=10)
+    assert remote.inner is None
 
-    assert _wait_for(lambda: remote.inner is not None)
-    assert remote.inner.value == 10
-    assert remote.label == "outer"
+    obj.inner = Inner(value=42, name="hello")
+    assert _wait_for(lambda: remote.inner is not None), (
+        "Timeout: remote.inner never transitioned from None"
+    )
+    assert remote.inner is not None
+    assert remote.inner.value == 42
+    assert remote.inner.name == "hello"
 
-    # Update nested field
-    obj.inner.value = 20
-    assert _wait_for(lambda: remote.inner.value == 20), (
-        "Timeout waiting for nested value update"
+    # Mutate a sub-field after the transition
+    obj.inner.value = 99
+    assert _wait_for(lambda: remote.inner is not None and remote.inner.value == 99), (
+        "Timeout waiting for sub-field update after None transition"
     )
 
-    # Update outer field
-    remote.label = "changed"
-    assert _wait_for(lambda: obj.label == "changed"), (
-        "Timeout waiting for outer label update"
+    # Switch back to None
+    obj.inner = None
+    assert _wait_for(lambda: remote.inner is None), (
+        "Timeout: remote.inner never transitioned back to None"
+    )
+
+
+def test_sub_syncable_field_mutations_sync():
+    """
+    Individual sub-field mutations on a SubSyncableDataclass should each propagate
+    independently without replacing the whole nested object.
+    """
+
+    @dataclass
+    class Point(SubSyncableDataclass):
+        x: float = 0.0
+        y: float = 0.0
+
+    @dataclass
+    class Outer(SyncableObject):
+        pos: Point | None = None
+
+    obj = Outer("test/sub_mutations", synq_authoritive=True, pos=Point(x=1.0, y=2.0))
+    session_b = Session()
+    remote = Outer.from_topic(obj.synq_absolute_path, session=session_b)
+
+    assert remote.pos is not None
+    assert remote.pos.x == 1.0
+    assert remote.pos.y == 2.0
+
+    obj.pos.x = 3.0
+    assert _wait_for(lambda: remote.pos is not None and remote.pos.x == 3.0), (
+        "Timeout waiting for x sub-field update"
+    )
+    obj.pos.y = 4.0
+    assert _wait_for(lambda: remote.pos is not None and remote.pos.y == 4.0), (
+        "Timeout waiting for y sub-field update"
     )
 
 
@@ -226,9 +258,9 @@ def test_evented_container_synchronization():
         items=EventedList([1, 2, 3]),
         mapping=EventedDict({"a": 1}),
     )
-    remote = WithContainers(synq_session=session_b, synq_topic=obj.synq_absolute_path)
+    remote = WithContainers.from_topic(obj.synq_absolute_path, session=session_b)
 
-    # Initial state
+    # Initial state populated via sr_rehydrate
     assert remote.items == [1, 2, 3]
     assert remote.mapping == {"a": 1}
 
@@ -242,6 +274,39 @@ def test_evented_container_synchronization():
     remote.mapping["b"] = 2
     assert _wait_for(lambda: obj.mapping == {"a": 1, "b": 2}), (
         "Timeout waiting for dict update"
+    )
+
+
+def test_evented_set_synchronization():
+    """
+    EventedSet fields synchronize atomically: any mutation publishes the whole set.
+    """
+
+    @dataclass
+    class WithSet(SyncableObject):
+        tags: EventedSet = field(default_factory=EventedSet)
+
+    session_b = Session()
+
+    obj = WithSet(
+        "test/evented_set",
+        synq_authoritive=True,
+        tags=EventedSet(["a", "b", "c"]),
+    )
+    remote = WithSet.from_topic(obj.synq_absolute_path, session=session_b)
+
+    assert remote.tags == {"a", "b", "c"}
+
+    # Add on source
+    obj.tags.add("d")
+    assert _wait_for(lambda: remote.tags == {"a", "b", "c", "d"}), (
+        "Timeout waiting for set add"
+    )
+
+    # Discard on remote
+    remote.tags.discard("a")
+    assert _wait_for(lambda: obj.tags == {"b", "c", "d"}), (
+        "Timeout waiting for set discard"
     )
 
 
@@ -350,6 +415,25 @@ def test_no_warn_for_frozen_nested_dataclass():
 
     messages = _capture_warnings(
         lambda: ObjWithFrozenNested("test/warn_frozen_nested", synq_authoritive=True)
+    )
+    assert not any("non-evented" in str(m) for m in messages), (
+        f"Expected no non-evented warning but got: {messages}"
+    )
+
+
+def test_no_warn_for_sub_syncable_nested_dataclass():
+    """A SubSyncableDataclass nested field should not trigger a non-evented warning."""
+
+    @dataclass
+    class EventedNested(SubSyncableDataclass):
+        value: float = 0.0
+
+    @dataclass
+    class ObjWithEventedNested(SyncableObject):
+        nested: EventedNested | None = None
+
+    messages = _capture_warnings(
+        lambda: ObjWithEventedNested("test/warn_sub_syncable", synq_authoritive=True)
     )
     assert not any("non-evented" in str(m) for m in messages), (
         f"Expected no non-evented warning but got: {messages}"

@@ -16,6 +16,31 @@ from contextvars import ContextVar
 from contextlib import contextmanager
 import io
 from collections import defaultdict
+from psygnal.containers import EventedList, EventedDict, EventedSet
+
+
+def _represent_evented_list(representer, data):
+    return representer.represent_sequence("!EventedList", list(data))
+
+
+def _construct_evented_list(constructor, node):
+    return EventedList(constructor.construct_sequence(node, deep=True))
+
+
+def _represent_evented_dict(representer, data):
+    return representer.represent_mapping("!EventedDict", dict(data))
+
+
+def _construct_evented_dict(constructor, node):
+    return EventedDict(constructor.construct_mapping(node, deep=True))
+
+
+def _represent_evented_set(representer, data):
+    return representer.represent_sequence("!EventedSet", list(data))
+
+
+def _construct_evented_set(constructor, node):
+    return EventedSet(constructor.construct_sequence(node, deep=True))
 
 def _default_base_topic() -> str:
     return os.getenv("SPIRI_SYNQ_BASE_TOPIC", socket.gethostname())
@@ -317,6 +342,12 @@ class Session:
 
     def __post_init__(self):
         self._codecs.extend(BUILTIN_CODECS)
+        self.type_registry.representer.add_representer(EventedList, _represent_evented_list)
+        self.type_registry.representer.add_representer(EventedDict, _represent_evented_dict)
+        self.type_registry.representer.add_representer(EventedSet, _represent_evented_set)
+        self.type_registry.constructor.add_constructor("!EventedList", _construct_evented_list)
+        self.type_registry.constructor.add_constructor("!EventedDict", _construct_evented_dict)
+        self.type_registry.constructor.add_constructor("!EventedSet", _construct_evented_set)
         self.zenoh_session = zenoh.open(self.config)
         logger.info(f"Started zenoh session {self.zenoh_session.zid()}")
 

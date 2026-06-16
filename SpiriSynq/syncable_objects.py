@@ -4,7 +4,7 @@ from SpiriSynq.session import Session, IsolatedYAML, current_session
 import zenoh
 from loguru import logger
 from psygnal import EmissionInfo, SignalGroupDescriptor
-
+from psygnal.containers import EventedList, EventedDict, EventedSet
 
 from dataclasses import dataclass, field, fields
 from typing import ClassVar
@@ -96,6 +96,68 @@ def _collect_valid_sync_paths(
             )
 
     return valid_paths
+
+
+@dataclass
+class SubSyncableDataclass:
+    """
+    Lightweight base for nested sub-objects within a SyncableObject.
+
+    Provides psygnal events, synq_skip_sync, and synq_skip_rehydrate filtering
+    without any zenoh publish/subscribe machinery.  Use this instead of
+    @dataclass(frozen=True) when you need mutable nested objects whose field
+    changes fire events (and therefore propagate through the parent's sync).
+    """
+
+    events: ClassVar[SignalGroupDescriptor] = SignalGroupDescriptor()
+    synq_skip_rehydrate: ClassVar[set] = set()
+    synq_skip_sync: ClassVar[set] = set()
+
+    @classmethod
+    def all_skip_rehydrate(cls) -> set:
+        result: set = set()
+        for c in cls.mro():
+            if hasattr(c, "synq_skip_rehydrate"):
+                result.update(c.synq_skip_rehydrate)
+        return result
+
+    @classmethod
+    def valid_sync_paths(cls) -> frozenset:
+        cache_attr = "_synq_valid_paths_cache"
+        if (cached := getattr(cls, cache_attr, None)) is not None:
+            return cached
+
+        skip: set = set()
+        for c in cls.mro():
+            if hasattr(c, "synq_skip_sync"):
+                skip.update(c.synq_skip_sync)
+
+        warn = next(
+            (c.__dict__["warn_non_evented"] for c in cls.mro() if "warn_non_evented" in c.__dict__),
+            True,
+        )
+        result = frozenset(_collect_valid_sync_paths(cls, skip, warn=warn))
+        setattr(cls, cache_attr, result)
+        return result
+
+    @classmethod
+    def to_yaml(cls, representer, data):
+        skip = cls.all_skip_rehydrate()
+        syncable = {p for p in cls.valid_sync_paths() if "/" not in p}
+        field_names = {
+            f.name
+            for f in fields(cls)
+            if f.name not in skip and f.name in syncable and not f.name.startswith("_")
+        }
+        yaml_tag = getattr(cls, "yaml_tag", f"!{cls.__name__}")
+        return representer.represent_mapping(
+            yaml_tag,
+            {f.name: getattr(data, f.name) for f in fields(data) if f.name in field_names},
+        )
+
+    def __setstate__(self, state):
+        init_fields = {f.name for f in fields(type(self))}
+        self.__init__(**{k: v for k, v in state.items() if k in init_fields})
 
 
 # This is so that we only publish our own changes, not ones we just received. Keeps us from echo-ing other people's changes.
@@ -237,9 +299,44 @@ class SyncableObject:
             return
 
         assert self.synq_session, "No session, can't publish changes"
+
+        # Container child events (list.append, dict[k]=v, etc.) propagate through
+        # the parent SignalGroup with a non-attribute element in the path.
+        # Publish the whole container atomically from the top-level field.
+        if any(not p.attr for p in event.path):
+            field_name = event.path[0].attr if event.path else None
+            if field_name and field_name in self.valid_sync_paths():
+                container = getattr(self, field_name, None)
+                if isinstance(container, (EventedList, EventedDict)):
+                    full_path = f"{self.synq_absolute_path}/{field_name}"
+                    source_info = self.synq_session.source_info(field_name)
+                    enc_data = self.synq_session.type_registry.dumps(container)
+                    enc_data = enc_data.removesuffix("\n...")
+                    logger.trace(f"publishing container {full_path}")
+                    self.synq_session.zenoh_session.put(
+                        full_path, enc_data, source_info=source_info,
+                        encoding=zenoh.Encoding.APPLICATION_YAML,
+                    )
+            return
+
         event_path = self._event_to_zenoh_path(event)
 
         if not event_path in self.valid_sync_paths():
+            return
+
+        # EventedSet mutations emit (added, removed) args, not the set itself.
+        # Publish the whole current set atomically regardless of the mutation args.
+        current = getattr(self, event_path, None)
+        if isinstance(current, EventedSet):
+            full_path = f"{self.synq_absolute_path}/{event_path}"
+            source_info = self.synq_session.source_info(event_path)
+            enc_data = self.synq_session.type_registry.dumps(current)
+            enc_data = enc_data.removesuffix("\n...")
+            logger.trace(f"publishing container {full_path}")
+            self.synq_session.zenoh_session.put(
+                full_path, enc_data, source_info=source_info,
+                encoding=zenoh.Encoding.APPLICATION_YAML,
+            )
             return
 
         value = event.args[0]
@@ -315,6 +412,25 @@ class SyncableObject:
                 )
 
                 return
+
+            # Evented containers: update in-place so existing event hooks stay connected.
+            if "/" not in relative_path:
+                current = getattr(self, relative_path, None)
+                if isinstance(current, EventedList) and isinstance(obj, (EventedList, list)):
+                    current[:] = list(obj)
+                    logger.trace(f"applied container (in-place list) {relative_path}")
+                    return
+                if isinstance(current, EventedDict) and isinstance(obj, (EventedDict, dict)):
+                    current.clear()
+                    current.update(dict(obj))
+                    logger.trace(f"applied container (in-place dict) {relative_path}")
+                    return
+                if isinstance(current, EventedSet) and isinstance(obj, (EventedSet, set, frozenset, list)):
+                    current.clear()
+                    current.update(set(obj))
+                    logger.trace(f"applied container (in-place set) {relative_path}")
+                    return
+
             path = str(sample.key_expr).removeprefix(self.synq_absolute_path).split("/")
             logger.trace(f"received {path} = {obj}")
             # Convert "foo/bar/biz" → "root.foo.bar.biz" for DeepDiff path format
@@ -495,7 +611,9 @@ class SyncableObject:
 
             origin = get_origin(annotation)
             inner_types = (
-                tuple(get_args(annotation)) if origin is Union else (annotation,)
+                tuple(get_args(annotation))
+                if origin is Union or origin is _types.UnionType
+                else (annotation,)
             )
 
             if i == len(segments) - 1:
@@ -580,6 +698,7 @@ class SyncableObject:
                 pass
         if hasattr(self, '_synq_callbacks'):
             self._synq_callbacks.clear()
+
 
     def __del__(self):
         try:

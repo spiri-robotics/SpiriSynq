@@ -32,11 +32,97 @@ Echo prevention uses Zenoh `SourceInfo`: each session tags its puts with its own
 
 Nested dataclass fields sync at the field level, not the object level. A change to `robot.gps.latitude` publishes to `<topic>/gps/latitude`, not `<topic>/gps`.
 
-For this to work, the nested type must fire change signals on mutation — either:
-- Use `@dataclass(frozen=True)` and replace the whole object.
-- Add a `SignalGroupDescriptor` (psygnal) to the nested class.
+For this to work, the nested type must fire change signals on mutation. There are three ways to satisfy this:
 
-If neither condition holds, SpiriSynq logs a warning at startup.
+**`SubSyncableDataclass` (recommended for mutable nested objects)**
+
+Inherit from `SubSyncableDataclass` to get psygnal events, `synq_skip_sync`, and `synq_skip_rehydrate` — the same filtering machinery as `SyncableObject` — without any Zenoh publish/subscribe overhead. Individual sub-field assignments propagate automatically:
+
+```python
+from dataclasses import dataclass
+from SpiriSynq.syncable_objects import SyncableObject, SubSyncableDataclass
+
+@dataclass
+class GPS(SubSyncableDataclass):
+    latitude: float = 0.0
+    longitude: float = 0.0
+    altitude: float = 0.0
+
+@dataclass
+class Robot(SyncableObject):
+    gps: GPS = field(default_factory=GPS)
+
+robot = Robot("fleet/robot1", synq_authoritive=True, gps=GPS())
+
+# Each assignment is a separate publish to <topic>/gps/latitude etc.
+robot.gps.latitude = 37.77
+robot.gps.longitude = -122.41
+```
+
+**`@dataclass(frozen=True)` (for value objects)**
+
+Frozen dataclasses cannot be mutated in-place, so you replace the whole field. SpiriSynq publishes the new value to `<topic>/gps` as a single YAML put:
+
+```python
+@dataclass(frozen=True)
+class Offset:
+    x: float = 0.0
+    y: float = 0.0
+
+@dataclass
+class Arm(SyncableObject):
+    offset: Offset | None = None
+
+arm.offset = Offset(x=1.0, y=2.0)  # publishes the whole Offset
+```
+
+Use frozen dataclasses when the object is a small immutable value type and you always want to replace it atomically.
+
+If neither condition holds, SpiriSynq logs a warning at startup. Silence it with `warn_non_evented = False` on the parent `SyncableObject`.
+
+#### Filtering sub-fields
+
+`SubSyncableDataclass` supports the same `synq_skip_sync` and `synq_skip_rehydrate` class variables as `SyncableObject`. Fields listed in `synq_skip_sync` are excluded from the valid sync paths that the parent computes; fields in `synq_skip_rehydrate` are excluded from `to_yaml()` serialisation.
+
+```python
+@dataclass
+class Sensor(SubSyncableDataclass):
+    synq_skip_rehydrate = {"raw_buffer"}
+    value: float = 0.0
+    raw_buffer: bytes = b""  # never included in rehydration snapshots
+```
+
+### Evented containers
+
+`EventedList`, `EventedDict`, and `EventedSet` (from `psygnal.containers`) can be used as field types and will synchronise automatically. Any mutation — `append`, `__setitem__`, `add`, `discard`, etc. — causes the **entire container** to be re-serialised and published as a single atomic payload:
+
+```python
+from psygnal.containers import EventedList, EventedDict, EventedSet
+from dataclasses import dataclass, field
+
+@dataclass
+class Dashboard(SyncableObject):
+    readings: EventedList = field(default_factory=EventedList)
+    labels: EventedDict = field(default_factory=EventedDict)
+    active_flags: EventedSet = field(default_factory=EventedSet)
+
+dash = Dashboard("ui/dashboard", synq_authoritive=True)
+dash.readings.append(42.0)      # publishes !EventedList [42.0]
+dash.labels["temp"] = "hot"     # publishes !EventedDict {temp: hot}
+dash.active_flags.add("alarm")  # publishes !EventedSet [alarm]
+```
+
+On the receive side the container is updated **in-place** so existing references stay valid.
+
+**Trade-offs.** Because the whole container is sent on every mutation, evented containers are less efficient than field-level sync for large or frequently-mutated collections. Prefer them for small sets of values where atomic consistency matters (e.g. a list of active connections, a dict of UI state). For large streams of data, a `bytes` field with a custom codec is more appropriate.
+
+The wire format is a YAML-tagged sequence or mapping:
+
+```yaml
+readings: !EventedList [1.0, 2.0, 3.0]
+labels:   !EventedDict {temp: hot, humidity: low}
+flags:    !EventedSet  [alarm, warning]
+```
 
 ### Fields excluded from sync
 
