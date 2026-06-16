@@ -181,11 +181,13 @@ for value in mirror.stream():
 
 Client transforms also apply when using `.as_async()`.
 
-#### raw=True — take the YAML payload directly
+#### raw=True — take the raw Zenoh reply
 
-Pass `raw=True` to skip deserialization entirely and receive the raw YAML string instead. The client function is then responsible for parsing it however it needs to.
+Pass `raw=True` to skip deserialization entirely and receive the raw `zenoh.Reply` object instead. The client function is then responsible for extracting and parsing whatever it needs.
 
 ```python
+import zenoh
+
 @dataclass
 class Robot(SyncableObject):
 
@@ -194,16 +196,16 @@ class Robot(SyncableObject):
         return self
 
     @get_state.client(raw=True)
-    def get_state(self, payload: str) -> dict:
+    def get_state(self, reply: zenoh.Reply) -> dict:
         from ruamel.yaml import YAML
         plain = YAML()
         plain.constructor.add_multi_constructor(
             '', lambda loader, _tag, node: loader.construct_mapping(node, deep=True)
         )
-        return plain.load(payload)
+        return plain.load(reply.ok.payload.to_string())
 ```
 
-This is useful when the return type is a `SyncableObject` subclass and you want to avoid the full deserialisation cost (which would otherwise start a new Zenoh session), or when you need to apply the result to `self` in-place rather than returning a new object.
+This is useful when the return type is a `SyncableObject` subclass and you want to avoid the full deserialisation cost (which would otherwise start a new Zenoh session), when you need to inspect the reply encoding before deciding how to decode, or when you need to apply the result to `self` in-place rather than returning a new object.
 
 ### Server-side transforms
 

@@ -454,6 +454,137 @@ def test_client_transform_on_async_remote():
     assert result == 11  # (5*2) + 1
 
 
+def test_server_hook_intercepts_query():
+    """
+    @method.server() should be called instead of the default dispatch when
+    a zenoh query arrives, and can send a custom reply.
+    """
+    import zenoh
+
+    @dataclass
+    class WithServer(SyncableObject):
+        @remote_method()
+        def get_value(self) -> int:
+            return 42
+
+        @get_value.server()
+        def get_value(self, query: zenoh.Query):
+            registry = self.synq_session.type_registry
+            query.reply(query.key_expr, payload=registry.dumps(99), encoding=zenoh.Encoding.APPLICATION_YAML)
+
+    obj = WithServer("test/rpc_server_hook", synq_authoritive=True)
+    session_b = Session()
+    remote = WithServer.from_topic(obj.synq_absolute_path, session=session_b)
+
+    assert remote.get_value() == 99
+
+
+def test_server_hook_not_called_on_local_call():
+    """
+    @method.server() should NOT be invoked when the method is called directly
+    on the authoritative instance — local calls bypass the zenoh callback entirely.
+    """
+    import zenoh
+
+    hook_called = {"n": 0}
+
+    @dataclass
+    class WithServerLocal(SyncableObject):
+        @remote_method()
+        def get_value(self) -> int:
+            return 42
+
+        @get_value.server()
+        def get_value(self, query: zenoh.Query):
+            hook_called["n"] += 1
+            registry = self.synq_session.type_registry
+            query.reply(query.key_expr, payload=registry.dumps(99), encoding=zenoh.Encoding.APPLICATION_YAML)
+
+    obj = WithServerLocal("test/rpc_server_local", synq_authoritive=True)
+    result = obj.get_value()
+    assert result == 42
+    assert hook_called["n"] == 0
+
+
+def test_server_hook_reply_err_raises_rpc_exception():
+    """
+    When @method.server() calls query.reply_err(), the caller should receive
+    an RpcException.
+    """
+    import zenoh
+
+    @dataclass
+    class WithServerErr(SyncableObject):
+        @remote_method()
+        def do_thing(self) -> str:
+            return "ok"
+
+        @do_thing.server()
+        def do_thing(self, query: zenoh.Query):
+            query.reply_err("not allowed")
+
+    obj = WithServerErr("test/rpc_server_err", synq_authoritive=True)
+    session_b = Session()
+    remote = WithServerErr.from_topic(obj.synq_absolute_path, session=session_b)
+
+    with pytest.raises(RpcException):
+        remote.do_thing()
+
+
+def test_server_hook_exception_forwarded_as_error():
+    """
+    An uncaught exception in @method.server() should be caught by SpiriSynq
+    and forwarded as reply_err, raising RpcException on the caller.
+    """
+    import zenoh
+
+    @dataclass
+    class WithServerRaise(SyncableObject):
+        @remote_method()
+        def do_thing(self) -> str:
+            return "ok"
+
+        @do_thing.server()
+        def do_thing(self, query: zenoh.Query):
+            raise RuntimeError("boom")
+
+    obj = WithServerRaise("test/rpc_server_raise", synq_authoritive=True)
+    session_b = Session()
+    remote = WithServerRaise.from_topic(obj.synq_absolute_path, session=session_b)
+
+    with pytest.raises(RpcException):
+        remote.do_thing()
+
+
+def test_server_hook_receives_self_and_params():
+    """
+    The server hook receives the authoritative instance as self and the raw
+    query, so it can decode params and use instance state in its reply.
+    """
+    import zenoh
+
+    @dataclass
+    class WithServerSelf(SyncableObject):
+        multiplier: int = 5
+
+        @remote_method()
+        def scale(self, x: int) -> int:
+            return x * self.multiplier
+
+        @scale.server()
+        def scale(self, query: zenoh.Query):
+            registry = self.synq_session.type_registry
+            params = {k: registry.load(v) for k, v in dict(query.parameters).items()}
+            result = params["x"] * self.multiplier * 2
+            query.reply(query.key_expr, payload=registry.dumps(result), encoding=zenoh.Encoding.APPLICATION_YAML)
+
+    obj = WithServerSelf("test/rpc_server_self", synq_authoritive=True, multiplier=5)
+    session_b = Session()
+    remote = WithServerSelf.from_topic(obj.synq_absolute_path, session=session_b)
+
+    assert remote.scale(3) == 30  # 3 * 5 * 2
+
+
 def test_timeout_chaining():
     """
     .timeout(n).sync(args) and .timeout(n).as_async(args) should work
