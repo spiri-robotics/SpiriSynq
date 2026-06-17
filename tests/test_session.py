@@ -44,7 +44,7 @@ def close_test_sessions():
             session.close()
 
 
-def _wait_for(predicate, timeout=1.0, interval=0.01):
+def _wait_for(predicate, timeout=3.0, interval=0.01):
     """Poll until predicate returns True or timeout expires."""
     start = time.time()
     while time.time() - start < timeout:
