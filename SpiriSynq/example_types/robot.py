@@ -1,10 +1,8 @@
 from SpiriSynq.syncable_objects import SyncableObject
-from SpiriSynq.session import Session
 from dataclasses import dataclass, field
 from PIL import Image
-from typing import Literal, TypeAlias, ClassVar, Self
+from typing import Literal
 import io
-from psygnal import SignalGroupDescriptor
 
 
 @dataclass
@@ -180,12 +178,3 @@ class MavFcu(SyncableObject):
     """
     mavlink_in: str = ""
     mavlink_out: str = ""
-
-
-@dataclass
-class Drone(SyncableObject):
-    pass
-    # camera: Camera|None
-    # fcu: MavFcu
-    # gps: GPS
-    # battery: MavBattery

@@ -129,6 +129,31 @@ class Orientation:
         )
 
 
+@dataclass(frozen=True)
+class Accuracy:
+    """
+    Positional accuracy expressed as error bounds at 90% confidence.
+
+    Mirrors the ATAK CoT ce/le convention but uses 90th-percentile bounds
+    (CEP90/LEP90) rather than the CoT standard 50%.
+
+    horizontal: radius in metres of the circle within which the true
+                horizontal position lies with 90% probability (CEP90).
+    vertical:   half-height in metres of the vertical band within which
+                the true altitude lies with 90% probability (LEP90).
+    """
+    horizontal: float | None = None
+    vertical: float | None = None
+
+    def __add__(self, other: "Accuracy") -> "Accuracy":
+        """Combine two independent accuracy estimates by adding errors in quadrature (RSS)."""
+        if not isinstance(other, Accuracy):
+            return NotImplemented
+        h = math.sqrt(self.horizontal ** 2 + other.horizontal ** 2) if self.horizontal is not None and other.horizontal is not None else None
+        v = math.sqrt(self.vertical ** 2 + other.vertical ** 2) if self.vertical is not None and other.vertical is not None else None
+        return Accuracy(horizontal=h, vertical=v)
+
+
 @dataclass
 class Position(SyncableObject):
     """
@@ -143,17 +168,21 @@ class Position(SyncableObject):
     _relative_subscribers: set[zenoh.Subscriber] = field(default_factory=set)
     _relative_offset: Offset | None = None
     _relative_orientation: Orientation | None = None
+    _relative_accuracy: Accuracy | None = None
     offset: Offset | None = None
     orientation: Orientation | None = None
+    accuracy: Accuracy | None = None
     # Where the device is relative to its parent (parent's local frame)
     mount_offset: Offset | None = None
     mount_orientation: Orientation | None = None
+    mount_accuracy: Accuracy | None = None
 
     def __post_init__(self):
         super().__post_init__()
         self.events.relative_to.connect(self._update_relative_subscriber)
         self.events.mount_offset.connect(self._on_mount_change)
         self.events.mount_orientation.connect(self._on_mount_change)
+        self.events.mount_accuracy.connect(self._on_mount_change)
 
         # Set up zenoh subscriber for the current frame
         self._update_relative_subscriber(self.relative_to)
@@ -173,13 +202,14 @@ class Position(SyncableObject):
             logger.trace(f"New frame isn't relative: {frame}")
             self._relative_offset = None
             self._relative_orientation = None
+            self._relative_accuracy = None
             self._update_pos()
             return
 
         if self.synq_session is None:
             raise RuntimeError("synq_session is required to subscribe to relative frames")
 
-        # Subscribe to offset and orientation on separate key expressions
+        # Subscribe to offset, orientation, and accuracy on separate key expressions
         offset_sub = self.synq_session.zenoh_session.declare_subscriber(
             f"{self.relative_to}/offset",
             self._on_offset_sample,
@@ -188,8 +218,12 @@ class Position(SyncableObject):
             f"{self.relative_to}/orientation",
             self._on_orientation_sample,
         )
+        accuracy_sub = self.synq_session.zenoh_session.declare_subscriber(
+            f"{self.relative_to}/accuracy",
+            self._on_accuracy_sample,
+        )
 
-        self._relative_subscribers = {offset_sub, orientation_sub}
+        self._relative_subscribers = {offset_sub, orientation_sub, accuracy_sub}
 
     def _on_offset_sample(self, sample: zenoh.Sample):
         """Callback fired by zenoh when the relative frame publishes an offset update."""
@@ -215,6 +249,18 @@ class Position(SyncableObject):
         self._relative_orientation = new_orientation
         self._update_pos()
 
+    def _on_accuracy_sample(self, sample: zenoh.Sample):
+        """Callback fired by zenoh when the relative frame publishes an accuracy update."""
+        payload = sample.payload.to_string()
+        if self.synq_session is None:
+            raise RuntimeError("synq_session is required to deserialize accuracy")
+
+        new_accuracy = self.synq_session.type_registry.load(payload)
+        if not isinstance(new_accuracy, Accuracy):
+            raise TypeError(f"{new_accuracy} is {type(new_accuracy)}, not {Accuracy}")
+        self._relative_accuracy = new_accuracy
+        self._update_pos()
+
     def _update_pos(self):
         """
         Compute the real (root-frame) position from the parent's world-frame
@@ -235,6 +281,7 @@ class Position(SyncableObject):
         if self._relative_offset is None and self._relative_orientation is None:
             self.offset = m_offset or None
             self.orientation = m_orient if m_orient != Orientation() else None
+            self.accuracy = self.mount_accuracy
             return
 
         # Defaults: treat missing relative values as identity
@@ -247,3 +294,11 @@ class Position(SyncableObject):
 
         # Compose orientations: parent world orientation * mount local orientation
         self.orientation = rel_orient * m_orient
+
+        # Combine parent and mount accuracy in quadrature; propagate whichever is known
+        rel_acc = self._relative_accuracy
+        m_acc = self.mount_accuracy
+        if rel_acc is not None and m_acc is not None:
+            self.accuracy = rel_acc + m_acc
+        else:
+            self.accuracy = rel_acc or m_acc
