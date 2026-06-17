@@ -1,6 +1,7 @@
 import zenoh
 import socket
 import os
+import threading
 from ruamel.yaml import YAML
 from ruamel.yaml.constructor import SafeConstructor
 from ruamel.yaml.representer import SafeRepresenter
@@ -72,23 +73,25 @@ class IsolatedYAML(YAML):
 
         self.Constructor = IsolatedConstructor
         self.Representer = IsolatedRepresenter
+        self._dump_lock = threading.Lock()
 
     def dumps(self, data):
         """Serialize data to a YAML string."""
-        buf = io.StringIO()
-        # Must be set before __enter__: YAMLContextManager.__init__ captures
-        # self._output from the YAML instance.
-        self._output = buf
-        # Use the context-manager protocol instead of dump(data, stream).
-        # A failed dump (e.g. RepresenterError for an unregistered type) leaves
-        # _context_manager/_output/_emitter/_serializer in a half-finished state;
-        # on the next plain dump() call, ruamel sees _context_manager is non-None,
-        # takes the context-manager branch, and raises AttributeError because
-        # _output hasn't been re-initialised yet.  __exit__ unconditionally calls
-        # teardown_output(), which resets all of that state even when the body raises.
-        with self:
-            self.dump(data)
-        return buf.getvalue().removesuffix("...\n").removesuffix("\n")
+        with self._dump_lock:
+            buf = io.StringIO()
+            # Must be set before __enter__: YAMLContextManager.__init__ captures
+            # self._output from the YAML instance.
+            self._output = buf
+            # Use the context-manager protocol instead of dump(data, stream).
+            # A failed dump (e.g. RepresenterError for an unregistered type) leaves
+            # _context_manager/_output/_emitter/_serializer in a half-finished state;
+            # on the next plain dump() call, ruamel sees _context_manager is non-None,
+            # takes the context-manager branch, and raises AttributeError because
+            # _output hasn't been re-initialised yet.  __exit__ unconditionally calls
+            # teardown_output(), which resets all of that state even when the body raises.
+            with self:
+                self.dump(data)
+            return buf.getvalue().removesuffix("...\n").removesuffix("\n")
 
 
 @dataclass
@@ -219,7 +222,7 @@ class Session:
                 logger.debug(f"Found topic: {metadata}")
                 yield metadata
             else:
-                assert reply.err, "Reply not OK and no reply err. Weird."
+                assert reply.err, "Reply not OK and no reply err. Weird." #Begone type checker
                 logger.warning(
                     f"Error reply in list_topics: {reply.err.payload.to_string()}"
                 )
