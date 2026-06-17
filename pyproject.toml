@@ -15,18 +15,20 @@ dependencies = [
     "typer>=0.24.1",
 ]
 
+[project.optional-dependencies]
+docs = [
+    "sphinx>=8.0",
+    "sphinx-rtd-theme>=3.0",
+    "myst-parser>=4.0",
+    "autodoc-pydantic>=2.0",
+]
+
 [dependency-groups]
 dev = [
     "objgraph>=3.6.2",
     "pytest>=9.0.2",
     "pytest-benchmark>=5.2.3",
     "pytest-cov>=7.1.0",
-]
-docs = [
-    "sphinx>=8.0",
-    "sphinx-rtd-theme>=3.0",
-    "myst-parser>=4.0",
-    "autodoc-pydantic>=2.0",
 ]
 examples = [
     "imagecodecs>=2026.3.6",
