@@ -36,6 +36,9 @@ examples = [
     "opencv-python-headless>=4.13.0.92",
 ]
 
+[project.scripts]
+synq = "SpiriSynq.cli:app"
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 

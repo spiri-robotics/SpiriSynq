@@ -5,6 +5,17 @@ from SpiriSynq.session import Session
 from dataclasses import dataclass, field
 import math
 import zenoh
+
+
+def _erfinv(p: float) -> float:
+    """Inverse error function via rational approximation + one Halley iteration."""
+    a = 0.147
+    ln1mp2 = math.log(1 - p * p)
+    c = 2 / (math.pi * a) + ln1mp2 / 2
+    x = math.copysign(math.sqrt(math.sqrt(c * c - ln1mp2 / a) - c), p)
+    f = math.erf(x) - p
+    fp = 2 / math.sqrt(math.pi) * math.exp(-(x * x))
+    return x - f / (fp + x * f)
 from loguru import logger
 
 class RootFrame(str):
@@ -128,14 +139,23 @@ class Orientation:
             z=cr * cp * sy - sr * sp * cy,
         )
 
-
 @dataclass(frozen=True)
 class Accuracy:
     """
     Positional accuracy expressed as error bounds at 90% confidence.
 
-    Mirrors the ATAK CoT ce/le convention but uses 90th-percentile bounds
-    (CEP90/LEP90) rather than the CoT standard 50%.
+    There should be a 90% chance the object is inside of this cylinder.
+
+    Stored as CEP90/LEP90. 
+    
+    We break from ATAK/CoT here. On CoT ce/le uses 1-sigma (one standard deviation),
+    which corresponds to ~39% confidence for horizontal (2D Rayleigh) and
+    ~68% for vertical (1D Gaussian) — use at_confidence() to convert.
+
+    The intent behind this difference is that it's easy to convert, and
+    provides developers with an easy and intuitive understanding of their
+    confidence bounds. It roughly tracks to an intuitive "The object is here".
+
 
     horizontal: radius in metres of the circle within which the true
                 horizontal position lies with 90% probability (CEP90).
@@ -145,12 +165,90 @@ class Accuracy:
     horizontal: float | None = None
     vertical: float | None = None
 
+    # Rayleigh σ multiplier for CEP90 → 1σ
+    _H_FACTOR = math.sqrt(-2 * math.log(0.1))  # ≈ 2.146
+    # Gaussian σ multiplier for LEP90 → 1σ
+    _V_FACTOR = math.sqrt(2) * _erfinv(0.9)     # ≈ 1.6449
+
+    def at_confidence(self, confidence: float) -> tuple[float | None, float | None]:
+        """Return (horizontal, vertical) bounds rescaled to a different confidence level.
+
+        Stored values are CEP90/LEP90. Horizontal uses a 2D Rayleigh distribution;
+        vertical uses a 1D symmetric Gaussian.
+        """
+        h_scale = math.sqrt(math.log(1 - confidence) / math.log(0.1))
+        v_scale = _erfinv(confidence) / _erfinv(0.9)
+        h = self.horizontal * h_scale if self.horizontal is not None else None
+        v = self.vertical * v_scale if self.vertical is not None else None
+        return h, v
+
+    def to_cot(self) -> tuple[float | None, float | None]:
+        """Return (ce, le) in CoT 1-sigma convention."""
+        ce = self.horizontal / self._H_FACTOR if self.horizontal is not None else None
+        le = self.vertical / self._V_FACTOR if self.vertical is not None else None
+        return ce, le
+
+    @classmethod
+    def from_cot(cls, ce: float | None, le: float | None) -> "Accuracy":
+        """Construct from CoT 1-sigma (ce, le) values."""
+        h = ce * cls._H_FACTOR if ce is not None else None
+        v = le * cls._V_FACTOR if le is not None else None
+        return cls(horizontal=h, vertical=v)
+
     def __add__(self, other: "Accuracy") -> "Accuracy":
-        """Combine two independent accuracy estimates by adding errors in quadrature (RSS)."""
+        """Combine independent error sources on the same observation (additive).
+
+        Use this when stacking independent error contributions — e.g. sensor
+        noise + GPS noise. The result is LESS certain than either input alone.
+        """
         if not isinstance(other, Accuracy):
             return NotImplemented
-        h = math.sqrt(self.horizontal ** 2 + other.horizontal ** 2) if self.horizontal is not None and other.horizontal is not None else None
-        v = math.sqrt(self.vertical ** 2 + other.vertical ** 2) if self.vertical is not None and other.vertical is not None else None
+        h = math.sqrt(self.horizontal ** 2 + other.horizontal ** 2) \
+            if self.horizontal is not None and other.horizontal is not None else None
+        v = math.sqrt(self.vertical ** 2 + other.vertical ** 2) \
+            if self.vertical is not None and other.vertical is not None else None
+        return Accuracy(horizontal=h, vertical=v)
+
+    def fuse(self, other: "Accuracy", 
+            position_self: tuple[float, float] | None = None,
+            position_other: tuple[float, float] | None = None) -> "Accuracy":
+        #ToDO: this should be on the Position object itself, not the accuracy object, so that positions are implicit.
+        """Fuse two independent observations into one 90% circle.
+
+        When sources agree (overlap), the circle tightens due to triangulation.
+        When sources disagree, the circle widens to cover the gap.
+
+        This is one circle, 90% confidence, naive/practical approach for operators.
+        """
+        if not isinstance(other, Accuracy):
+            raise TypeError(f"Cannot fuse Accuracy with {type(other)}")
+
+        # If no positions, raise
+        if position_self is None or position_other is None:
+            raise
+
+        dist = math.hypot(position_self[0] - position_other[0],
+                        position_self[1] - position_other[1])
+
+        # Convert to 1σ (σ = CEP90 / H_FACTOR)
+        if self.horizontal is not None and other.horizontal is not None:
+            s_a = self.horizontal / self._H_FACTOR
+            s_b = other.horizontal / self._H_FACTOR
+            # Geometric envelope: existing uncertainties + disagreement distance
+            s_fused = math.sqrt(s_a ** 2 + s_b ** 2 + (dist ** 2 / 4))
+            h = s_fused * self._H_FACTOR
+        else:
+            h = self.horizontal or other.horizontal
+
+        # Vertical: no position distance, just additive
+        if self.vertical is not None and other.vertical is not None:
+            s_a = self.vertical / self._V_FACTOR
+            s_b = other.vertical / self._V_FACTOR
+            s_fused = math.sqrt(s_a ** 2 + s_b ** 2)
+            v = s_fused * self._V_FACTOR
+        else:
+            v = self.vertical or other.vertical
+
         return Accuracy(horizontal=h, vertical=v)
 
 

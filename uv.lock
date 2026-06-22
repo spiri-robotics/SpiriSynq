@@ -1568,18 +1568,20 @@ dependencies = [
     { name = "typer" },
 ]
 
+[package.optional-dependencies]
+docs = [
+    { name = "autodoc-pydantic" },
+    { name = "myst-parser" },
+    { name = "sphinx" },
+    { name = "sphinx-rtd-theme" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "objgraph" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
     { name = "pytest-cov" },
-]
-docs = [
-    { name = "autodoc-pydantic" },
-    { name = "myst-parser" },
-    { name = "sphinx" },
-    { name = "sphinx-rtd-theme" },
 ]
 examples = [
     { name = "imagecodecs" },
@@ -1589,14 +1591,19 @@ examples = [
 
 [package.metadata]
 requires-dist = [
+    { name = "autodoc-pydantic", marker = "extra == 'docs'", specifier = ">=2.0" },
     { name = "deepdiff", specifier = ">=9.0.0" },
     { name = "eclipse-zenoh", specifier = ">=1.8.0" },
     { name = "loguru", specifier = ">=0.7.3" },
+    { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=4.0" },
     { name = "psygnal", specifier = ">=0.15.1" },
     { name = "rich", specifier = ">=14.3.3" },
     { name = "ruamel-yaml", specifier = ">=0.19.1" },
+    { name = "sphinx", marker = "extra == 'docs'", specifier = ">=8.0" },
+    { name = "sphinx-rtd-theme", marker = "extra == 'docs'", specifier = ">=3.0" },
     { name = "typer", specifier = ">=0.24.1" },
 ]
+provides-extras = ["docs"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1604,12 +1611,6 @@ dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-benchmark", specifier = ">=5.2.3" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
-]
-docs = [
-    { name = "autodoc-pydantic", specifier = ">=2.0" },
-    { name = "myst-parser", specifier = ">=4.0" },
-    { name = "sphinx", specifier = ">=8.0" },
-    { name = "sphinx-rtd-theme", specifier = ">=3.0" },
 ]
 examples = [
     { name = "imagecodecs", specifier = ">=2026.3.6" },
