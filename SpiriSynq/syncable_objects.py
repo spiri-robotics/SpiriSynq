@@ -77,7 +77,9 @@ def _collect_valid_sync_paths(
         annotation = hints.get(f.name, f.type)
         for nested_cls in _unwrap_dataclass_types(annotation):
             if warn:
-                is_frozen = getattr(getattr(nested_cls, "__dataclass_params__", None), "frozen", False)
+                is_frozen = getattr(
+                    getattr(nested_cls, "__dataclass_params__", None), "frozen", False
+                )
                 is_evented = any(
                     isinstance(c.__dict__.get("events"), SignalGroupDescriptor)
                     for c in nested_cls.mro()
@@ -91,8 +93,12 @@ def _collect_valid_sync_paths(
                     )
             valid_paths.update(
                 _collect_valid_sync_paths(
-                    nested_cls, skip, prefix=path, _visited=_visited,
-                    root_cls=root_cls or cls, warn=warn,
+                    nested_cls,
+                    skip,
+                    prefix=path,
+                    _visited=_visited,
+                    root_cls=root_cls or cls,
+                    warn=warn,
                 )
             )
 
@@ -134,7 +140,11 @@ class SubSyncableDataclass:
                 skip.update(c.synq_skip_sync)
 
         warn = next(
-            (c.__dict__["warn_non_evented"] for c in cls.mro() if "warn_non_evented" in c.__dict__),
+            (
+                c.__dict__["warn_non_evented"]
+                for c in cls.mro()
+                if "warn_non_evented" in c.__dict__
+            ),
             True,
         )
         result = frozenset(_collect_valid_sync_paths(cls, skip, warn=warn))
@@ -153,7 +163,11 @@ class SubSyncableDataclass:
         yaml_tag = getattr(cls, "yaml_tag", f"!{cls.__name__}")
         return representer.represent_mapping(
             yaml_tag,
-            {f.name: getattr(data, f.name) for f in fields(data) if f.name in field_names},
+            {
+                f.name: getattr(data, f.name)
+                for f in fields(data)
+                if f.name in field_names
+            },
         )
 
     def __setstate__(self, state):
@@ -195,6 +209,7 @@ class WeakMethodProxy:
 
     def __hash__(self):
         return hash(self._ref)
+
 
 @dataclass
 class SyncableObject:
@@ -260,7 +275,9 @@ class SyncableObject:
         if self.synq_authoritive and not self.synq_base_topic:
             self.synq_base_topic = self.synq_session.base_topic
         self.synq_session.register_type_recursive(type(self))
-        type(self).valid_sync_paths()  # warm cache; emits warn_non_evented warnings once per class
+        type(
+            self
+        ).valid_sync_paths()  # warm cache; emits warn_non_evented warnings once per class
         self.synq_session.objects[self.synq_absolute_path] = self
 
         if self.synq_authoritive:
@@ -285,7 +302,8 @@ class SyncableObject:
         )
         self.events.connect(self._zenoh_publish_changes)
         self.synq_subscriber = self.synq_session.zenoh_session.declare_subscriber(
-            f"{self.synq_absolute_path}/**", WeakMethodProxy(self._zenoh_receive_changes)
+            f"{self.synq_absolute_path}/**",
+            WeakMethodProxy(self._zenoh_receive_changes),
         )
         logger.trace(
             f"{self.synq_subscriber} on {self.synq_session.zenoh_session.zid()}"
@@ -310,7 +328,9 @@ class SyncableObject:
             return
         if not self.synq_publish:
             return
-        if self.synq_lazy_publish and (not self.synq_publisher or not self.synq_publisher.matching_status):
+        if self.synq_lazy_publish and (
+            not self.synq_publisher or not self.synq_publisher.matching_status
+        ):
             logger.trace(f"{self} not matching subscribers, not publishing")
             return
 
@@ -330,7 +350,9 @@ class SyncableObject:
                     enc_data = enc_data.removesuffix("\n...")
                     logger.trace(f"publishing container {full_path}")
                     self.synq_session.zenoh_session.put(
-                        full_path, enc_data, source_info=source_info,
+                        full_path,
+                        enc_data,
+                        source_info=source_info,
                         encoding=zenoh.Encoding.APPLICATION_YAML,
                     )
             return
@@ -350,7 +372,9 @@ class SyncableObject:
             enc_data = enc_data.removesuffix("\n...")
             logger.trace(f"publishing container {full_path}")
             self.synq_session.zenoh_session.put(
-                full_path, enc_data, source_info=source_info,
+                full_path,
+                enc_data,
+                source_info=source_info,
                 encoding=zenoh.Encoding.APPLICATION_YAML,
             )
             return
@@ -364,14 +388,19 @@ class SyncableObject:
             payload, encoding = codec.encode(value)
             logger.trace(f"publishing (codec) {full_path} = {type(value).__name__}")
             self.synq_session.zenoh_session.put(
-                full_path, payload, source_info=source_info, encoding=encoding,
+                full_path,
+                payload,
+                source_info=source_info,
+                encoding=encoding,
             )
         else:
             enc_data = self.synq_session.type_registry.dumps(value)
             enc_data = enc_data.removesuffix("\n...")
             logger.trace(f"publishing yaml {full_path} = {enc_data}")
             self.synq_session.zenoh_session.put(
-                full_path, enc_data, source_info=source_info,
+                full_path,
+                enc_data,
+                source_info=source_info,
                 encoding=zenoh.Encoding.APPLICATION_YAML,
             )
 
@@ -413,13 +442,15 @@ class SyncableObject:
             codec = self.synq_session._decoder_for(sample.encoding)
             if codec:
                 obj = codec.decode(sample)
-                logger.trace(f"received (codec) {self.synq_absolute_path}/{relative_path}")
+                logger.trace(
+                    f"received (codec) {self.synq_absolute_path}/{relative_path}"
+                )
             else:
                 payload = sample.payload.to_string()
                 logger.trace(f"received {self.synq_absolute_path} = {payload}")
                 obj = self.synq_session.type_registry.load(payload)
 
-            if not codec and self.synq_check_receive_types and not self.valid_sync_type(
+            if self.synq_check_receive_types and not self.valid_sync_type(
                 relative_path, obj
             ):
                 logger.warning(
@@ -452,16 +483,22 @@ class SyncableObject:
             # Evented containers: update in-place so existing event hooks stay connected.
             if "/" not in relative_path:
                 current = getattr(self, relative_path, None)
-                if isinstance(current, EventedList) and isinstance(obj, (EventedList, list)):
+                if isinstance(current, EventedList) and isinstance(
+                    obj, (EventedList, list)
+                ):
                     current[:] = list(obj)
                     logger.trace(f"applied container (in-place list) {relative_path}")
                     return
-                if isinstance(current, EventedDict) and isinstance(obj, (EventedDict, dict)):
+                if isinstance(current, EventedDict) and isinstance(
+                    obj, (EventedDict, dict)
+                ):
                     current.clear()
                     current.update(dict(obj))
                     logger.trace(f"applied container (in-place dict) {relative_path}")
                     return
-                if isinstance(current, EventedSet) and isinstance(obj, (EventedSet, set, frozenset, list)):
+                if isinstance(current, EventedSet) and isinstance(
+                    obj, (EventedSet, set, frozenset, list)
+                ):
                     current.clear()
                     current.update(set(obj))
                     logger.trace(f"applied container (in-place set) {relative_path}")
@@ -548,7 +585,7 @@ class SyncableObject:
         # the YAML tag and returns a mapping, avoiding a new zenoh session.
         plain_yaml = IsolatedYAML()
         plain_yaml.constructor.add_multi_constructor(
-            '', lambda loader, _tag, node: loader.construct_mapping(node, deep=True)
+            "", lambda loader, _tag, node: loader.construct_mapping(node, deep=True)
         )
         assert reply.ok, f"RPC error: {reply.err.payload.to_string()}"
         updated = plain_yaml.load(reply.ok.payload.to_string())
@@ -565,7 +602,13 @@ class SyncableObject:
             new_v = current[f]
             if new_v != getattr(self, f):
                 self + Delta(  # type: ignore[operator]
-                    flat_dict_list=[{"path": f"root.{f}", "action": "values_changed", "value": new_v}],
+                    flat_dict_list=[
+                        {
+                            "path": f"root.{f}",
+                            "action": "values_changed",
+                            "value": new_v,
+                        }
+                    ],
                     mutate=True,
                     raise_errors=True,
                 )
@@ -575,6 +618,7 @@ class SyncableObject:
     def sr_object_schema(self) -> dict:
         """Returns the JSON Schema for this object's syncable fields and RPC endpoints."""
         from SpiriSynq.schema import get_schema
+
         return get_schema(type(self))
 
     @classmethod
@@ -603,7 +647,11 @@ class SyncableObject:
                 skip.update(c.synq_skip_sync)
 
         warn = next(
-            (c.__dict__["warn_non_evented"] for c in cls.mro() if "warn_non_evented" in c.__dict__),
+            (
+                c.__dict__["warn_non_evented"]
+                for c in cls.mro()
+                if "warn_non_evented" in c.__dict__
+            ),
             True,
         )
         result = frozenset(_collect_valid_sync_paths(cls, skip, warn=warn))
@@ -617,7 +665,9 @@ class SyncableObject:
         Returns a tuple of valid types (for use with isinstance), or None if path is invalid.
         """
         cache_attr = "_synq_type_cache"
-        cache: dict[str, tuple[type, ...] | None] | None = getattr(cls, cache_attr, None)
+        cache: dict[str, tuple[type, ...] | None] | None = getattr(
+            cls, cache_attr, None
+        )
         if cache is None:
             cache = {}
             setattr(cls, cache_attr, cache)
@@ -711,7 +761,7 @@ class SyncableObject:
         except Exception:
             pass
 
-        sub = getattr(self, 'synq_subscriber', None)
+        sub = getattr(self, "synq_subscriber", None)
         if sub is not None:
             try:
                 sub.undeclare()
@@ -719,7 +769,7 @@ class SyncableObject:
                 pass
             self.synq_subscriber = None
 
-        pub = getattr(self, 'synq_publisher', None)
+        pub = getattr(self, "synq_publisher", None)
         if pub is not None:
             try:
                 pub.undeclare()
@@ -727,14 +777,13 @@ class SyncableObject:
                 pass
             self.synq_publisher = None
 
-        for queryable in list(getattr(self, '_synq_callbacks', {}).values()):
+        for queryable in list(getattr(self, "_synq_callbacks", {}).values()):
             try:
                 queryable.undeclare()
             except Exception:
                 pass
-        if hasattr(self, '_synq_callbacks'):
+        if hasattr(self, "_synq_callbacks"):
             self._synq_callbacks.clear()
-
 
     def __del__(self):
         try:
