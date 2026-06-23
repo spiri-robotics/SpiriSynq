@@ -209,47 +209,6 @@ class Accuracy:
             if self.vertical is not None and other.vertical is not None else None
         return Accuracy(horizontal=h, vertical=v)
 
-    def fuse(self, other: "Accuracy", 
-            position_self: tuple[float, float] | None = None,
-            position_other: tuple[float, float] | None = None) -> "Accuracy":
-        #ToDO: this should be on the Position object itself, not the accuracy object, so that positions are implicit.
-        """Fuse two independent observations into one 90% circle.
-
-        When sources agree (overlap), the circle tightens due to triangulation.
-        When sources disagree, the circle widens to cover the gap.
-
-        This is one circle, 90% confidence, naive/practical approach for operators.
-        """
-        if not isinstance(other, Accuracy):
-            raise TypeError(f"Cannot fuse Accuracy with {type(other)}")
-
-        # If no positions, raise
-        if position_self is None or position_other is None:
-            raise
-
-        dist = math.hypot(position_self[0] - position_other[0],
-                        position_self[1] - position_other[1])
-
-        # Convert to 1σ (σ = CEP90 / H_FACTOR)
-        if self.horizontal is not None and other.horizontal is not None:
-            s_a = self.horizontal / self._H_FACTOR
-            s_b = other.horizontal / self._H_FACTOR
-            # Geometric envelope: existing uncertainties + disagreement distance
-            s_fused = math.sqrt(s_a ** 2 + s_b ** 2 + (dist ** 2 / 4))
-            h = s_fused * self._H_FACTOR
-        else:
-            h = self.horizontal or other.horizontal
-
-        # Vertical: no position distance, just additive
-        if self.vertical is not None and other.vertical is not None:
-            s_a = self.vertical / self._V_FACTOR
-            s_b = other.vertical / self._V_FACTOR
-            s_fused = math.sqrt(s_a ** 2 + s_b ** 2)
-            v = s_fused * self._V_FACTOR
-        else:
-            v = self.vertical or other.vertical
-
-        return Accuracy(horizontal=h, vertical=v)
 
 
 @dataclass
@@ -400,3 +359,52 @@ class Position(SyncableObject):
             self.accuracy = rel_acc + m_acc
         else:
             self.accuracy = rel_acc or m_acc
+
+
+def fuse_positions(*positions: Position) -> tuple[Offset, Accuracy]:
+    """Fuse N independent position observations into a single best estimate.
+
+    Uses inverse-variance weighting when horizontal/vertical accuracies are
+    known, falling back to a simple mean otherwise. More observations with
+    known accuracy produce a tighter result.
+
+    Returns (offset, accuracy) where either component may have None fields
+    if no accuracy information was available for that axis.
+    """
+    if not positions:
+        raise ValueError("At least one position is required")
+
+    offsets = [p.offset or Offset() for p in positions]
+
+    # Pairs of (offset, h_accuracy) for positions that have horizontal accuracy
+    h_known = [(off, p.accuracy.horizontal)
+               for off, p in zip(offsets, positions)
+               if p.accuracy is not None and p.accuracy.horizontal is not None]
+
+    # Pairs of (offset, v_accuracy) for positions that have vertical accuracy
+    v_known = [(off, p.accuracy.vertical)
+               for off, p in zip(offsets, positions)
+               if p.accuracy is not None and p.accuracy.vertical is not None]
+
+    if h_known:
+        inv_var = [1.0 / h ** 2 for _, h in h_known]
+        w_total = sum(inv_var)
+        x = sum(off.x * w for (off, _), w in zip(h_known, inv_var)) / w_total
+        y = sum(off.y * w for (off, _), w in zip(h_known, inv_var)) / w_total
+        h_acc = 1.0 / math.sqrt(w_total)
+    else:
+        x = sum(off.x for off in offsets) / len(offsets)
+        y = sum(off.y for off in offsets) / len(offsets)
+        h_acc = None
+
+    if v_known:
+        inv_var = [1.0 / v ** 2 for _, v in v_known]
+        w_total = sum(inv_var)
+        z = sum(off.z * w for (off, _), w in zip(v_known, inv_var)) / w_total
+        v_acc = 1.0 / math.sqrt(w_total)
+    else:
+        z = sum(off.z for off in offsets) / len(offsets)
+        v_acc = None
+
+    return Offset(x=x, y=y, z=z), Accuracy(horizontal=h_acc, vertical=v_acc)
+
