@@ -24,6 +24,16 @@ def _wait_for(predicate, timeout=3.0, interval=0.01):
     return False
 
 
+def _send_and_wait(send_fn, predicate, timeout=3.0, interval=0.1):
+    """Retry send_fn until predicate is True — zenoh may silently drop messages."""
+    start = time.time()
+    while time.time() - start < timeout:
+        send_fn()
+        if _wait_for(predicate, timeout=interval, interval=0.01):
+            return True
+    return False
+
+
 @pytest.fixture(autouse=True)
 def close_test_sessions():
     from SpiriSynq.shutdown import _live_sessions
@@ -301,13 +311,14 @@ def test_signal_unknown_path_emitted():
 
     # Publish from the default session without source_info so the ZID filter
     # on mirror (session_b) does not suppress it.
-    current_session.get().zenoh_session.put(
-        f"{obj.synq_absolute_path}/nonexistent_field",
-        "irrelevant",
-        encoding=zenoh.Encoding.APPLICATION_YAML,
-    )
-
-    assert _wait_for(lambda: len(unknown) > 0), "synq_signal_unknown_path never fired"
+    assert _send_and_wait(
+        lambda: current_session.get().zenoh_session.put(
+            f"{obj.synq_absolute_path}/nonexistent_field",
+            "irrelevant",
+            encoding=zenoh.Encoding.APPLICATION_YAML,
+        ),
+        lambda: len(unknown) > 0,
+    ), "synq_signal_unknown_path never fired"
     assert unknown[0] == "nonexistent_field"
 
 
@@ -329,15 +340,14 @@ def test_signal_type_mismatch_emitted_and_value_unchanged():
     )
 
     # YAML string is not a float — publish without source_info so it reaches mirror
-    current_session.get().zenoh_session.put(
-        f"{obj.synq_absolute_path}/value",
-        '"not_a_float"',
-        encoding=zenoh.Encoding.APPLICATION_YAML,
-    )
-
-    assert _wait_for(lambda: len(mismatches) > 0), (
-        "synq_signal_type_mismatch never fired"
-    )
+    assert _send_and_wait(
+        lambda: current_session.get().zenoh_session.put(
+            f"{obj.synq_absolute_path}/value",
+            '"not_a_float"',
+            encoding=zenoh.Encoding.APPLICATION_YAML,
+        ),
+        lambda: len(mismatches) > 0,
+    ), "synq_signal_type_mismatch never fired"
     assert mismatches[0][0] == "value"
     assert mirror.value == 0.0, "Field must not be updated on type mismatch"
 
@@ -367,15 +377,14 @@ def test_binary_payload_rejected_for_non_bytes_field():
     )
 
     # Publish raw binary payload (ZENOH_BYTES) to a non-bytes field
-    current_session.get().zenoh_session.put(
-        f"{obj.synq_absolute_path}/value",
-        b"raw_binary_garbage",
-        encoding=zenoh.Encoding.ZENOH_BYTES,
-    )
-
-    assert _wait_for(lambda: len(mismatches) > 0), (
-        "synq_signal_type_mismatch should fire for binary payload on non-bytes field"
-    )
+    assert _send_and_wait(
+        lambda: current_session.get().zenoh_session.put(
+            f"{obj.synq_absolute_path}/value",
+            b"raw_binary_garbage",
+            encoding=zenoh.Encoding.ZENOH_BYTES,
+        ),
+        lambda: len(mismatches) > 0,
+    ), "synq_signal_type_mismatch should fire for binary payload on non-bytes field"
     assert mismatches[0][0] == "value", "Mismatch path should be 'value'"
     assert mirror.value is None, "Field must not be updated on type mismatch"
 
@@ -407,13 +416,14 @@ def test_signal_missing_parent_emitted():
     mirror.synq_signal_missing_parent.connect(lambda path, *_: missing.append(path))
 
     # Publish inner/value while inner is None — publish without source_info
-    current_session.get().zenoh_session.put(
-        f"{obj.synq_absolute_path}/inner/value",
-        "42",
-        encoding=zenoh.Encoding.APPLICATION_YAML,
-    )
-
-    assert _wait_for(lambda: len(missing) > 0), "synq_signal_missing_parent never fired"
+    assert _send_and_wait(
+        lambda: current_session.get().zenoh_session.put(
+            f"{obj.synq_absolute_path}/inner/value",
+            "42",
+            encoding=zenoh.Encoding.APPLICATION_YAML,
+        ),
+        lambda: len(missing) > 0,
+    ), "synq_signal_missing_parent never fired"
     assert missing[0] == "inner/value"
     assert mirror.inner is None, "inner must remain None after missing-parent update"
 
@@ -497,13 +507,14 @@ def test_signal_missing_parent_triggers_auto_rehydrate():
     missing: list[str] = []
     mirror.synq_signal_missing_parent.connect(lambda path, *_: missing.append(path))
 
-    current_session.get().zenoh_session.put(
-        f"{obj.synq_absolute_path}/inner/value",
-        "42",
-        encoding=zenoh.Encoding.APPLICATION_YAML,
-    )
-
-    assert _wait_for(lambda: len(missing) > 0), "synq_signal_missing_parent never fired"
+    assert _send_and_wait(
+        lambda: current_session.get().zenoh_session.put(
+            f"{obj.synq_absolute_path}/inner/value",
+            "42",
+            encoding=zenoh.Encoding.APPLICATION_YAML,
+        ),
+        lambda: len(missing) > 0,
+    ), "synq_signal_missing_parent never fired"
     assert mirror.inner is None  # rehydrate confirms inner=None; state is unchanged
 
 
