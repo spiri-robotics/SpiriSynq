@@ -1,3 +1,4 @@
+from conftest import zenoh_test_config
 """
 Integration tests for @remote_method / RPC functionality.
 """
@@ -43,7 +44,7 @@ def test_remote_method_basic_call():
             return f"hello {name}"
 
     obj = WithRpc("test/rpc_basic", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithRpc.from_topic(obj.synq_absolute_path, session=session_b)
 
     result = remote.hello("world")
@@ -84,7 +85,7 @@ def test_remote_method_side_effects():
             self.value = new_value
 
     obj = WithMutableRpc("test/rpc_side_effects", synq_authoritive=True, value=0)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithMutableRpc.from_topic(obj.synq_absolute_path, session=session_b)
 
     remote.set_value(42)
@@ -104,7 +105,7 @@ def test_remote_method_exception_propagation():
             raise ValueError("intentional crash")
 
     obj = WithCrash("test/rpc_exception", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithCrash.from_topic(obj.synq_absolute_path, session=session_b)
 
     with pytest.raises(RpcException):
@@ -121,7 +122,7 @@ def test_builtin_sr_rehydrate():
         label: str = ""
 
     obj = RehydrateTest("test/rpc_rehydrate", synq_authoritive=True, value=7, label="hi")
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = RehydrateTest.from_topic(obj.synq_absolute_path, session=session_b)
 
     fresh = remote.sr_rehydrate()
@@ -139,7 +140,7 @@ def test_builtin_sr_metadata():
         value: int = 0
 
     obj = MetaTest("test/rpc_metadata", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = MetaTest.from_topic(obj.synq_absolute_path, session=session_b)
 
     meta = remote.sr_metadata()
@@ -162,7 +163,7 @@ def test_builtin_sr_object_schema():
             self.speed = new_speed
 
     obj = SchemaTest("test/rpc_schema", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = SchemaTest.from_topic(obj.synq_absolute_path, session=session_b)
 
     schema = remote.sr_object_schema()
@@ -200,7 +201,7 @@ def test_async_remote_method_over_network():
             return x * 2
 
     obj = WithAsyncRpc("test/rpc_async_remote", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithAsyncRpc.from_topic(obj.synq_absolute_path, session=session_b)
 
     result = remote.compute(21)
@@ -257,7 +258,7 @@ def test_as_async_remote_call():
             return a + b
 
     obj = WithRemoteAsync("test/rpc_as_async_remote", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithRemoteAsync.from_topic(obj.synq_absolute_path, session=session_b)
 
     result = asyncio.run(remote.add.as_async(3, 4))
@@ -305,7 +306,7 @@ def test_generator_remote_method_over_network():
             return "finished"
 
     obj = WithGenRpc("test/rpc_gen_remote", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithGenRpc.from_topic(obj.synq_absolute_path, session=session_b)
 
     gen = remote.squares(4)
@@ -360,7 +361,7 @@ def test_client_transform_applied_on_remote_call():
             return result * 2
 
     obj = WithClient("test/rpc_client_basic", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithClient.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert remote.get_value() == 20
@@ -401,7 +402,7 @@ def test_client_transform_receives_self():
             return result * self.multiplier
 
     obj = WithClientSelf("test/rpc_client_self", synq_authoritive=True, multiplier=3)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithClientSelf.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert remote.get_value() == 21
@@ -424,7 +425,7 @@ def test_client_transform_on_generator():
             return f"item:{item}"
 
     obj = WithClientGen("test/rpc_client_gen", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithClientGen.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert list(remote.numbers(3)) == ["item:0", "item:1", "item:2"]
@@ -447,7 +448,7 @@ def test_client_transform_on_async_remote():
             return result + 1
 
     obj = WithClientAsync("test/rpc_client_async", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithClientAsync.from_topic(obj.synq_absolute_path, session=session_b)
 
     result = asyncio.run(remote.double.as_async(5))
@@ -473,7 +474,7 @@ def test_server_hook_intercepts_query():
             query.reply(query.key_expr, payload=registry.dumps(99), encoding=zenoh.Encoding.APPLICATION_YAML)
 
     obj = WithServer("test/rpc_server_hook", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithServer.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert remote.get_value() == 99
@@ -524,7 +525,7 @@ def test_server_hook_reply_err_raises_rpc_exception():
             query.reply_err("not allowed")
 
     obj = WithServerErr("test/rpc_server_err", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithServerErr.from_topic(obj.synq_absolute_path, session=session_b)
 
     with pytest.raises(RpcException):
@@ -549,7 +550,7 @@ def test_server_hook_exception_forwarded_as_error():
             raise RuntimeError("boom")
 
     obj = WithServerRaise("test/rpc_server_raise", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithServerRaise.from_topic(obj.synq_absolute_path, session=session_b)
 
     with pytest.raises(RpcException):
@@ -579,7 +580,7 @@ def test_server_hook_receives_self_and_params():
             query.reply(query.key_expr, payload=registry.dumps(result), encoding=zenoh.Encoding.APPLICATION_YAML)
 
     obj = WithServerSelf("test/rpc_server_self", synq_authoritive=True, multiplier=5)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithServerSelf.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert remote.scale(3) == 30  # 3 * 5 * 2
@@ -597,7 +598,7 @@ def test_timeout_chaining():
             return x
 
     obj = WithTimeout("test/rpc_timeout", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = WithTimeout.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert remote.echo.timeout(5).sync(99) == 99

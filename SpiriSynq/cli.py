@@ -391,7 +391,9 @@ def topic_call(
         get_kwargs["timeout"] = timeout
 
     item_count = 0
+    got_reply = False
     for reply in session.zenoh_session.get(selector, **get_kwargs):
+        got_reply = True
         if reply.err:
             console_err.print(f"[red]RPC error:[/red] {reply.err.payload.to_string()}")
             raise typer.Exit(1)
@@ -413,6 +415,9 @@ def topic_call(
         item_count += 1
 
     console_err.print(f"[dim]done[/dim]")
+    if not got_reply:
+        console_err.print(f"[red]Error: no reply received (timeout or no matching endpoint)[/red]")
+        raise typer.Exit(2)
 
 
 @topic_app.command("schema")

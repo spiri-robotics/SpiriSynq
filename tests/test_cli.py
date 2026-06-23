@@ -141,13 +141,15 @@ def test_topic_rpc_global_query_exits_zero():
 # ── topic call ────────────────────────────────────────────────────────────────
 
 def test_topic_call_success():
+    from SpiriSynq.cli import session as cli_session
+
     @dataclass
     class CliCallObj(SyncableObject):
         @remote_method()
         def add(self, a: int, b: int) -> int:
             return a + b
 
-    obj = CliCallObj("cli_test/call_obj", synq_authoritive=True)
+    obj = CliCallObj("cli_test/call_obj", synq_authoritive=True, synq_session=cli_session)
     time.sleep(0.1)
 
     result = runner.invoke(
@@ -157,15 +159,26 @@ def test_topic_call_success():
     assert result.exit_code == 0
 
 
-def test_topic_call_rpc_exception_exits_nonzero():
-    """An RPC method that raises on the server propagates as a non-zero exit."""
+def test_topic_call_no_reply_exits_2():
+    """Calling a non-existent RPC endpoint exits with code 2 (no reply received)."""
+    result = runner.invoke(
+        app,
+        ["topic", "call", "cli_test/does_not_exist/method", "--timeout", "0.5"],
+    )
+    assert result.exit_code == 2
+
+
+def test_topic_call_rpc_exception_exits_1():
+    """An RPC method that raises on the server propagates as exit code 1."""
+    from SpiriSynq.cli import session as cli_session
+
     @dataclass
     class CliCrashObj(SyncableObject):
         @remote_method()
         def crash(self) -> None:
             raise ValueError("intentional")
 
-    obj = CliCrashObj("cli_test/crash_obj", synq_authoritive=True)
+    obj = CliCrashObj("cli_test/crash_obj", synq_authoritive=True, synq_session=cli_session)
     time.sleep(0.1)
 
     result = runner.invoke(
@@ -177,6 +190,8 @@ def test_topic_call_rpc_exception_exits_nonzero():
 
 def test_topic_call_generator_method():
     """A generator RPC method streams values and exits zero."""
+    from SpiriSynq.cli import session as cli_session
+
     @dataclass
     class CliGenObj(SyncableObject):
         @remote_method()
@@ -185,7 +200,7 @@ def test_topic_call_generator_method():
                 yield i
             return "done"
 
-    obj = CliGenObj("cli_test/gen_obj", synq_authoritive=True)
+    obj = CliGenObj("cli_test/gen_obj", synq_authoritive=True, synq_session=cli_session)
     time.sleep(0.1)
 
     result = runner.invoke(
@@ -296,12 +311,14 @@ def test_topic_rehydrate_with_bytes_field():
 def test_topic_watch_count_exits_after_n_messages():
     """--count N causes topic watch to exit after receiving N messages."""
     import threading
+    from SpiriSynq.cli import session as cli_session
 
     @dataclass
     class CliWatchCountObj(SyncableObject):
         value: int = 0
 
-    obj = CliWatchCountObj("cli_test/watch_count_obj", synq_authoritive=True, value=0)
+    obj = CliWatchCountObj("cli_test/watch_count_obj", synq_authoritive=True,
+                           synq_session=cli_session, value=0)
     time.sleep(0.1)
 
     result_holder = []
@@ -331,29 +348,47 @@ def test_topic_watch_bytes_field_decoded_as_binary():
     ZENOH_BYTES encoding.  topic watch must detect that encoding and emit the
     value as a base64 !!binary scalar rather than attempting a UTF-8 decode.
     """
-    import subprocess
-    import sys
+    import threading
+    from io import StringIO
+    from rich.console import Console
+    import SpiriSynq.cli as cli_module
+    from SpiriSynq.cli import session as cli_session
 
     @dataclass
     class CliByteWatchObj(SyncableObject):
         data: bytes = b""
 
-    obj = CliByteWatchObj("cli_test/bytes_watch_obj", synq_authoritive=True, data=b"")
+    obj = CliByteWatchObj("cli_test/bytes_watch_obj", synq_authoritive=True,
+                          synq_session=cli_session, data=b"")
     time.sleep(0.1)
 
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "SpiriSynq.cli", "topic", "watch",
-         f"{obj.synq_absolute_path}/data", "--count", "1", "--no-received-timestamp"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    buf = StringIO()
+    original_console = cli_module.console_out
+    cli_module.console_out = Console(file=buf, highlight=False, soft_wrap=True)
 
-    time.sleep(0.5)
-    obj.data = b"\xde\xad\xbe\xef"
+    result_holder = []
 
-    stdout, _ = proc.communicate(timeout=5.0)
-    assert proc.returncode == 0
-    assert b"!!binary" in stdout
+    def run_watch():
+        result_holder.append(runner.invoke(
+            app,
+            ["topic", "watch", f"{obj.synq_absolute_path}/data", "--count", "1",
+             "--no-received-timestamp"],
+        ))
+
+    try:
+        t = threading.Thread(target=run_watch, daemon=True)
+        t.start()
+        time.sleep(0.2)
+
+        obj.data = b"\xde\xad\xbe\xef"
+
+        t.join(timeout=5.0)
+    finally:
+        cli_module.console_out = original_console
+
+    assert not t.is_alive(), "topic watch did not exit after --count 1"
+    assert result_holder[0].exit_code == 0
+    assert "!!binary" in buf.getvalue()
 
 
 # ── meta type_schema ──────────────────────────────────────────────────────────

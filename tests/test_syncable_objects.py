@@ -13,24 +13,15 @@ from SpiriSynq.syncable_objects import (
     _collect_valid_sync_paths,
 )
 from SpiriSynq.session import Session, current_session
+from conftest import zenoh_test_config
 
 
-def _wait_for(predicate, timeout=3.0, interval=0.01):
+def _wait_for(predicate, timeout=1.0, interval=0.01):
     start = time.time()
     while time.time() - start < timeout:
         if predicate():
             return True
         time.sleep(interval)
-    return False
-
-
-def _send_and_wait(send_fn, predicate, timeout=3.0, interval=0.1):
-    """Retry send_fn until predicate is True — zenoh may silently drop messages."""
-    start = time.time()
-    while time.time() - start < timeout:
-        send_fn()
-        if _wait_for(predicate, timeout=interval, interval=0.01):
-            return True
     return False
 
 
@@ -180,14 +171,14 @@ def test_synq_publish_false_suppresses_outgoing_updates():
     class Obj(SyncableObject):
         value: float = 0.0
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj(
         "test/so_no_publish",
         synq_authoritive=True,
         synq_publish=False,
         synq_session=session_a,
     )
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
 
     received = []
     sub = session_b.zenoh_session.declare_subscriber(
@@ -208,7 +199,7 @@ def test_sync_dumps_returns_yaml_string():
         speed: float = 0.0
         name: str = ""
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj(
         "test/so_sync_dumps",
         synq_authoritive=True,
@@ -229,7 +220,7 @@ def test_close_idempotent():
     class Obj(SyncableObject):
         value: int = 0
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj("test/so_close_idem", synq_authoritive=True, synq_session=session_a)
     obj.close()
     obj.close()  # must not raise
@@ -242,7 +233,7 @@ def test_close_swallows_subscriber_undeclare_error():
     class Obj(SyncableObject):
         value: int = 0
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj("test/so_close_sub", synq_authoritive=True, synq_session=session_a)
     real_sub = obj.synq_subscriber
     obj.synq_subscriber = _FailUndeclare()  # type: ignore[assignment]
@@ -258,7 +249,7 @@ def test_close_swallows_publisher_undeclare_error():
     class Obj(SyncableObject):
         value: int = 0
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj("test/so_close_pub", synq_authoritive=True, synq_session=session_a)
     real_pub = obj.synq_publisher
     obj.synq_publisher = _FailUndeclare()  # type: ignore[assignment]
@@ -274,7 +265,7 @@ def test_close_swallows_queryable_undeclare_error():
     class Obj(SyncableObject):
         value: int = 0
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj("test/so_close_q", synq_authoritive=True, synq_session=session_a)
     for q in list(obj._synq_callbacks.values()):
         q.undeclare()
@@ -301,9 +292,9 @@ def test_signal_unknown_path_emitted():
     class Obj(SyncableObject):
         value: int = 0
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj("test/so_unknown_path", synq_authoritive=True, synq_session=session_a)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     mirror = Obj.from_topic(obj.synq_absolute_path, session=session_b)
 
     unknown: list[str] = []
@@ -311,14 +302,12 @@ def test_signal_unknown_path_emitted():
 
     # Publish from the default session without source_info so the ZID filter
     # on mirror (session_b) does not suppress it.
-    assert _send_and_wait(
-        lambda: current_session.get().zenoh_session.put(
-            f"{obj.synq_absolute_path}/nonexistent_field",
-            "irrelevant",
-            encoding=zenoh.Encoding.APPLICATION_YAML,
-        ),
-        lambda: len(unknown) > 0,
-    ), "synq_signal_unknown_path never fired"
+    current_session.get().zenoh_session.put(
+        f"{obj.synq_absolute_path}/nonexistent_field",
+        "irrelevant",
+        encoding=zenoh.Encoding.APPLICATION_YAML,
+    )
+    assert _wait_for(lambda: len(unknown) > 0), "synq_signal_unknown_path never fired"
     assert unknown[0] == "nonexistent_field"
 
 
@@ -329,9 +318,9 @@ def test_signal_type_mismatch_emitted_and_value_unchanged():
     class Obj(SyncableObject):
         value: float = 0.0
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj("test/so_type_mismatch", synq_authoritive=True, synq_session=session_a)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     mirror = Obj.from_topic(obj.synq_absolute_path, session=session_b)
 
     mismatches: list = []
@@ -340,14 +329,12 @@ def test_signal_type_mismatch_emitted_and_value_unchanged():
     )
 
     # YAML string is not a float — publish without source_info so it reaches mirror
-    assert _send_and_wait(
-        lambda: current_session.get().zenoh_session.put(
-            f"{obj.synq_absolute_path}/value",
-            '"not_a_float"',
-            encoding=zenoh.Encoding.APPLICATION_YAML,
-        ),
-        lambda: len(mismatches) > 0,
-    ), "synq_signal_type_mismatch never fired"
+    current_session.get().zenoh_session.put(
+        f"{obj.synq_absolute_path}/value",
+        '"not_a_float"',
+        encoding=zenoh.Encoding.APPLICATION_YAML,
+    )
+    assert _wait_for(lambda: len(mismatches) > 0), "synq_signal_type_mismatch never fired"
     assert mismatches[0][0] == "value"
     assert mirror.value == 0.0, "Field must not be updated on type mismatch"
 
@@ -366,9 +353,9 @@ def test_binary_payload_rejected_for_non_bytes_field():
     class Obj(SyncableObject):
         value: InnerType | None = None
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj("test/so_binary_reject", synq_authoritive=True, synq_session=session_a)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     mirror = Obj.from_topic(obj.synq_absolute_path, session=session_b)
 
     mismatches: list = []
@@ -377,13 +364,13 @@ def test_binary_payload_rejected_for_non_bytes_field():
     )
 
     # Publish raw binary payload (ZENOH_BYTES) to a non-bytes field
-    assert _send_and_wait(
-        lambda: current_session.get().zenoh_session.put(
-            f"{obj.synq_absolute_path}/value",
-            b"raw_binary_garbage",
-            encoding=zenoh.Encoding.ZENOH_BYTES,
-        ),
-        lambda: len(mismatches) > 0,
+    current_session.get().zenoh_session.put(
+        f"{obj.synq_absolute_path}/value",
+        b"raw_binary_garbage",
+        encoding=zenoh.Encoding.ZENOH_BYTES,
+    )
+    assert _wait_for(
+        lambda: len(mismatches) > 0
     ), "synq_signal_type_mismatch should fire for binary payload on non-bytes field"
     assert mismatches[0][0] == "value", "Mismatch path should be 'value'"
     assert mirror.value is None, "Field must not be updated on type mismatch"
@@ -400,14 +387,14 @@ def test_signal_missing_parent_emitted():
     class Outer(SyncableObject):
         inner: Inner | None = None
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Outer(
         "test/so_missing_parent",
         synq_authoritive=True,
         synq_session=session_a,
         synq_auto_rehydrate_on_missing_parent_timeout=-1,
     )
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     mirror = Outer.from_topic(obj.synq_absolute_path, session=session_b)
     mirror.synq_auto_rehydrate_on_missing_parent_timeout = -1
     assert mirror.inner is None
@@ -416,14 +403,12 @@ def test_signal_missing_parent_emitted():
     mirror.synq_signal_missing_parent.connect(lambda path, *_: missing.append(path))
 
     # Publish inner/value while inner is None — publish without source_info
-    assert _send_and_wait(
-        lambda: current_session.get().zenoh_session.put(
-            f"{obj.synq_absolute_path}/inner/value",
-            "42",
-            encoding=zenoh.Encoding.APPLICATION_YAML,
-        ),
-        lambda: len(missing) > 0,
-    ), "synq_signal_missing_parent never fired"
+    current_session.get().zenoh_session.put(
+        f"{obj.synq_absolute_path}/inner/value",
+        "42",
+        encoding=zenoh.Encoding.APPLICATION_YAML,
+    )
+    assert _wait_for(lambda: len(missing) > 0), "synq_signal_missing_parent never fired"
     assert missing[0] == "inner/value"
     assert mirror.inner is None, "inner must remain None after missing-parent update"
 
@@ -451,7 +436,7 @@ def test_from_topic_without_session_uses_current():
     class Obj(SyncableObject):
         value: int = 0
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj(
         "test/so_from_topic_noarg",
         synq_authoritive=True,
@@ -459,7 +444,7 @@ def test_from_topic_without_session_uses_current():
         synq_session=session_a,
     )
 
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     with session_b.as_default():
         # No session= argument → takes the `if not session:` branch (line 496)
         mirror = Obj.from_topic(obj.synq_absolute_path)
@@ -475,7 +460,7 @@ def test_close_swallows_events_disconnect_error():
     class Obj(SyncableObject):
         value: int = 0
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj("test/so_close_evt", synq_authoritive=True, synq_session=session_a)
 
     def raise_error(*_: object) -> None:
@@ -496,9 +481,9 @@ def test_signal_missing_parent_triggers_auto_rehydrate():
     class Outer(SyncableObject):
         inner: Inner | None = None
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Outer("test/so_auto_rehydrate", synq_authoritive=True, synq_session=session_a)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     mirror = Outer.from_topic(obj.synq_absolute_path, session=session_b)
     # Leave synq_auto_rehydrate_on_missing_parent_timeout at default (5.0s)
     # so the rehydrate thread is spawned when the missing-parent signal fires.
@@ -507,14 +492,12 @@ def test_signal_missing_parent_triggers_auto_rehydrate():
     missing: list[str] = []
     mirror.synq_signal_missing_parent.connect(lambda path, *_: missing.append(path))
 
-    assert _send_and_wait(
-        lambda: current_session.get().zenoh_session.put(
-            f"{obj.synq_absolute_path}/inner/value",
-            "42",
-            encoding=zenoh.Encoding.APPLICATION_YAML,
-        ),
-        lambda: len(missing) > 0,
-    ), "synq_signal_missing_parent never fired"
+    current_session.get().zenoh_session.put(
+        f"{obj.synq_absolute_path}/inner/value",
+        "42",
+        encoding=zenoh.Encoding.APPLICATION_YAML,
+    )
+    assert _wait_for(lambda: len(missing) > 0), "synq_signal_missing_parent never fired"
     assert mirror.inner is None  # rehydrate confirms inner=None; state is unchanged
 
 
@@ -525,14 +508,14 @@ def test_sr_rehydrate_no_diff():
     class Obj(SyncableObject):
         value: int = 0
 
-    session_a = Session()
+    session_a = Session(config=zenoh_test_config())
     obj = Obj(
         "test/so_rehydrate_nodiff",
         synq_authoritive=True,
         value=42,
         synq_session=session_a,
     )
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     mirror = Obj.from_topic(obj.synq_absolute_path, session=session_b)
     assert mirror.value == 42
 

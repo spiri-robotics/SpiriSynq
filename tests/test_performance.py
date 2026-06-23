@@ -1,3 +1,4 @@
+from conftest import zenoh_test_config
 """
 Performance and stress tests. Heavier than unit tests — run separately if needed.
 """
@@ -46,7 +47,7 @@ def test_concurrent_field_writes():
         value: float = 0.0
 
     auth = StressObj("stress/thread_writes", synq_authoritive=True)
-    mirror_session = Session()
+    mirror_session = Session(config=zenoh_test_config())
     mirror = StressObj.from_topic(auth.synq_absolute_path, mirror_session)
 
     time.sleep(0.3)

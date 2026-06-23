@@ -1,3 +1,4 @@
+from conftest import zenoh_test_config
 """
 Unit tests for Session.register_type_recursive.
 
@@ -15,7 +16,7 @@ from SpiriSynq.syncable_objects import SyncableObject
 
 @pytest.fixture
 def session():
-    s = Session()
+    s = Session(config=zenoh_test_config())
     yield s
     s.close()
 

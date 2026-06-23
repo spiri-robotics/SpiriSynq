@@ -1,3 +1,4 @@
+from conftest import zenoh_test_config
 """
 High-level integration tests for SpiriSynq session.
 These tests simulate real-world usage patterns with two communicating sessions.
@@ -68,7 +69,7 @@ def test_basic_field_synchronization():
     # Create an authoritative object (internal session)
     obj = SimpleData("test/obj", synq_authoritive=True, speed=42.5, name="test")
     # Receive the object on a separate session
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = SimpleData.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert obj.synq_session != remote.synq_session, "local and remote obj use same session, invalid test"
@@ -104,7 +105,7 @@ def test_sub_syncable_nested_dataclass_synchronization():
     obj = Outer(
         "test/sub_nested", synq_authoritive=True, inner=Inner(value=10), label="outer"
     )
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = Outer.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert remote.inner is not None
@@ -140,7 +141,7 @@ def test_none_to_sub_syncable_dataclass_sync():
         inner: Inner | None = None
 
     obj = Outer("test/none_to_sub", synq_authoritive=True)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = Outer.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert remote.inner is None
@@ -182,7 +183,7 @@ def test_sub_syncable_field_mutations_sync():
         pos: Point | None = None
 
     obj = Outer("test/sub_mutations", synq_authoritive=True, pos=Point(x=1.0, y=2.0))
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     remote = Outer.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert remote.pos is not None
@@ -211,7 +212,7 @@ def test_list_topics():
     obj = TestData("test/list_topics", synq_authoritive=True, value=42)
     path = obj.synq_absolute_path
 
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
 
     # Test discovery and metadata integrity via prefix filter (avoids noise from
     # stale queryables of other tests that pytest keeps alive in tracebacks).
@@ -249,7 +250,7 @@ def test_evented_container_synchronization():
         items: EventedList = field(default_factory=EventedList)
         mapping: EventedDict = field(default_factory=EventedDict)
 
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
 
     # Authoritative object
     obj = WithContainers(
@@ -286,7 +287,7 @@ def test_evented_set_synchronization():
     class WithSet(SyncableObject):
         tags: EventedSet = field(default_factory=EventedSet)
 
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
 
     obj = WithSet(
         "test/evented_set",
@@ -321,7 +322,7 @@ def test_raw_bytes_field():
         data: bytes = b""
 
     received: list[zenoh.Sample] = []
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     sub = session_b.zenoh_session.declare_subscriber(
         "**", lambda s: received.append(s)
     )
@@ -353,7 +354,7 @@ def test_large_bytes_sync():
         data: bytes = b""
         skip_rehydrate = {"data"}
 
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
 
     # 10 MiB of data
     size = 10 * 1024 * 1024
@@ -470,7 +471,7 @@ def test_synq_receive_false_blocks_updates():
         value: int = 0
 
     obj = ReceiveData("test/receive_false", synq_authoritive=True, value=1)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     mirror = ReceiveData.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert mirror.value == 1
@@ -493,7 +494,7 @@ def test_synq_rehydrate():
         value: int = 0
 
     obj = RehydrateData("test/rehydrate", synq_authoritive=True, value=1)
-    session_b = Session()
+    session_b = Session(config=zenoh_test_config())
     mirror = RehydrateData.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert mirror.value == 1
