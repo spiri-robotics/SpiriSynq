@@ -38,7 +38,7 @@ def topic_list(
 
     console_err.print(f"[dim]Querying: {query_topic}[/dim]")
 
-    replies = session.zenoh_session.get(query_topic)
+    replies = session.zenoh_session.get(query_topic,consolidation=zenoh.ConsolidationMode.NONE)
 
     found = 0
     for reply in replies:
