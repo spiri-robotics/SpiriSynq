@@ -76,6 +76,39 @@ def test_topic_list_with_nonexistent_type_filter():
     assert result.exit_code == 0
 
 
+def test_topic_list_returns_all_objects():
+    """topic list must return every registered object, not just one.
+
+    Default zenoh consolidation deduplicates replies sharing the same key, which
+    caused only the first authoritative object to appear when multiple objects of
+    the same class were registered.  ConsolidationMode.NONE on the get() call is
+    what fixes it; this test guards against regression.
+    """
+    from io import StringIO
+    from rich.console import Console
+    import SpiriSynq.cli as cli_module
+    from SpiriSynq.cli import session as cli_session
+
+    @dataclass
+    class CliListMultipleObjects(SyncableObject):
+        value: int = 0
+
+    obj_a = CliListMultipleObjects("cli_test/list_multi_a", synq_authoritive=True, synq_session=cli_session)  # noqa: F841
+    obj_b = CliListMultipleObjects("cli_test/list_multi_b", synq_authoritive=True, synq_session=cli_session)  # noqa: F841
+    time.sleep(0.1)
+
+    buf = StringIO()
+    original_err = cli_module.console_err
+    cli_module.console_err = Console(file=buf, highlight=False, soft_wrap=True)
+    try:
+        result = runner.invoke(app, ["topic", "list", "--type", "CliListMultipleObjects"])
+    finally:
+        cli_module.console_err = original_err
+
+    assert result.exit_code == 0
+    assert "2 result(s)" in buf.getvalue()
+
+
 # ── topic schema ──────────────────────────────────────────────────────────────
 
 def test_topic_schema_for_existing_object():

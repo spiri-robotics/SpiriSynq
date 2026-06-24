@@ -25,4 +25,10 @@
   check because the codec guard short-circuited validation. Type mismatches on
   codec-decoded fields now correctly fire the mismatch signal.
 
+- **`topic list` now returns all matching objects instead of just one.**
+  Zenoh's default consolidation mode deduplicates replies that share the same
+  reply key, so when multiple authoritative objects of the same class responded
+  to a wildcard `get()`, only one result survived. The fix passes
+  `ConsolidationMode.NONE` to the `get()` call so every reply is kept.
+
 ## v0.1.0
