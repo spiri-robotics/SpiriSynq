@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Features
+
+- **New `topic bandwidth` CLI command for monitoring message throughput.**
+  Subscribe to any key expression (wildcards supported) and get a live
+  bytes/sec and msg/sec readout. `--bytes` outputs raw byte counts per
+  interval to stdout for machine-readable consumption.
+
+- **`SyncableObject` now tracks `synq_mtime`: the monotonic timestamp of the last received remote update.**
+  Set to `time.monotonic()` whenever a remote update is successfully applied;
+  `-1` before any remote update arrives. Useful for detecting stale objects or
+  diagnosing receive latency. Never published or synced — monotonic clocks are
+  process-local and meaningless across nodes.
+
 ### Tests
 
 - **Refactored test suite to use TCP-only zenoh sessions instead of UDP multicast.**

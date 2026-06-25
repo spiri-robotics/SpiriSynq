@@ -167,6 +167,56 @@ def topic_watch(
         # Always undeclare the subscriber to cleanly release the Zenoh resource
         subscriber.undeclare()
 
+@topic_app.command("bandwidth")
+def topic_bandwidth(
+    topic: str = typer.Argument(..., help="Topic key expression to subscribe to (wildcards supported)"),
+    interval: float = typer.Option(1.0, "--interval", "-i", help="Reporting interval in seconds"),
+    raw_bytes: bool = typer.Option(False, "--bytes", help="Output raw byte count per interval to stdout (machine-readable)"),
+):
+    """Monitor bandwidth (bytes/sec) received on a topic."""
+    import time
+    import threading
+
+    console_err.print(f"[dim]Subscribing to: [bold]{topic}[/bold] (Ctrl+C to stop)[/dim]")
+
+    byte_count = [0]
+    msg_count = [0]
+    lock = threading.Lock()
+
+    def on_sample(sample):
+        n = len(sample.payload.to_bytes())
+        with lock:
+            byte_count[0] += n
+            msg_count[0] += 1
+
+    subscriber = session.zenoh_session.declare_subscriber(topic, on_sample)
+
+    def fmt_bytes(n):
+        for unit in ("B", "KB", "MB", "GB"):
+            if n < 1024:
+                return f"{n:.1f} {unit}/s"
+            n /= 1024
+        return f"{n:.1f} TB/s"
+
+    try:
+        while True:
+            time.sleep(interval)
+            with lock:
+                b, m = byte_count[0], msg_count[0]
+                byte_count[0] = 0
+                msg_count[0] = 0
+            if raw_bytes:
+                console_out.print(b)
+            else:
+                bps = b / interval
+                mps = m / interval
+                console_err.print(f"{fmt_bytes(bps)}  ({mps:.1f} msg/s)")
+    except KeyboardInterrupt:
+        console_err.print("\n[dim]Stopped.[/dim]")
+    finally:
+        subscriber.undeclare()
+
+
 from enum import Enum
 
 class InputType(str, Enum):

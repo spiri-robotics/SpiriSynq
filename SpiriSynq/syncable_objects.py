@@ -237,6 +237,11 @@ class SyncableObject:
     synq_auto_rehydrate_on_missing_parent_timeout: float = 5.0
     """Seconds between automatic sr_rehydrate calls triggered by missing-parent
     updates. Set to -1 to disable."""
+    synq_mtime: float = -1
+    """time.monotonic() timestamp of the last successfully applied remote update.
+    Only updated on receive — never published or synced (monotonic clocks are
+    process-local and meaningless across nodes). -1 if no remote update has
+    been received yet."""
     synq_signal_unknown_path = Signal(str, object)
     """Emitted when a received update targets a path not in valid_sync_paths().
     Args: (relative_path, zenoh.Sample) — object is not decoded since the path is unknown."""
@@ -257,6 +262,7 @@ class SyncableObject:
         "synq_auto_start",
         "synq_check_receive_types",
         "synq_auto_rehydrate_on_missing_parent_timeout",
+        "synq_mtime",
         "_synq_callbacks",
         "_synq_last_rehydrate_time",
     }
@@ -488,6 +494,7 @@ class SyncableObject:
                 ):
                     current[:] = list(obj)
                     logger.trace(f"applied container (in-place list) {relative_path}")
+                    self.synq_mtime = time.monotonic()
                     return
                 if isinstance(current, EventedDict) and isinstance(
                     obj, (EventedDict, dict)
@@ -495,6 +502,7 @@ class SyncableObject:
                     current.clear()
                     current.update(dict(obj))
                     logger.trace(f"applied container (in-place dict) {relative_path}")
+                    self.synq_mtime = time.monotonic()
                     return
                 if isinstance(current, EventedSet) and isinstance(
                     obj, (EventedSet, set, frozenset, list)
@@ -502,6 +510,7 @@ class SyncableObject:
                     current.clear()
                     current.update(set(obj))
                     logger.trace(f"applied container (in-place set) {relative_path}")
+                    self.synq_mtime = time.monotonic()
                     return
 
             path = str(sample.key_expr).removeprefix(self.synq_absolute_path).split("/")
@@ -524,6 +533,7 @@ class SyncableObject:
             try:
                 self + delta  # type: ignore[operator]  # mutate=True applies delta in-place
                 logger.trace(f"applied {relative_path} = {obj}")
+                self.synq_mtime = time.monotonic()
             except Exception as e:
                 logger.error(f"Failed to apply delta for {relative_path}: {e}")
 
