@@ -522,3 +522,126 @@ def test_sr_rehydrate_no_diff():
     # State already matches the authoritative object; the no-diff path (line 496) executes
     mirror.sr_rehydrate()
     assert mirror.value == 42
+
+
+# ── Tombstone tests ──────────────────────────────────────────────────────────
+
+
+def test_tombstone_publisher_created_for_authoritative():
+    """Authoritative objects get a reliable tombstone publisher in sync()."""
+
+    @dataclass
+    class Obj(SyncableObject):
+        value: int = 0
+
+    session_a = Session(config=zenoh_test_config())
+    obj = Obj("test/so_tombstone_pub", synq_authoritive=True, synq_session=session_a)
+    assert hasattr(obj, "_synq_tombstone_publisher")
+    assert obj._synq_tombstone_publisher is not None
+    obj.close()
+
+
+def test_tombstone_publisher_not_created_for_non_authoritative():
+    """Non-authoritative mirrors must not get a tombstone publisher."""
+
+    @dataclass
+    class Obj(SyncableObject):
+        value: int = 0
+
+    session_a = Session(config=zenoh_test_config())
+    obj = Obj("test/so_tombstone_noauth", synq_authoritive=True, synq_session=session_a)
+    session_b = Session(config=zenoh_test_config())
+    mirror = Obj.from_topic(obj.synq_absolute_path, session=session_b)
+    assert not getattr(mirror, "_synq_tombstone_publisher", None)
+    obj.close()
+
+
+def test_authoritative_close_sets_is_deleted():
+    """close() on an authoritative object sets synq_is_deleted=True."""
+
+    @dataclass
+    class Obj(SyncableObject):
+        value: int = 0
+
+    session_a = Session(config=zenoh_test_config())
+    obj = Obj("test/so_tombstone_selfdelete", synq_authoritive=True, synq_session=session_a)
+    assert not obj.synq_is_deleted
+    obj.close()
+    assert obj.synq_is_deleted
+
+
+def test_non_authoritative_close_does_not_set_is_deleted():
+    """close() on a mirror must not set synq_is_deleted=True."""
+
+    @dataclass
+    class Obj(SyncableObject):
+        value: int = 0
+
+    session_a = Session(config=zenoh_test_config())
+    obj = Obj("test/so_tombstone_mirror_close", synq_authoritive=True, synq_session=session_a)
+    session_b = Session(config=zenoh_test_config())
+    mirror = Obj.from_topic(obj.synq_absolute_path, session=session_b)
+    mirror.close()
+    assert not mirror.synq_is_deleted
+    obj.close()
+
+
+def test_tombstone_received_sets_is_deleted_and_emits_signal():
+    """Mirror receives the DELETE sample, sets synq_is_deleted, and fires synq_signal_tombstone."""
+
+    @dataclass
+    class Obj(SyncableObject):
+        value: int = 0
+
+    session_a = Session(config=zenoh_test_config())
+    obj = Obj("test/so_tombstone_receive", synq_authoritive=True, synq_session=session_a)
+    session_b = Session(config=zenoh_test_config())
+    mirror = Obj.from_topic(obj.synq_absolute_path, session=session_b)
+
+    tombstones: list = []
+    mirror.synq_signal_tombstone.connect(lambda: tombstones.append(True))
+
+    obj.close()
+
+    assert _wait_for(lambda: len(tombstones) > 0), "synq_signal_tombstone never fired on mirror"
+    assert mirror.synq_is_deleted
+
+
+def test_tombstone_not_echoed_back_to_sender():
+    """Authoritative object's own DELETE sample must not trigger its own signal/is_deleted flag."""
+
+    @dataclass
+    class Obj(SyncableObject):
+        value: int = 0
+
+    session_a = Session(config=zenoh_test_config())
+    obj = Obj("test/so_tombstone_noecho", synq_authoritive=True, synq_session=session_a)
+
+    self_tombstones: list = []
+    obj.synq_signal_tombstone.connect(lambda: self_tombstones.append(True))
+
+    obj.close()
+
+    time.sleep(0.05)
+    assert self_tombstones == [], "Authoritative object must not receive its own tombstone"
+
+
+def test_close_swallows_tombstone_publisher_errors():
+    """close() must not raise if the tombstone publisher's delete() or undeclare() fails."""
+
+    @dataclass
+    class Obj(SyncableObject):
+        value: int = 0
+
+    session_a = Session(config=zenoh_test_config())
+    obj = Obj("test/so_tombstone_err", synq_authoritive=True, synq_session=session_a)
+
+    class _FailAll:
+        def delete(self, **_):
+            raise RuntimeError("tombstone delete failed")
+
+        def undeclare(self):
+            raise RuntimeError("tombstone undeclare failed")
+
+    obj._synq_tombstone_publisher = _FailAll()  # type: ignore[assignment]
+    obj.close()  # must not raise

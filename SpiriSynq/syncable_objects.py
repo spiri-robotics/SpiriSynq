@@ -252,7 +252,12 @@ class SyncableObject:
     """Emitted when a nested path is valid but an intermediate object is None
     (e.g. path is 'bar/value' but self.bar is None).
     Args: (relative_path, decoded_obj)"""
+    synq_signal_tombstone = Signal()
+    """Emitted when a tombstone (delete) is received for this object's base path,
+    indicating the authoritative node has deleted it."""
     synq_skip_rehydrate = set()
+    synq_is_deleted: bool = False
+    """True after a tombstone has been received or sent (authoritative close)."""
     synq_skip_sync = {
         "synq_lazy_publish",
         "synq_authoritive",
@@ -263,6 +268,7 @@ class SyncableObject:
         "synq_check_receive_types",
         "synq_auto_rehydrate_on_missing_parent_timeout",
         "synq_mtime",
+        "synq_is_deleted",
         "_synq_callbacks",
         "_synq_last_rehydrate_time",
     }
@@ -303,6 +309,11 @@ class SyncableObject:
         self.synq_publisher = self.synq_session.zenoh_session.declare_publisher(
             f"{self.synq_absolute_path}/**"
         )
+        if self.synq_authoritive:
+            self._synq_tombstone_publisher = self.synq_session.zenoh_session.declare_publisher(
+                f"{self.synq_absolute_path}/**",
+                reliability=zenoh.Reliability.RELIABLE,
+            )
         logger.trace(
             f"{self.synq_publisher} on {self.synq_session.zenoh_session.zid()}"
         )
@@ -426,6 +437,13 @@ class SyncableObject:
                 )
                 return
             if not self.synq_receive:
+                return
+            if sample.kind == zenoh.SampleKind.DELETE:
+                key = str(sample.key_expr)
+                if key in (self.synq_absolute_path, f"{self.synq_absolute_path}/**"):
+                    logger.debug(f"Tombstone received for {self.synq_absolute_path}")
+                    self.synq_is_deleted = True
+                    self.synq_signal_tombstone.emit()
                 return
             if not sample.payload:
                 logger.warning(f"Update payload not ok")
@@ -783,6 +801,20 @@ class SyncableObject:
             self.events.disconnect(self._zenoh_publish_changes)
         except Exception:
             pass
+
+        tombstone_pub = getattr(self, "_synq_tombstone_publisher", None)
+        if tombstone_pub is not None:
+            try:
+                source_info = self.synq_session.source_info(self.synq_absolute_path) if self.synq_session else None
+                tombstone_pub.delete(source_info=source_info)
+                self.synq_is_deleted = True
+            except Exception:
+                pass
+            try:
+                tombstone_pub.undeclare()
+            except Exception:
+                pass
+            self._synq_tombstone_publisher = None
 
         sub = getattr(self, "synq_subscriber", None)
         if sub is not None:

@@ -4,6 +4,12 @@
 
 ### Features
 
+- **Authoritative `SyncableObject` now sends a reliable zenoh tombstone on `close()`.**
+  When the authoritative node closes an object, a `SampleKind.DELETE` is published on
+  `synq_absolute_path/**` with `Reliability.RELIABLE`. Mirrors receive this and set
+  `synq_is_deleted = True` and emit `synq_signal_tombstone`. The sender's own subscriber
+  ignores the echo via ZID filtering.
+
 - **Added `spirisynq` as a CLI entry point alias.**
   The CLI is now also registered as `spirisynq`, enabling `uvx spirisynq` for
   zero-install usage. The existing `synq` command is unchanged.
