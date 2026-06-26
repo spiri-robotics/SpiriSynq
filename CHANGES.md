@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Added `spirisynq` as a CLI entry point alias.**
+  The CLI is now also registered as `spirisynq`, enabling `uvx spirisynq` for
+  zero-install usage. The existing `synq` command is unchanged.
+
+- **`SyncableObject` now has a minimal `__str__` representation.**
+  Shows the class name, `synq_absolute_path`, and any user-declared fields
+  (fields not prefixed with `synq_` or `_`). Avoids printing session internals.
+
 ## v0.1.1
 
 ### Features

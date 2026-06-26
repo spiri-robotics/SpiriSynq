@@ -553,6 +553,19 @@ class SyncableObject:
             return f"{self.synq_base_topic}/{self.synq_topic}"
         return f"{self.synq_topic}"
 
+    def __str__(self) -> str:
+        user_fields = {
+            f.name: getattr(self, f.name)
+            for f in dataclasses.fields(self)
+            if not f.name.startswith("synq_") and not f.name.startswith("_")
+        }
+        fields_str = ", ".join(f"{k}={v!r}" for k, v in user_fields.items())
+        cls_name = type(self).__name__
+        path = self.synq_absolute_path
+        if fields_str:
+            return f"{cls_name}({path!r}, {fields_str})"
+        return f"{cls_name}({path!r})"
+
     @classmethod
     def synq_type_tags(cls) -> list:
         tags = []

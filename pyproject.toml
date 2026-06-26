@@ -38,6 +38,7 @@ examples = [
 
 [project.scripts]
 synq = "SpiriSynq.cli:app"
+spirisynq = "SpiriSynq.cli:app"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

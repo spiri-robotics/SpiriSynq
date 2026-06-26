@@ -25,10 +25,7 @@ try:
         drone.mount_offset = Offset(x=x, y=y, z=z)
         drone.mount_orientation = Orientation.from_euler(roll=0.0, pitch=0.0, yaw=t)
 
-        print(
-            f"published offset=({x:.1f}, {y:.1f}, {z:.1f})  "
-            f"observer offset={observer.offset}"
-        )
+        print(drone)
 
         t += 0.1
         time.sleep(0.5)
