@@ -240,7 +240,7 @@ class Session:
 
         def _is_representable(t: type) -> bool:
             rep = self.type_registry.representer
-            return any(mro_t in rep.yaml_representers for mro_t in t.__mro__)
+            return t in rep.yaml_representers
 
         def _register(t: type) -> None:
             if not isinstance(t, type) or t in visited:

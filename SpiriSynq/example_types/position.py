@@ -21,6 +21,7 @@ from loguru import logger
 class RootFrame(str):
     """A string identifying a known root coordinate frame."""
 
+    yaml_tag = "!RootFrame"
     _KNOWN: ClassVar[frozenset[str]] = frozenset({"ECEF", "unknown", "error"})
 
     def __new__(cls, value: str) -> "RootFrame":
@@ -31,6 +32,14 @@ class RootFrame(str):
     @classmethod
     def is_known(cls, name: str) -> bool:
         return name in cls._KNOWN
+
+    @classmethod
+    def to_yaml(cls, representer, data):
+        return representer.represent_scalar(cls.yaml_tag, str(data))
+
+    @classmethod
+    def from_yaml(cls, constructor, node):
+        return cls(constructor.construct_scalar(node))
 
 
 SpatialFrame: TypeAlias = RootFrame | str

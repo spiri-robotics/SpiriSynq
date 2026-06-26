@@ -27,14 +27,13 @@ class TimeData(SyncableObject):
 
 if __name__ == "__main__":
     t = TimeData("timeServer", synq_authoritive=True)
-    t2 = TimeData("timeServer2", synq_authoritive=True)
+    t2 = TimeData.from_topic(t.synq_absolute_path)
     try:
         while True:
 
-            t.time = datetime.datetime.now()
             t2.time = datetime.datetime.now()
 
-            t.time_binary = int(datetime.datetime.now().timestamp()).to_bytes(8)
+            t2.time_binary = int(datetime.datetime.now().timestamp()).to_bytes(8)
             time.sleep(1)
     except KeyboardInterrupt:
         test_gc.diagnose_gc_leaks("./gc_leaks")

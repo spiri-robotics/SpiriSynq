@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.1
 
 ### Features
 
@@ -27,6 +27,16 @@
   rather than creating independent sessions, fixing intermittent isolation failures.
 
 ### Bug Fixes
+
+- **`RootFrame` is now correctly serialized by the YAML type registry.**
+  `RootFrame` is a `str` subclass, and `register_type_recursive` was skipping
+  its registration because the MRO check found `str` already representable.
+  But ruamel.yaml's representer only checks the exact type at serialize time,
+  so `RootFrame` values raised `RepresenterError` at runtime. Fixed by adding
+  `yaml_tag`, `to_yaml`, and `from_yaml` to `RootFrame`, and by tightening
+  `_is_representable` to check the exact type only — matching what ruamel.yaml
+  actually does. `RootFrame` round-trips correctly through YAML so
+  `isinstance(frame, RootFrame)` is preserved after deserialization.
 
 - **CLI `topic call` now exits with code 2 when no reply is received.**
   Previously, calling a non-existent or unreachable RPC endpoint would silently
