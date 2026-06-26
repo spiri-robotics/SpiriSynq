@@ -259,8 +259,11 @@ class Position(SyncableObject):
     def _update_relative_subscriber(self, frame: SpatialFrame):
         # Clean up all existing subscribers
         for subscriber in self._relative_subscribers:
-            subscriber.undeclare()
-            logger.trace(f"Undeclared stale subscriber {subscriber}")
+            try:
+                subscriber.undeclare()
+                logger.trace(f"Undeclared stale subscriber {subscriber}")
+            except zenoh.ZError:
+                logger.trace(f"Subscriber already undeclared (session reset?): {subscriber!r}")
         self._relative_subscribers.clear()
 
         # If this is a root frame, no relative subscription needed
