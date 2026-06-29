@@ -629,37 +629,7 @@ def meta_type_schema(
     else:
         console_err.print(f"[dim]{found} result(s)[/dim]")
 
-import click
-from rich.console import Console
-from rich.rule import Rule
-from rich.text import Text
-
 console = Console()
-
-def _print_all_help(cmd: click.Command, ctx: click.Context):
-    """Recursively print help for all commands."""
-    # Print section header
-    console.print()
-    console.print(Rule(Text(ctx.command_path, style="bold cyan"),characters="#"))
-
-    # Format and print help text
-    formatter = ctx.make_formatter()
-    cmd.format_help(ctx, formatter)
-    console.print(formatter.getvalue())
-
-    # Recurse into subcommands
-    if isinstance(cmd, click.Group):
-        for sub_name, sub_cmd in cmd.commands.items():
-            sub_ctx = click.Context(sub_cmd, parent=ctx, info_name=sub_name)
-            _print_all_help(sub_cmd, sub_ctx)
-
-
-@app.command("help-all")
-def help_cmd():
-    """Show help for all commands (like a man page)."""
-    click_app = typer.main.get_command(app)
-    root_ctx = click.Context(click_app, info_name="synq")
-    _print_all_help(click_app, root_ctx)
 
 
 if __name__ == "__main__":

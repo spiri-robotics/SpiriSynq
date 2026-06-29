@@ -56,13 +56,6 @@ def test_zenoh_scout_all_types_disabled_is_error():
     assert result.exit_code == 1
 
 
-# ── Help ──────────────────────────────────────────────────────────────────────
-
-def test_help_all_exits_zero():
-    result = runner.invoke(app, ["help-all"])
-    assert result.exit_code == 0
-
-
 # ── topic list ────────────────────────────────────────────────────────────────
 
 def test_topic_list_exits_zero():

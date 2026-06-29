@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixes
+
+- **Removed `click` direct import from CLI.** The `help-all` command depended on
+  `click` directly, which is no longer a required dependency of `typer>=0.26`.
+  The command has been removed; `uvx spirisynq` now works without error.
+
 ### Improvements
 
 - **`RpcException` now includes the topic in the error message.**
