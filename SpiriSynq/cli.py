@@ -445,7 +445,7 @@ def topic_call(
     for reply in session.zenoh_session.get(selector, **get_kwargs):
         got_reply = True
         if reply.err:
-            console_err.print(f"[red]RPC error:[/red] {reply.err.payload.to_string()}")
+            console_err.print(f"[red]RPC error on {selector}:[/red] {reply.err.payload.to_string()}")
             raise typer.Exit(1)
 
         raw = reply.ok.payload.to_string().strip()

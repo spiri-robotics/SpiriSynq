@@ -15,7 +15,10 @@ if TYPE_CHECKING:
     from SpiriSynq.syncable_objects import SyncableObject
 
 class RpcException(Exception):
-    pass
+    def __init__(self, message: str, topic: str | None = None):
+        self.topic = topic
+        prefix = f"[{topic}] " if topic else ""
+        super().__init__(f"{prefix}{message}")
 
 # Final reply encoding for generator methods: signals exhaustion and carries the return value.
 GENERATOR_DONE_ENCODING = zenoh.Encoding("x-spirisynq/generator-done")
@@ -39,10 +42,10 @@ def rpc_call(topic: str, session: 'Session', kwargs: Dict[str, Any] | None = Non
                 reply = z_session.get(selector).recv()
                 if not reply.ok:
                     assert reply.err, "RPC reply not OK and remote didn't return an error message"
-                    raise RpcException(reply.err.payload.to_string())
+                    raise RpcException(reply.err.payload.to_string(), topic=str(selector))
                 if reply.ok.encoding == zenoh.Encoding.APPLICATION_YAML:
                     return yaml.load(reply.ok.payload.to_string())
-                raise RpcException(f"Not yaml encoded: {reply.ok.encoding} {reply}")
+                raise RpcException(f"Not yaml encoded: {reply.ok.encoding} {reply}", topic=str(selector))
             except RpcException:
                 raise
             except Exception as e:
@@ -83,7 +86,7 @@ def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[Syncable
                 instance._server_func(parent, query)
             except Exception as e:
                 query.reply_err(f"RPC error '{e}'")
-                logger.error(f"Local RPC error '{e}'")
+                logger.exception(f"Local RPC error on {query.key_expr}")
             return
 
         registry = parent.synq_session.type_registry
@@ -144,7 +147,7 @@ def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[Syncable
 
         except Exception as e:
             query.reply_err(f"RPC error '{e}'")
-            logger.error(f"Local RPC error '{e}'")
+            logger.exception(f"Local RPC error on {query.key_expr}")
 
     return callback
 
@@ -206,7 +209,7 @@ class BoundRemoteMethod:
                     selector, timeout=self._timeout
                 ).recv()
                 if reply.err:
-                    raise RpcException(reply.err.payload.to_string())
+                    raise RpcException(reply.err.payload.to_string(), topic=str(selector))
                 if self._remote_method._client_func_raw:
                     return reply
                 raw = reply.ok.payload.to_string()
@@ -230,7 +233,7 @@ class BoundRemoteMethod:
             timeout=self._timeout,
         ):
             if reply.err:
-                raise RpcException(reply.err.payload.to_string())
+                raise RpcException(reply.err.payload.to_string(), topic=str(selector))
             if reply.ok.encoding == GENERATOR_DONE_ENCODING:
                 return self._instance.synq_session.type_registry.load(reply.ok.payload.to_string())
             yield self._instance.synq_session.type_registry.load(reply.ok.payload.to_string())

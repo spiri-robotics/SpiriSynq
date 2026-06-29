@@ -554,7 +554,7 @@ class SyncableObject:
                 logger.trace(f"applied {relative_path} = {obj}")
                 self.synq_mtime = time.monotonic()
             except Exception as e:
-                logger.error(f"Failed to apply delta for {relative_path}: {e}")
+                logger.exception(f"Failed to apply delta for {relative_path}")
 
     @classmethod
     def from_topic(cls, topic, session=None):

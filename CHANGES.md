@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Improvements
+
+- **`RpcException` now includes the topic in the error message.**
+  All raise sites pass the zenoh selector as a `topic` keyword argument, which is
+  prepended to the message as `[<topic>]` and also accessible as `exc.topic`.
+
+- **`synq topic call` now includes the topic in RPC error output.**
+  The CLI error line reads `RPC error on <selector>: <message>` instead of omitting
+  the selector, making it easier to identify which endpoint failed.
+
+- **Server-side RPC errors now log a full traceback.**
+  Both error handlers in `_zenoh_callback` use `logger.exception(...)` instead of
+  `logger.error(...)`, so the full stack trace is captured in server logs alongside
+  the topic that triggered the error.
+
 ## v0.1.2
 
 ### Bug Fixes
