@@ -1,21 +1,17 @@
 import zenoh
 import socket
 import os
-import threading
-from ruamel.yaml import YAML
-from ruamel.yaml.constructor import SafeConstructor
-from ruamel.yaml.representer import SafeRepresenter
 from deepdiff import DeepDiff, Delta
 from dataclasses import dataclass, field
 from typing import get_type_hints, get_origin, get_args
 from SpiriSynq.remote_callables import rpc_call
 from SpiriSynq.shutdown import register_session
 from SpiriSynq.codecs import Codec, BUILTIN_CODECS
+from SpiriSynq.serializer import SessionSerializer
 from loguru import logger
 import weakref
 from contextvars import ContextVar
 from contextlib import contextmanager
-import io
 from collections import defaultdict
 from psygnal.containers import EventedList, EventedDict, EventedSet
 
@@ -45,53 +41,6 @@ def _construct_evented_set(constructor, node):
 
 def _default_base_topic() -> str:
     return os.getenv("SPIRI_SYNQ_BASE_TOPIC", socket.gethostname())
-
-
-class IsolatedYAML(YAML):
-    """YAML subclass with isolated constructor/representer state and safe string dumping.
-
-    Works around:
-    - https://sourceforge.net/p/ruamel-yaml/tickets/341/ (isolated state)
-    - https://sourceforge.net/p/ruamel-yaml/tickets/367/ (thread safety)
-    - https://sourceforge.net/p/ruamel-yaml/tickets/272/ (emitter state poisoning)
-
-    Not sure if 367 or 272 are the real problem here, but this should deal with both.
-    """
-
-    def __init__(self, *args, **kwargs):
-        # Force typ to avoid 'string' plugin which causes emitter issues with bytes
-        if 'typ' not in kwargs:
-            kwargs['typ'] = 'safe'
-        super().__init__(*args, **kwargs)
-
-        # Isolate constructor and representer state
-        class IsolatedConstructor(SafeConstructor):
-            yaml_constructors = SafeConstructor.yaml_constructors.copy()
-
-        class IsolatedRepresenter(SafeRepresenter):
-            yaml_representers = SafeRepresenter.yaml_representers.copy()
-
-        self.Constructor = IsolatedConstructor
-        self.Representer = IsolatedRepresenter
-        self._dump_lock = threading.Lock()
-
-    def dumps(self, data):
-        """Serialize data to a YAML string."""
-        with self._dump_lock:
-            buf = io.StringIO()
-            # Must be set before __enter__: YAMLContextManager.__init__ captures
-            # self._output from the YAML instance.
-            self._output = buf
-            # Use the context-manager protocol instead of dump(data, stream).
-            # A failed dump (e.g. RepresenterError for an unregistered type) leaves
-            # _context_manager/_output/_emitter/_serializer in a half-finished state;
-            # on the next plain dump() call, ruamel sees _context_manager is non-None,
-            # takes the context-manager branch, and raises AttributeError because
-            # _output hasn't been re-initialised yet.  __exit__ unconditionally calls
-            # teardown_output(), which resets all of that state even when the body raises.
-            with self:
-                self.dump(data)
-            return buf.getvalue().removesuffix("...\n").removesuffix("\n")
 
 
 @dataclass
@@ -130,7 +79,7 @@ class Session:
     base_topic: str = field(default_factory=_default_base_topic)
     """Topic prefix prepended to all authoritative objects on this session.
     Defaults to the hostname, or the ``SPIRI_SYNQ_BASE_TOPIC`` environment variable if set."""
-    type_registry: IsolatedYAML = field(default_factory=IsolatedYAML)
+    type_registry: SessionSerializer = field(default_factory=SessionSerializer)
     """YAML serialiser/deserialiser used for all payloads on this session.
     Types are registered here by :meth:`register_type_recursive`."""
     zenoh_session: zenoh.Session = field(init=False)

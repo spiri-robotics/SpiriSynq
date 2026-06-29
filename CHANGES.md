@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Internal
+
+- **Replaced `ruamel-yaml` with `PyYAML` for thread-safe serialization.**
+  `ruamel.yaml` holds shared mutable state on the `YAML` instance, requiring
+  a lock around every serialize/deserialize call and a non-trivial `IsolatedYAML`
+  subclass to work around emitter state poisoning and class-level dict aliasing.
+  PyYAML creates a fresh `Loader`/`Dumper` instance per call, so there is no
+  shared state between threads at all — no locks needed. The `IsolatedYAML`
+  workaround is removed; a new `SessionSerializer` class in `SpiriSynq/serializer.py`
+  holds per-session `SafeLoader`/`SafeDumper` subclasses with registered types in
+  their class-level dicts. PyYAML 6.0.3+ also ships free-threaded (`cp314t`) wheels,
+  making this the correct path for GIL-free Python.
+
 ### Features
 
 - **Authoritative `SyncableObject` now sends a reliable zenoh tombstone on `close()`.**

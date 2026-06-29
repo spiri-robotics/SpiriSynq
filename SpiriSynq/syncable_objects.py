@@ -1,5 +1,6 @@
 from SpiriSynq.remote_callables import RemoteMethod, remote_method
-from SpiriSynq.session import Session, IsolatedYAML, current_session
+from SpiriSynq.session import Session, current_session
+from SpiriSynq.serializer import load_untyped
 
 import zenoh
 from loguru import logger
@@ -622,14 +623,9 @@ class SyncableObject:
         syncable = {p for p in cls.valid_sync_paths() if "/" not in p}
         to_sync = list(syncable - skip)
 
-        # Deserialize as a plain dict — catch-all multi-constructor ignores
-        # the YAML tag and returns a mapping, avoiding a new zenoh session.
-        plain_yaml = IsolatedYAML()
-        plain_yaml.constructor.add_multi_constructor(
-            "", lambda loader, _tag, node: loader.construct_mapping(node, deep=True)
-        )
+        # Deserialize as a plain dict — strips YAML tags, returns a mapping.
         assert reply.ok, f"RPC error: {reply.err.payload.to_string()}"
-        updated = plain_yaml.load(reply.ok.payload.to_string())
+        updated = load_untyped(reply.ok.payload.to_string())
 
         current = {f: getattr(self, f) for f in to_sync}
         diff = DeepDiff(current, updated, include_paths=to_sync)
