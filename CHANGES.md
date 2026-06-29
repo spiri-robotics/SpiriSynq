@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Bug Fixes
+
+- **Fixed `synq_lazy_publish` never actually suppressing publishes when there are no subscribers.**
+  The check used `not self.synq_publisher.matching_status`, but `matching_status` returns a
+  `MatchingStatus` object (always truthy), so the guard was dead code. Fixed to use
+  `.matching_status.matching` to read the actual boolean.
+
+### Tests
+
+- **Replaced timing sleeps before zenoh publishes with `matching_status.matching` polls.**
+  Several tests used `time.sleep()` to wait for subscription routing to propagate before
+  publishing a message. The fix polls `obj.synq_publisher.matching_status.matching` instead,
+  which resolves as soon as the router has registered the subscriber — no fixed wait needed.
+
 ### Internal
 
 - **Replaced `ruamel-yaml` with `PyYAML` for thread-safe serialization.**

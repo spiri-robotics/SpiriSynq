@@ -300,6 +300,7 @@ def test_signal_unknown_path_emitted():
     unknown: list[str] = []
     mirror.synq_signal_unknown_path.connect(lambda path, *_: unknown.append(path))
 
+    _wait_for(lambda: obj.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
     # Publish from the default session without source_info so the ZID filter
     # on mirror (session_b) does not suppress it.
     current_session.get().zenoh_session.put(
@@ -328,6 +329,7 @@ def test_signal_type_mismatch_emitted_and_value_unchanged():
         lambda path, val: mismatches.append((path, val))
     )
 
+    _wait_for(lambda: obj.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
     # YAML string is not a float — publish without source_info so it reaches mirror
     current_session.get().zenoh_session.put(
         f"{obj.synq_absolute_path}/value",
@@ -363,6 +365,7 @@ def test_binary_payload_rejected_for_non_bytes_field():
         lambda path, val: mismatches.append((path, val))
     )
 
+    _wait_for(lambda: obj.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
     # Publish raw binary payload (ZENOH_BYTES) to a non-bytes field
     current_session.get().zenoh_session.put(
         f"{obj.synq_absolute_path}/value",
@@ -402,6 +405,7 @@ def test_signal_missing_parent_emitted():
     missing: list[str] = []
     mirror.synq_signal_missing_parent.connect(lambda path, *_: missing.append(path))
 
+    _wait_for(lambda: obj.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
     # Publish inner/value while inner is None — publish without source_info
     current_session.get().zenoh_session.put(
         f"{obj.synq_absolute_path}/inner/value",
@@ -492,6 +496,7 @@ def test_signal_missing_parent_triggers_auto_rehydrate():
     missing: list[str] = []
     mirror.synq_signal_missing_parent.connect(lambda path, *_: missing.append(path))
 
+    _wait_for(lambda: obj.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
     current_session.get().zenoh_session.put(
         f"{obj.synq_absolute_path}/inner/value",
         "42",

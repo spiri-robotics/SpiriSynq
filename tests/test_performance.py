@@ -50,7 +50,7 @@ def test_concurrent_field_writes():
     mirror_session = Session(config=zenoh_test_config())
     mirror = StressObj.from_topic(auth.synq_absolute_path, mirror_session)
 
-    time.sleep(0.3)
+    _wait_for(lambda: auth.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
 
     errors = []
     errors_lock = threading.Lock()

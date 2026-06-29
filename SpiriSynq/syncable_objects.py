@@ -347,7 +347,7 @@ class SyncableObject:
         if not self.synq_publish:
             return
         if self.synq_lazy_publish and (
-            not self.synq_publisher or not self.synq_publisher.matching_status
+            not self.synq_publisher or not self.synq_publisher.matching_status.matching  # type: ignore[union-attr]
         ):
             logger.trace(f"{self} not matching subscribers, not publishing")
             return
