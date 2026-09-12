@@ -321,10 +321,10 @@ class Session:
                 return codec
         return None
 
-    def source_info(self, path:str):
+    def source_info(self, path: str, source_id=None):
         #We keep track of per path sequince numbers.
         source_info = zenoh.SourceInfo(
-            source_id=self.zenoh_session.id,
+            source_id=source_id if source_id is not None else self.zenoh_session.id,
             source_sn=self._sequince_number_for_path[path],
         )
         self._sequince_number_for_path[path]+=1

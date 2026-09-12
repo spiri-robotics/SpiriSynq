@@ -631,6 +631,33 @@ def test_tombstone_not_echoed_back_to_sender():
     assert self_tombstones == [], "Authoritative object must not receive its own tombstone"
 
 
+def test_mirror_on_same_session_receives_authoritative_updates():
+    """Regression test: a mirror sharing the authoritative object's own Session
+    (not a separate one) must still receive genuine updates. The self-echo
+    filter used to compare zenoh session ids (zid), which is the same for
+    every SyncableObject on one Session -- so the mirror's subscriber wrongly
+    discarded the authoritative object's real publishes as if they were its
+    own echo."""
+
+    @dataclass
+    class Obj(SyncableObject):
+        value: int = 0
+
+    session_a = Session(config=zenoh_test_config())
+    obj = Obj("test/so_same_session_mirror", synq_authoritive=True, synq_session=session_a)
+    mirror = Obj.from_topic(obj.synq_absolute_path, session=session_a)
+
+    assert mirror.value == 0
+    _wait_for(lambda: obj.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
+
+    obj.value = 42
+
+    assert _wait_for(lambda: mirror.value == 42), (
+        "Mirror on the same session as the authoritative object never received "
+        "the update -- likely discarded as a false self-echo"
+    )
+
+
 def test_close_swallows_tombstone_publisher_errors():
     """close() must not raise if the tombstone publisher's delete() or undeclare() fails."""
 

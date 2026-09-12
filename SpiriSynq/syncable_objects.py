@@ -310,10 +310,19 @@ class SyncableObject:
         self.synq_publisher = self.synq_session.zenoh_session.declare_publisher(
             f"{self.synq_absolute_path}/**"
         )
+        self._synq_own_source_ids = {
+            (str(self.synq_publisher.id.zid), self.synq_publisher.id.eid)
+        }
         if self.synq_authoritive:
             self._synq_tombstone_publisher = self.synq_session.zenoh_session.declare_publisher(
                 f"{self.synq_absolute_path}/**",
                 reliability=zenoh.Reliability.RELIABLE,
+            )
+            self._synq_own_source_ids.add(
+                (
+                    str(self._synq_tombstone_publisher.id.zid),
+                    self._synq_tombstone_publisher.id.eid,
+                )
             )
         logger.trace(
             f"{self.synq_publisher} on {self.synq_session.zenoh_session.zid()}"
@@ -363,7 +372,9 @@ class SyncableObject:
                 container = getattr(self, field_name, None)
                 if isinstance(container, (EventedList, EventedDict)):
                     full_path = f"{self.synq_absolute_path}/{field_name}"
-                    source_info = self.synq_session.source_info(field_name)
+                    source_info = self.synq_session.source_info(
+                        field_name, source_id=self.synq_publisher.id
+                    )
                     enc_data = self.synq_session.type_registry.dumps(container)
                     enc_data = enc_data.removesuffix("\n...")
                     logger.trace(f"publishing container {full_path}")
@@ -385,7 +396,9 @@ class SyncableObject:
         current = getattr(self, event_path, None)
         if isinstance(current, EventedSet):
             full_path = f"{self.synq_absolute_path}/{event_path}"
-            source_info = self.synq_session.source_info(event_path)
+            source_info = self.synq_session.source_info(
+                event_path, source_id=self.synq_publisher.id
+            )
             enc_data = self.synq_session.type_registry.dumps(current)
             enc_data = enc_data.removesuffix("\n...")
             logger.trace(f"publishing container {full_path}")
@@ -399,7 +412,9 @@ class SyncableObject:
 
         value = event.args[0]
         full_path = f"{self.synq_absolute_path}/{event_path}"
-        source_info = self.synq_session.source_info(event_path)
+        source_info = self.synq_session.source_info(
+            event_path, source_id=self.synq_publisher.id
+        )
 
         codec = self.synq_session._encoder_for(value)
         if codec:
@@ -422,20 +437,32 @@ class SyncableObject:
                 encoding=zenoh.Encoding.APPLICATION_YAML,
             )
 
+    def _is_own_source(self, source_id) -> bool:
+        """True if source_id names one of this object's own declared publishers
+        (the regular publisher or, for authoritative objects, the tombstone
+        publisher) -- i.e. this is our own publish echoing back, not another
+        object's genuine update. A zenoh session id (zid) is shared by every
+        SyncableObject on that session, so identity must be checked at the
+        per-publisher level (zid + eid), not just the session's zid.
+
+        Compares against ids snapshotted in sync() rather than the live
+        publisher objects, since a delayed echo can arrive after close() has
+        already undeclared and cleared them."""
+        if source_id is None:
+            return False
+        own_ids = getattr(self, "_synq_own_source_ids", None)
+        if not own_ids:
+            return False
+        return (str(source_id.zid), source_id.eid) in own_ids
+
     @logger.catch()
     def _zenoh_receive_changes(self, sample: zenoh.Sample):
         """Receive changes from a remote zenoh"""
         with _receiving():
             assert self.synq_session, "No Session"
             # This checks that we did not publish this ourselves.
-            if (
-                sample.source_info
-                and sample.source_info.source_id.zid
-                == self.synq_session.zenoh_session.zid()
-            ):
-                logger.trace(
-                    f"Skipping update on {sample.key_expr}, same zenoh id {sample.source_info.source_id.zid}"
-                )
+            if sample.source_info and self._is_own_source(sample.source_info.source_id):
+                logger.trace(f"Skipping update on {sample.key_expr}, own publish")
                 return
             if not self.synq_receive:
                 return
@@ -801,7 +828,13 @@ class SyncableObject:
         tombstone_pub = getattr(self, "_synq_tombstone_publisher", None)
         if tombstone_pub is not None:
             try:
-                source_info = self.synq_session.source_info(self.synq_absolute_path) if self.synq_session else None
+                source_info = (
+                    self.synq_session.source_info(
+                        self.synq_absolute_path, source_id=tombstone_pub.id
+                    )
+                    if self.synq_session
+                    else None
+                )
                 tombstone_pub.delete(source_info=source_info)
                 self.synq_is_deleted = True
             except Exception:

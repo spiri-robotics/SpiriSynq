@@ -12,6 +12,17 @@
 
 ### Fixes
 
+- **`SyncableObject`'s self-echo filter now keys on the specific publisher, not the whole
+  zenoh session.** `_zenoh_receive_changes` used to skip a sample if its `zid` matched the
+  local session's `zid` -- but a `zid` identifies an entire zenoh `Session`, shared by every
+  `SyncableObject` constructed on it. Two objects on the same session (e.g. an authoritative
+  object and a separate mirror subscribed to its topic in the same process) collided: the
+  mirror's subscriber discarded the authoritative object's genuine publishes as if they were
+  its own echo, so the mirror silently stopped updating after its initial rehydrate. The
+  filter now compares each sample's source against the ids of this object's own declared
+  publishers (snapshotted per-instance at `sync()` time), so only an object's actual own
+  publish is filtered.
+
 - **`click` is now a direct dependency again.** It was dropped after removing the
   `help-all` command (the only place we imported it directly), on the assumption
   that `typer` always pulls it in transitively. That assumption doesn't hold for
