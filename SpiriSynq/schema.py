@@ -92,13 +92,14 @@ def get_schema(cls: type) -> dict:
             if not isinstance(value, RemoteMethod):
                 continue
             sig = inspect.signature(value._wrapped)
+            hints = typing.get_type_hints(value._wrapped)
             params = {}
             for pname, p in sig.parameters.items():
                 if pname == "self":
                     continue
                 entry: dict = {}
-                if p.annotation is not inspect.Parameter.empty:
-                    entry.update(resolve_type(p.annotation))
+                if pname in hints:
+                    entry.update(resolve_type(hints[pname]))
                 if p.default is not inspect.Parameter.empty:
                     entry["default"] = p.default
                 params[pname] = entry
@@ -107,8 +108,9 @@ def get_schema(cls: type) -> dict:
                 endpoint["description"] = value._wrapped.__doc__.strip()
             if params:
                 endpoint["parameters"] = params
-            if sig.return_annotation not in (inspect.Parameter.empty, None, type(None)):
-                endpoint["returns"] = resolve_type(sig.return_annotation)
+            return_t = hints.get("return")
+            if return_t not in (None, type(None)):
+                endpoint["returns"] = resolve_type(return_t)
             rpc[name] = endpoint
         if rpc:
             root_schema["x-rpc-endpoints"] = rpc
