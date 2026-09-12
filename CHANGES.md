@@ -12,9 +12,12 @@
 
 ### Fixes
 
-- **Removed `click` direct import from CLI.** The `help-all` command depended on
-  `click` directly, which is no longer a required dependency of `typer>=0.26`.
-  The command has been removed; `uvx spirisynq` now works without error.
+- **`click` is now a direct dependency again.** It was dropped after removing the
+  `help-all` command (the only place we imported it directly), on the assumption
+  that `typer` always pulls it in transitively. That assumption doesn't hold for
+  every `typer` release/resolution, and `uv run spirisynq` / `uvx spirisynq` broke
+  without it. Declaring `click>=8.3.3` directly keeps the CLI working regardless
+  of what `typer` happens to declare.
 
 ### Improvements
 
