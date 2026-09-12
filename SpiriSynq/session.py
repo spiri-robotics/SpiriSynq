@@ -91,6 +91,8 @@ class Session:
     _sequince_number_for_path: dict[str,int] = field(default_factory=lambda: defaultdict(lambda:0))
     _codecs: list = field(default_factory=list, repr=False)
     """Custom codecs registered via :meth:`register_codec`."""
+    _generic_classes: dict = field(default_factory=dict, repr=False)
+    """Cache of tag-tuple -> synthesized class, populated by :meth:`from_topic_untyped`."""
 
     @contextmanager
     def as_default(self: "Session"):
@@ -134,6 +136,46 @@ class Session:
         """
         new_obj = rpc_call(f"{topic}/sr_rehydrate", self)
         return new_obj
+
+    def from_topic_untyped(self, topic: str):
+        """Mirror an object at *topic* without its dataclass being importable here.
+
+        Discovers the object's field names (``sr_object_schema``) and wire type
+        tags (``sr_metadata``), synthesizes a matching ``SyncableObject``
+        subclass with every field typed ``object``, registers it for those
+        tags, and returns a mirror -- same as :meth:`from_topic`, but for
+        types this process never defined or imported (e.g. a peer written in
+        another language, or a dynamically-defined class on the authoritative
+        side).
+
+        Nested custom dataclass fields still decode to whatever type tag they
+        carry on the wire; if that type also isn't registered here, decoding
+        those nested values will fail. Only the object's own top-level fields
+        are guaranteed to work generically.
+        """
+        from SpiriSynq.syncable_objects import make_generic_syncable_class
+
+        metadata = rpc_call(f"{topic}/sr_metadata", self)
+        schema = rpc_call(f"{topic}/sr_object_schema", self)
+        tags = metadata.get("classes") or [f"!{topic.rsplit('/', 1)[-1]}"]
+        field_names = list(schema.get("properties", {}).keys())
+
+        cache_key = tuple(tags)
+        cls = self._generic_classes.get(cache_key)
+        if cls is None:
+            class_name = tags[0].lstrip("!") or "UntypedObject"
+            cls = make_generic_syncable_class(class_name, field_names)
+            cls.yaml_tag = tags[0]
+            self.register_type_recursive(cls)
+            for tag in tags[1:]:
+                if tag not in self.type_registry.constructor.yaml_constructors:
+                    self.type_registry.constructor.add_constructor(
+                        tag,
+                        lambda loader, node, _cls=cls: loader.construct_yaml_object(node, _cls),
+                    )
+            self._generic_classes[cache_key] = cls
+
+        return self.from_topic(topic)
 
     def list_topics(self, type_filter: str = "", prefix: str = ""):
         """Yield metadata dicts for all objects currently discoverable on the network.
@@ -224,6 +266,11 @@ class Session:
                 _register_annotation(hint)
 
         def _register_annotation(annotation) -> None:
+            if annotation is object:
+                # Bare `object` (used by synthesized generic/untyped fields) is
+                # never representable on its own and can't take a yaml_tag --
+                # it just means "accept anything", so there's nothing to register.
+                return
             origin = get_origin(annotation)
             if origin is None:
                 if isinstance(annotation, type):

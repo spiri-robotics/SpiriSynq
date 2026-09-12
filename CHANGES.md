@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Features
+
+- **`Session.from_topic_untyped(topic)` mirrors objects without a locally importable dataclass.**
+  Discovers field names and wire type tags via `sr_object_schema`/`sr_metadata`, synthesizes a
+  matching `SyncableObject` subclass with every field typed `object`, and returns a mirror --
+  useful for generic tooling and peers written in another language whose class definitions
+  aren't available in this process.
+
 ### Fixes
 
 - **Removed `click` direct import from CLI.** The `help-all` command depended on

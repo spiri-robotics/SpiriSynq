@@ -842,3 +842,25 @@ class SyncableObject:
         except AttributeError:
             pass
         self.close()
+
+
+_GENERIC_RESERVED_FIELDS = {f.name for f in dataclasses.fields(SyncableObject)}
+
+
+def make_generic_syncable_class(name: str, field_names: list) -> type:
+    """Build a SyncableObject subclass with *field_names*, each typed ``object``.
+
+    Used by ``Session.from_topic_untyped`` to mirror objects whose real
+    dataclass isn't importable in this process (e.g. a peer written in
+    another language, or a class this process never imported). Skips names
+    that collide with SyncableObject's own fields, since those are always
+    supplied positionally/by keyword by the sync machinery itself.
+    """
+    fields_spec = [
+        (fname, object, dataclasses.field(default=None))
+        for fname in field_names
+        if fname.isidentifier()
+        and not fname.startswith("_")
+        and fname not in _GENERIC_RESERVED_FIELDS
+    ]
+    return dataclasses.make_dataclass(name, fields_spec, bases=(SyncableObject,))
