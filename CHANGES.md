@@ -12,6 +12,12 @@
 
 ### Fixes
 
+- **RPC schema generation no longer crashes on modules using `from __future__ import annotations`.**
+  `get_schema()` used `inspect.signature()` annotations directly, which are raw strings under
+  PEP 563 deferred evaluation, breaking `resolve_type()` for any `@remote_method` parameter or
+  return type in such a module (e.g. `SpiriCamera.Camera`). Parameter and return type hints are
+  now resolved via `typing.get_type_hints()` instead.
+
 - **`SyncableObject`'s self-echo filter now keys on the specific publisher, not the whole
   zenoh session.** `_zenoh_receive_changes` used to skip a sample if its `zid` matched the
   local session's `zid` -- but a `zid` identifies an entire zenoh `Session`, shared by every
