@@ -27,6 +27,15 @@ def term_callback(
         console_out.soft_wrap = True
 
 
+def out_overflow():
+    """Overflow mode for long stdout lines: ellipsis when truncating, else None.
+
+    An explicit overflow overrides the console's soft_wrap, so it must only be
+    passed when truncation is enabled or --no-truncate output gets cut off.
+    """
+    return None if console_out.soft_wrap else "ellipsis"
+
+
 @topic_app.command("list")
 def topic_list(
     _type: str = typer.Option("", "--type", "-t", help="Filter by type"),
@@ -43,7 +52,10 @@ def topic_list(
     found = 0
     for reply in replies:
         if reply.ok:
-            raw = reply.ok.payload.to_bytes().decode("utf-8")
+            raw = reply.ok.payload.to_bytes().decode("utf-8").strip()
+            # Start each entry with a YAML document marker so the output is a
+            # parseable multi-document stream
+            console_out.print("---")
             syntax = Syntax(raw, "yaml", theme="ansi_dark", background_color="default")
             console_out.print(syntax)
             found += 1
@@ -106,7 +118,7 @@ def topic_watch(
             # No metadata — emit the bare value
             line = json.dumps(value_out, separators=(",", ":"))
 
-        console_out.print(Syntax(line, "json", theme="ansi_dark", background_color="default"),overflow="ellipsis")
+        console_out.print(Syntax(line, "json", theme="ansi_dark", background_color="default"),overflow=out_overflow())
 
     def emit_yaml(meta: dict, raw: str, is_binary: bool):
         if meta:
@@ -125,7 +137,7 @@ def topic_watch(
         else:
             out = raw
 
-        console_out.print(Syntax(out, "yaml", theme="ansi_dark", background_color="default"),overflow="ellipsis")
+        console_out.print(Syntax(out, "yaml", theme="ansi_dark", background_color="default"),overflow=out_overflow())
 
         # Separate records with a YAML document delimiter when metadata is present
         if meta:

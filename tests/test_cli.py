@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from SpiriSynq.cli import app
@@ -91,15 +92,22 @@ def test_topic_list_returns_all_objects():
     time.sleep(0.1)
 
     buf = StringIO()
+    out = StringIO()
     original_err = cli_module.console_err
+    original_out = cli_module.console_out
     cli_module.console_err = Console(file=buf, highlight=False, soft_wrap=True)
+    cli_module.console_out = Console(file=out, highlight=False, soft_wrap=True)
     try:
         result = runner.invoke(app, ["topic", "list", "--type", "CliListMultipleObjects"])
     finally:
         cli_module.console_err = original_err
+        cli_module.console_out = original_out
 
     assert result.exit_code == 0
     assert "2 result(s)" in buf.getvalue()
+    # Entries are separated as a multi-document YAML stream
+    docs = [d for d in yaml.safe_load_all(out.getvalue()) if d is not None]
+    assert len(docs) == 2
 
 
 # ── topic schema ──────────────────────────────────────────────────────────────
@@ -415,6 +423,63 @@ def test_topic_watch_bytes_field_decoded_as_binary():
     assert not t.is_alive(), "topic watch did not exit after --count 1"
     assert result_holder[0].exit_code == 0
     assert "!!binary" in buf.getvalue()
+
+
+def test_topic_watch_no_truncate_emits_full_long_values():
+    """With --no-truncate (soft_wrap console), long values must not be cut off.
+
+    An explicit overflow="ellipsis" on print() overrides the console's soft_wrap,
+    which used to truncate long payloads such as base64 images even when the
+    output was meant for machine consumption.
+    """
+    import base64
+    import threading
+    from io import StringIO
+    from rich.console import Console
+    import SpiriSynq.cli as cli_module
+    from SpiriSynq.cli import session as cli_session
+
+    @dataclass
+    class CliLongWatchObj(SyncableObject):
+        data: bytes = b""
+
+    obj = CliLongWatchObj("cli_test/long_watch_obj", synq_authoritive=True,
+                          synq_session=cli_session, data=b"")
+    # Length divisible by 3 so base64(payload + suffix) starts with base64(payload)
+    payload = (bytes(range(256)) * 8)[:2046]
+
+    buf = StringIO()
+    original_console = cli_module.console_out
+    cli_module.console_out = Console(file=buf, highlight=False, soft_wrap=True, width=80)
+
+    result_holder = []
+
+    def run_watch():
+        result_holder.append(runner.invoke(
+            app,
+            ["topic", "watch", f"{obj.synq_absolute_path}/data", "--count", "1",
+             "--no-received-timestamp"],
+        ))
+
+    try:
+        t = threading.Thread(target=run_watch, daemon=True)
+        t.start()
+        # Keep publishing distinct values until the watcher (whose subscribe
+        # time we can't observe) has received one and exited.
+        deadline = time.monotonic() + 5.0
+        i = 0
+        while t.is_alive() and time.monotonic() < deadline:
+            obj.data = payload + bytes([i % 256])
+            i += 1
+            t.join(timeout=0.05)
+    finally:
+        cli_module.console_out = original_console
+
+    assert not t.is_alive(), "topic watch did not exit after --count 1"
+    assert result_holder[0].exit_code == 0
+    output = buf.getvalue()
+    assert base64.b64encode(payload).decode("ascii") in output
+    assert "…" not in output
 
 
 # ── meta type_schema ──────────────────────────────────────────────────────────

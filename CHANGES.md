@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **`synq topic list` now separates entries.** Each reply was printed back-to-back with no
+  delimiter, making results run together. Every entry now starts with a `---` YAML document
+  marker, so the output is readable and parses as a multi-document YAML stream.
+
+- **`synq topic watch --no-truncate` no longer truncates long values.** The watch output
+  passed an explicit `overflow="ellipsis"` to rich, which overrides the console's soft-wrap
+  setting, so long payloads (e.g. base64 `!!binary` images) were cut off with `…` even with
+  `--no-truncate` or when piped. The ellipsis is now only applied when truncation is enabled.
+
 ## v0.1.3
 
 ### Features
