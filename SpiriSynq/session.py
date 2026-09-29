@@ -1,6 +1,7 @@
 import zenoh
 import socket
 import os
+from pathlib import Path
 from deepdiff import DeepDiff, Delta
 from dataclasses import dataclass, field
 from typing import get_type_hints, get_origin, get_args
@@ -40,7 +41,20 @@ def _construct_evented_set(constructor, node):
     return EventedSet(constructor.construct_sequence(node, deep=True))
 
 def _default_base_topic() -> str:
-    return os.getenv("SPIRI_SYNQ_BASE_TOPIC", socket.gethostname())
+    if (override := os.getenv("SPIRI_SYNQ_BASE_TOPIC")) is not None:
+        return override
+    # Prefer /etc/spirisynq_base_topic (the host's /etc/hostname, bind-
+    # mounted here by our compose templates rather than over the
+    # container's own /etc/hostname, which would break hostname/etc-hosts
+    # consistency for anything else in the container) over
+    # socket.gethostname(): inside a container the kernel hostname is
+    # per-container, not per-UAV, so it drifts from the host's.
+    try:
+        if name := Path("/etc/spirisynq_base_topic").read_text().strip():
+            return name
+    except OSError:
+        pass
+    return socket.gethostname()
 
 
 @dataclass
