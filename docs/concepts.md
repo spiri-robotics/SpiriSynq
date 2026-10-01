@@ -431,6 +431,91 @@ Codecs apply only to the field pub/sub path. They do not affect:
 - **RPC parameters and replies** — `@remote_method` arguments and return values are always YAML-serialised.
 - **`sr_rehydrate`** — the full-state snapshot uses YAML. If a `bytes` field should be excluded from rehydration snapshots (e.g. a large image), add it to `synq_skip_rehydrate`.
 
+## Per-field QoS
+
+A `SyncableObject` can set Zenoh QoS for one field by declaring a class attribute `<field>_qos: ClassVar[SynqQoS]`:
+
+```python
+from typing import ClassVar
+import zenoh
+from SpiriSynq.qos import SynqQoS
+
+@dataclass
+class Camera(SyncableObject):
+    image: bytes = b""
+    image_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.DATA_HIGH)
+```
+
+`SynqQoS` is a frozen dataclass with three fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `priority` | `zenoh.Priority.DATA` | A `zenoh.Priority`, from `REAL_TIME` (highest) to `BACKGROUND` (lowest). |
+| `congestion_control` | `zenoh.CongestionControl.DROP` | A `zenoh.CongestionControl`. |
+| `express` | `False` | Send without batching. |
+
+Plain ints are rejected with a `TypeError`. Use the `zenoh` enum members.
+
+The attribute counts only if it is an instance of `SynqQoS`, so an ordinary field that happens to be called `mode_qos` stays an ordinary field. Because it is a `ClassVar`, it is never synced, never rehydrated, and never appears in the schema. QoS is local to the sender and doesn't travel over the network.
+
+Assigning it on an instance (`obj.image_qos = SynqQoS(...)`) overrides the class default for later publishes and emits no event, which lets a producer change priority from one publish to the next.
+
+To resolve QoS for a path, SpiriSynq checks the instance attribute, then the class attribute, then the nearest ancestor field on a nested path (`bar/value` falls back to `bar_qos`), then Zenoh's defaults. For a nested path, the field's own `<field>_qos` is looked up on the sub-object that owns the field. `obj.synq_qos_for(path)` returns the resolved value. Container publishes (`EventedList`/`EventedDict`/`EventedSet`) use the QoS of their top-level field.
+
+## Custom publish and receive
+
+An object can take over the wire format of a top-level field by defining `<field>_publish` and/or `<field>_receive`:
+
+```python
+from typing import Iterator
+from SpiriSynq.syncable_objects import SKIP, PutArgs
+
+def image_publish(self, value) -> Iterator[PutArgs | bytes | str]: ...
+def image_receive(self, value, sample) -> bytes: ...  # or return SKIP
+```
+
+When `_publish` is present, it replaces the default publish for that field. It yields the puts to send, and SpiriSynq sends each one to `<topic>/<field>` with the object's publisher `source_info`, so the echo filter keeps working.
+
+Each yielded dict holds keyword arguments for Zenoh's `Session.put`, so any argument Zenoh's `put` accepts can go in it:
+
+- `payload` is required.
+- The optional keys are `encoding`, `priority`, `congestion_control`, `express`, `attachment`, `timestamp` and `allowed_destination`.
+- QoS keys you leave out come from the field's resolved `_qos`.
+- `key_expr` and `source_info` are set by SpiriSynq; yielding either raises `ValueError`.
+- Bare `bytes` or `str` is shorthand for `{"payload": ...}`.
+
+Yielding nothing sends nothing, and returning a list works as well as a generator. Because the hook only describes what to send, you can test it without a network: `list(cam.image_publish(jpeg))`.
+
+`PutArgs` is a `TypedDict`. Annotating the hook as above lets a type checker (mypy, pyright, your editor) flag misspelled keys, a missing `payload`, or wrong value types. At runtime the dict goes straight to Zenoh, so a misspelled key raises Zenoh's own `TypeError` on publish. If a later Zenoh release adds a `put` argument, it works at runtime right away, but a type checker reports it as an unknown key until `PutArgs` is updated.
+
+`_receive` runs on the Zenoh callback thread, inside the receive guard (so applying its result doesn't echo back out), after codec decoding. It returns the value to apply, or `SKIP` to leave the field unchanged. The type check against the field's annotation runs on that returned value, not on the raw sample.
+
+The two hooks are optional and independent of each other. A peer without them sees whatever the publisher actually sent, so a format with custom framing should be designed so that a hook-less peer fails safely. Hooks only apply to field updates. `sr_rehydrate` still sends the whole value as YAML.
+
+The motivating example is progressive MJPEG: one assignment of a full JPEG becomes several chunks at different priorities, and the receiver reassembles them into a JPEG that refines as chunks arrive:
+
+```python
+@dataclass
+class Camera(SyncableObject):
+    image: bytes = b""
+    image_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.DATA_LOW)
+    _scans: dict = field(default_factory=dict)  # leading underscore: not synced
+
+    def image_publish(self, value) -> Iterator[PutArgs]:
+        for i, chunk in enumerate(split_progressive_scans(value)):
+            args: PutArgs = {"payload": bytes([i]) + chunk}
+            if i == 0:
+                # coarse first scan jumps the queue; refinements use image_qos
+                args["priority"] = zenoh.Priority.INTERACTIVE_HIGH
+            yield args
+
+    def image_receive(self, value, sample):
+        self._scans[value[0]] = value[1:]
+        if 0 not in self._scans:
+            return SKIP
+        return assemble_jpeg(self._scans)
+```
+
 ## Multiple sessions
 
 Most applications use the default session created at import time and never touch `Session` directly. If you need to connect to multiple Zenoh networks in one process, you can create additional `Session` instances and pass them via `synq_session=`, or use `session.as_default()` as a context manager to set the default for a block of code.

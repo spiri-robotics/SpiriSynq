@@ -22,6 +22,8 @@ For nested fields: `<topic>/<field>/<subfield>`, and so on.
 
 Subscribers watch `<topic>/**` and apply updates field by field.
 
+Zenoh QoS (priority, congestion control, express) is chosen per field by the publisher and is not part of the payload. An object may also replace a field's encoding with its own framing (a custom publish hook), possibly as several puts per change. A receiver that doesn't understand that framing should treat the samples like any other undecodable or type-mismatched update.
+
 ## The four mandatory queryables
 
 Every syncable object must respond to four queryable key patterns.

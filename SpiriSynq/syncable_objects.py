@@ -1,6 +1,7 @@
 from SpiriSynq.remote_callables import RemoteMethod, remote_method
 from SpiriSynq.session import Session, current_session
 from SpiriSynq.serializer import load_untyped
+from SpiriSynq.qos import SynqQoS
 
 import zenoh
 from loguru import logger
@@ -13,7 +14,7 @@ from typing import ClassVar
 import dataclasses
 import types as _types
 import typing
-from typing import Self, TypedDict, get_args, get_origin, Union
+from typing import Required, Self, TypedDict, get_args, get_origin, Union
 from deepdiff import DeepDiff, Delta
 
 import threading
@@ -21,6 +22,35 @@ import time
 from contextlib import contextmanager
 from psygnal import Signal
 import weakref
+
+
+class _Skip:
+    def __repr__(self):
+        return "SKIP"
+
+
+SKIP = _Skip()
+"""Returned from a ``<field>_receive`` hook to leave the field unchanged."""
+
+
+class PutArgs(TypedDict, total=False):
+    """One put yielded by a ``<field>_publish`` hook: keyword arguments for
+    ``zenoh.Session.put``, minus the key and ``source_info``, which SpiriSynq
+    sets. QoS keys left out come from the field's ``<field>_qos``. Annotate a hook as
+    ``-> Iterator[PutArgs | bytes | str]`` to have these keys checked.
+    """
+
+    payload: Required[bytes | bytearray | str | zenoh.ZBytes]
+    encoding: zenoh.Encoding | str
+    congestion_control: zenoh.CongestionControl
+    priority: zenoh.Priority
+    express: bool
+    attachment: bytes | bytearray | str | zenoh.ZBytes
+    timestamp: zenoh.Timestamp
+    allowed_destination: zenoh.Locality
+
+
+_RESERVED_PUT_ARGS = {"key_expr", "source_info"}
 
 
 class SyncableObjectMetadata(TypedDict):
@@ -377,17 +407,7 @@ class SyncableObject:
             if field_name and field_name in self.valid_sync_paths():
                 container = getattr(self, field_name, None)
                 if isinstance(container, (EventedList, EventedDict)):
-                    full_path = f"{self.synq_absolute_path}/{field_name}"
-                    source_info = self.synq_session.source_info(source_id=self.synq_publisher.id)
-                    enc_data = self.synq_session.type_registry.dumps(container)
-                    enc_data = enc_data.removesuffix("\n...")
-                    logger.trace(f"publishing container {full_path}")
-                    self.synq_session.zenoh_session.put(
-                        full_path,
-                        enc_data,
-                        source_info=source_info,
-                        encoding=zenoh.Encoding.APPLICATION_YAML,
-                    )
+                    self._synq_publish_path(field_name, container, container=True)
             return
 
         event_path = self._event_to_zenoh_path(event)
@@ -399,43 +419,90 @@ class SyncableObject:
         # Publish the whole current set atomically regardless of the mutation args.
         current = getattr(self, event_path, None)
         if isinstance(current, EventedSet):
-            full_path = f"{self.synq_absolute_path}/{event_path}"
-            source_info = self.synq_session.source_info(source_id=self.synq_publisher.id)
-            enc_data = self.synq_session.type_registry.dumps(current)
-            enc_data = enc_data.removesuffix("\n...")
-            logger.trace(f"publishing container {full_path}")
-            self.synq_session.zenoh_session.put(
-                full_path,
-                enc_data,
-                source_info=source_info,
-                encoding=zenoh.Encoding.APPLICATION_YAML,
-            )
+            self._synq_publish_path(event_path, current, container=True)
             return
 
-        value = event.args[0]
-        full_path = f"{self.synq_absolute_path}/{event_path}"
-        source_info = self.synq_session.source_info(source_id=self.synq_publisher.id)
+        self._synq_publish_path(event_path, event.args[0])
 
-        codec = self.synq_session._encoder_for(value)
+    def _synq_publish_path(self, path: str, value, container: bool = False):
+        """Publish *value* at *path*, through the field's ``_publish`` hook if any."""
+        assert self.synq_session
+        full_path = f"{self.synq_absolute_path}/{path}"
+        field_qos = self.synq_qos_for(path)
+
+        def put(args: PutArgs):
+            kwargs: dict = field_qos.put_kwargs() if field_qos is not None else {}
+            kwargs.update(args)
+            assert self.synq_session and self.synq_publisher
+            self.synq_session.zenoh_session.put(
+                full_path,
+                source_info=self.synq_session.source_info(
+                    source_id=self.synq_publisher.id
+                ),
+                **kwargs,
+            )
+
+        hook = self._synq_field_hook(path, "publish")
+        if hook is not None:
+            logger.trace(f"publishing (hook) {full_path}")
+            hook_name = f"{type(self).__name__}.{path}_publish"
+            for item in hook(value) or ():
+                if isinstance(item, (bytes, bytearray, str)):
+                    item = {"payload": item}
+                if not isinstance(item, dict) or "payload" not in item:
+                    raise TypeError(
+                        f"{hook_name} yielded {item!r:.80}, expected a PutArgs dict "
+                        f"with a 'payload' key, or bytes/str"
+                    )
+                if reserved := _RESERVED_PUT_ARGS & item.keys():
+                    raise ValueError(
+                        f"{hook_name} may not set {sorted(reserved)}; SpiriSynq sets them"
+                    )
+                put(item)
+            return
+
+        codec = None if container else self.synq_session._encoder_for(value)
         if codec:
             payload, encoding = codec.encode(value)
             logger.trace(f"publishing (codec) {full_path} = {type(value).__name__}")
-            self.synq_session.zenoh_session.put(
-                full_path,
-                payload,
-                source_info=source_info,
-                encoding=encoding,
-            )
+            put({"payload": payload, "encoding": encoding})
         else:
             enc_data = self.synq_session.type_registry.dumps(value)
             enc_data = enc_data.removesuffix("\n...")
             logger.trace(f"publishing yaml {full_path} = {enc_data}")
-            self.synq_session.zenoh_session.put(
-                full_path,
-                enc_data,
-                source_info=source_info,
-                encoding=zenoh.Encoding.APPLICATION_YAML,
-            )
+            put({"payload": enc_data, "encoding": zenoh.Encoding.APPLICATION_YAML})
+
+    def synq_qos_for(self, path: str) -> SynqQoS | None:
+        """Resolve the QoS for a sync path, or None for zenoh's defaults.
+
+        Checks ``<field>_qos`` on the object that owns the field (instance
+        attribute, then class attribute), then the nearest ancestor field
+        (``bar/value`` falls back to ``bar_qos``). Only SynqQoS instances count.
+        """
+        segments = path.split("/")
+        owners: list = [self]
+        for seg in segments[:-1]:
+            owner = getattr(owners[-1], seg, None)
+            if owner is None:
+                break
+            owners.append(owner)
+        for depth in range(len(owners) - 1, -1, -1):
+            qos = getattr(owners[depth], f"{segments[depth]}_qos", None)
+            if isinstance(qos, SynqQoS):
+                return qos
+        return None
+
+    def _synq_field_hook(self, path: str, kind: str):
+        """Bound ``<field>_publish`` / ``<field>_receive`` method for a top-level
+        field, or None. Dataclass fields that happen to share the name don't count."""
+        if "/" in path:
+            return None
+        name = f"{path}_{kind}"
+        if name in self.__dataclass_fields__ or not callable(
+            getattr(type(self), name, None)
+        ):
+            return None
+        return getattr(self, name)
 
     def _is_own_source(self, source_id) -> bool:
         """True if source_id names one of this object's own declared publishers
@@ -501,6 +568,13 @@ class SyncableObject:
                 payload = sample.payload.to_string()
                 logger.trace(f"received {self.synq_absolute_path} = {payload}")
                 obj = self.synq_session.type_registry.load(payload)
+
+            hook = self._synq_field_hook(relative_path, "receive")
+            if hook is not None:
+                obj = hook(obj, sample)
+                if obj is SKIP:
+                    logger.trace(f"receive hook skipped {relative_path}")
+                    return
 
             if self.synq_check_receive_types and not self.valid_sync_type(
                 relative_path, obj

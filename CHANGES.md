@@ -11,6 +11,30 @@
   and `--prefix` (`.` needs no shell quoting, unlike `~`). Resolution happens locally; nothing
   changes on the wire. New `Session.resolve_topic()` exposes the expansion.
 
+- **Per-field QoS.** Declare
+  `<field>_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.DATA_HIGH)` on a
+  `SyncableObject` to set Zenoh priority, congestion control and express for that field's
+  publishes. Assigning on an instance overrides the class default for later publishes without emitting
+  an event. Nested paths fall back to the nearest ancestor's `_qos`, and container publishes
+  use their top-level field's. QoS is sender-local: never synced, rehydrated or in the schema.
+
+- **Custom publish and receive per field.** `<field>_publish(self, value)` replaces the
+  default publish. It yields any number of `PutArgs` dicts: keyword arguments passed
+  straight to `zenoh.Session.put`, typed as a `TypedDict` so type checkers catch bad keys.
+  Bare `bytes`/`str` also work. Each put carries the publisher's `source_info` so echo
+  suppression works, and QoS keys left out come from the field's `_qos`.
+  `<field>_receive(self, value, sample)` runs after codec decoding and returns the value to
+  apply or `SKIP`. The type check runs on that returned value. This enables formats like
+  progressive MJPEG, where one assignment becomes several chunks at different priorities.
+
+- **Base topic can come from `/etc/spirisynq_base_topic`.** The default base topic is now,
+  in order: `SPIRI_SYNQ_BASE_TOPIC`, the contents of `/etc/spirisynq_base_topic`, then
+  `socket.gethostname()`. Inside a container the kernel hostname is per-container, so
+  objects published from different containers on the same machine ended up under different
+  prefixes. Bind-mounting the host's `/etc/hostname` to `/etc/spirisynq_base_topic` gives
+  every container the machine's name without overriding the container's own `/etc/hostname`.
+  Hosts without the file behave as before.
+
 ### Improvements
 
 - **Topics are validated up front.** Object topics and CLI topic arguments are checked with
@@ -46,6 +70,9 @@
   immediately, then sent a single put from a third session that zenoh could drop before a
   route to the mirror existed (~10% failure rate at v0.1.4). They now re-send the
   idempotent put until the mirror reacts.
+
+- `tests/test_qos_hooks.py` covers QoS resolution and its on-wire priority, the hook round
+  trip, `SKIP`, type-checking of hook results, and hook-less peers.
 
 ## v0.1.4
 
