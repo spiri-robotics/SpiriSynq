@@ -71,7 +71,10 @@ def _run_coroutine_sync(coro):
         return asyncio.run(coro)
 
 
-def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[SyncableObject]'):
+def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[SyncableObject]', key: str):
+    # Replies go out on the queryable's own key, not query.key_expr: a wildcard
+    # query (e.g. ``**/sr_object_schema``) would otherwise get replies keyed by
+    # the wildcard, hiding which topic each reply came from.
     def callback(query: zenoh.Query):
         instance = instance_ref()
         parent = parent_ref()
@@ -100,13 +103,13 @@ def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[Syncable
                             value = next(gen)
                         except StopIteration as e:
                             query.reply(
-                                query.key_expr,
+                                key,
                                 payload=registry.dumps(e.value),
                                 encoding=GENERATOR_DONE_ENCODING,
                             )
                             break
                         query.reply(
-                            query.key_expr,
+                            key,
                             payload=registry.dumps(value),
                             encoding=zenoh.Encoding.APPLICATION_YAML,
                         )
@@ -117,13 +120,13 @@ def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[Syncable
                 async def _run():
                     async for value in instance._wrapped(parent, **params):
                         query.reply(
-                            query.key_expr,
+                            key,
                             payload=registry.dumps(value),
                             encoding=zenoh.Encoding.APPLICATION_YAML,
                         )
                     # async generators cannot carry a return value
                     query.reply(
-                        query.key_expr,
+                        key,
                         payload=registry.dumps(None),
                         encoding=GENERATOR_DONE_ENCODING,
                     )
@@ -132,7 +135,7 @@ def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[Syncable
             elif instance._is_async:
                 result = asyncio.run(instance._wrapped(parent, **params))
                 query.reply(
-                    query.key_expr,
+                    key,
                     payload=registry.dumps(result),
                     encoding=zenoh.Encoding.APPLICATION_YAML,
                 )
@@ -140,7 +143,7 @@ def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[Syncable
             else:
                 result = instance._wrapped(parent, **params)
                 query.reply(
-                    query.key_expr,
+                    key,
                     payload=registry.dumps(result),
                     encoding=zenoh.Encoding.APPLICATION_YAML,
                 )
@@ -356,7 +359,7 @@ class RemoteMethod:
 
         queryable = parent.synq_session.zenoh_session.declare_queryable(
             key,
-            _zenoh_callback(weakref.ref(self), weakref.ref(parent)),
+            _zenoh_callback(weakref.ref(self), weakref.ref(parent), key),
         )
 
         parent._synq_callbacks[key] = queryable

@@ -102,4 +102,4 @@ The wildcard on the left matches any base topic prefix.
 
 ## Echo prevention
 
-The authoritative node tags each put with a `SourceInfo` containing its Zenoh session ID and a per-path sequence number. Subscribers must discard updates whose `source_id.zid` matches their own session ID to prevent echo loops.
+The authoritative node tags each put with a `SourceInfo` containing the publishing entity's ID (Zenoh session ID plus entity ID) and a sequence number. As with Zenoh's native `source_sn`, the sequence number is monotonic per source entity, not per key: every field put from one object's publisher shares one counter, and each object has its own, so a subscriber on `<topic>/**` can detect dropped or reordered updates. Subscribers must discard updates whose `source_id.zid` matches their own session ID to prevent echo loops.

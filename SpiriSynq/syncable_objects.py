@@ -285,8 +285,14 @@ class SyncableObject:
         """Set up hookes for synchronization, including any relevent RPC hooks"""
         if not self.synq_session:
             raise Exception(f"No Session on {self.synq_topic}")
-        if self.synq_authoritive and not self.synq_base_topic:
+        # "./camera" is relative to the base topic -- the same rule a bare topic
+        # already follows on an authoritative object.
+        relative = self.synq_topic.startswith("./")
+        if relative:
+            self.synq_topic = self.synq_topic.removeprefix("./")
+        if (relative or self.synq_authoritive) and not self.synq_base_topic:
             self.synq_base_topic = self.synq_session.base_topic
+        self.synq_session.resolve_topic(self.synq_absolute_path)  # validate
         self.synq_session.register_type_recursive(type(self))
         type(
             self
@@ -372,9 +378,7 @@ class SyncableObject:
                 container = getattr(self, field_name, None)
                 if isinstance(container, (EventedList, EventedDict)):
                     full_path = f"{self.synq_absolute_path}/{field_name}"
-                    source_info = self.synq_session.source_info(
-                        field_name, source_id=self.synq_publisher.id
-                    )
+                    source_info = self.synq_session.source_info(source_id=self.synq_publisher.id)
                     enc_data = self.synq_session.type_registry.dumps(container)
                     enc_data = enc_data.removesuffix("\n...")
                     logger.trace(f"publishing container {full_path}")
@@ -396,9 +400,7 @@ class SyncableObject:
         current = getattr(self, event_path, None)
         if isinstance(current, EventedSet):
             full_path = f"{self.synq_absolute_path}/{event_path}"
-            source_info = self.synq_session.source_info(
-                event_path, source_id=self.synq_publisher.id
-            )
+            source_info = self.synq_session.source_info(source_id=self.synq_publisher.id)
             enc_data = self.synq_session.type_registry.dumps(current)
             enc_data = enc_data.removesuffix("\n...")
             logger.trace(f"publishing container {full_path}")
@@ -412,9 +414,7 @@ class SyncableObject:
 
         value = event.args[0]
         full_path = f"{self.synq_absolute_path}/{event_path}"
-        source_info = self.synq_session.source_info(
-            event_path, source_id=self.synq_publisher.id
-        )
+        source_info = self.synq_session.source_info(source_id=self.synq_publisher.id)
 
         codec = self.synq_session._encoder_for(value)
         if codec:
@@ -829,9 +829,7 @@ class SyncableObject:
         if tombstone_pub is not None:
             try:
                 source_info = (
-                    self.synq_session.source_info(
-                        self.synq_absolute_path, source_id=tombstone_pub.id
-                    )
+                    self.synq_session.source_info(source_id=tombstone_pub.id)
                     if self.synq_session
                     else None
                 )

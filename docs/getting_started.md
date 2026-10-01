@@ -134,12 +134,31 @@ In practice you'll usually have one authoritative instance that "owns" the initi
 
 ## Topics
 
-The first argument to a `SyncableObject` is the **topic** — a slash-separated Zenoh key expression that identifies this object on the network. By default, authoritative objects are published under `<hostname>/<topic>`. You can override this with `synq_base_topic` or the `SPIRI_SYNQ_BASE_TOPIC` environment variable.
+The first argument to a `SyncableObject` is the **topic** — a slash-separated Zenoh key expression that identifies this object on the network. By default, authoritative objects are published under `<base_topic>/<topic>`. The base topic comes from, in order: the `SPIRI_SYNQ_BASE_TOPIC` environment variable, the contents of `/etc/spirisynq_base_topic`, then the hostname. Per object, `synq_base_topic` overrides it.
+
+In a container, the kernel hostname belongs to the container, not the machine it runs on. Bind-mount the host's `/etc/hostname` to `/etc/spirisynq_base_topic` so every container on a machine shares that machine's base topic:
+
+```yaml
+volumes:
+  - /etc/hostname:/etc/spirisynq_base_topic:ro
+```
 
 ```python
 counter = Counter("counter", synq_authoritive=True)
 print(counter.synq_absolute_path)  # e.g. "myhost/counter"
 ```
+
+### Relative topics
+
+A topic starting with `./` is relative to this node's base topic, so `./counter` and `myhost/counter` name the same object. This works everywhere a topic is accepted — constructors, `from_topic`, `list_topics(prefix=".")`, and the CLI:
+
+```python
+counter = Counter("./counter", synq_authoritive=True)  # myhost/counter
+mirror = Counter.from_topic("./counter")               # same object, from this node
+other = Counter.from_topic("otherhost/counter")        # absolute: another node's object
+```
+
+`./` always resolves against the *calling* session's base topic, so another node's objects must be named absolutely. `.` is only allowed as the first chunk and `..` is rejected, so a relative marker can never reach the network as a literal key. Use `session.resolve_topic(topic)` to see what a topic expands to.
 
 ## Discovering objects
 

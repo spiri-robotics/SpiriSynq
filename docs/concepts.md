@@ -315,8 +315,10 @@ class Robot(SyncableObject):
             query.reply_err("Unauthorized")
             return
         result = self.move.__wrapped__(self, **{k: v for k, v in params.items() if k != "token"})
-        query.reply(query.key_expr, payload=registry.dumps(result), encoding=zenoh.Encoding.APPLICATION_YAML)
+        query.reply(f"{self.synq_absolute_path}/move", payload=registry.dumps(result), encoding=zenoh.Encoding.APPLICATION_YAML)
 ```
+
+Reply on the method's own key rather than `query.key_expr`: the query may be a wildcard (e.g. `**/move`), and replying with it would hide which object the reply came from.
 
 The server function is **only** invoked by the Zenoh callback — direct local calls on an authoritative instance skip it entirely and call the original method directly. This keeps local usage fast and unaffected.
 

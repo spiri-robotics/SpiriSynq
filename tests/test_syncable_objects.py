@@ -25,6 +25,20 @@ def _wait_for(predicate, timeout=1.0, interval=0.01):
     return False
 
 
+def _put_until(key, payload, encoding, predicate, timeout=3.0):
+    """Publish from the default session until *predicate* holds.
+
+    zenoh drops puts sent before the publishing session has a route to the
+    mirror's subscriber, and ``obj.synq_publisher.matching_status`` can't tell
+    us when that is (obj's own subscriber already matches it). Re-sending an
+    idempotent put until the mirror reacts avoids the race.
+    """
+    def put_and_check():
+        current_session.get().zenoh_session.put(key, payload, encoding=encoding)
+        return predicate()
+    return _wait_for(put_and_check, timeout=timeout)
+
+
 @pytest.fixture(autouse=True)
 def close_test_sessions():
     from SpiriSynq.shutdown import _live_sessions
@@ -191,6 +205,83 @@ def test_synq_publish_false_suppresses_outgoing_updates():
     assert received == [], "No messages expected with synq_publish=False"
 
 
+def test_source_sn_counts_per_publisher_not_per_field():
+    """source_sn is monotonic per source entity, like zenoh's own, so objects on
+    one session don't share a counter and different fields of one object do."""
+
+    @dataclass
+    class Obj(SyncableObject):
+        a: int = 0
+        b: int = 0
+
+    session = current_session.get()
+    obj1 = Obj("test/so_sn_1", synq_authoritive=True)
+    obj2 = Obj("test/so_sn_2", synq_authoritive=True)
+    pub1, pub2 = obj1.synq_publisher.id, obj2.synq_publisher.id
+
+    assert session.source_info(source_id=pub1).source_sn == 0
+    assert session.source_info(source_id=pub1).source_sn == 1
+    assert session.source_info(source_id=pub2).source_sn == 0
+
+    # Publishing a field advances the publisher's counter, whichever field it is.
+    obj1.a = 1
+    obj1.b = 1
+    assert session.source_info(source_id=pub1).source_sn == 4
+    assert session.source_info(source_id=pub2).source_sn == 1
+
+
+def test_source_sn_on_the_wire_is_per_object_topic():
+    """Published samples carry the object's publisher id and a source_sn that
+    increases per object topic, independent of other objects on the session."""
+
+    @dataclass
+    class Obj(SyncableObject):
+        a: int = 0
+        b: int = 0
+
+    obj1 = Obj("test/so_sn_wire/1", synq_authoritive=True)
+    obj2 = Obj("test/so_sn_wire/2", synq_authoritive=True)
+    pub1, pub2 = obj1.synq_publisher.id, obj2.synq_publisher.id
+
+    session_b = Session(config=zenoh_test_config())
+    received = []
+    sub = session_b.zenoh_session.declare_subscriber(
+        "**/test/so_sn_wire/**", lambda s: received.append(s)
+    )
+
+    def sns_from(pub):
+        return [
+            s.source_info.source_sn
+            for s in list(received)
+            if s.source_info
+            and (str(s.source_info.source_id.zid), s.source_info.source_id.eid)
+            == (str(pub.zid), pub.eid)
+        ]
+
+    # zenoh drops puts until the route exists; keep publishing until one lands.
+    def publish_obj1():
+        obj1.a += 1
+        return sns_from(pub1)
+
+    assert _wait_for(publish_obj1, timeout=3.0)
+    for i in range(5):
+        obj1.b = i + 1
+    assert _wait_for(lambda: len(sns_from(pub1)) >= 6)
+
+    obj2.a = 1
+    assert _wait_for(lambda: sns_from(pub2))
+    sub.undeclare()
+    session_b.close()
+
+    sns1 = sns_from(pub1)
+    # Fields a and b share one counter: strictly increasing, and contiguous
+    # once the route was up.
+    assert sns1 == sorted(set(sns1))
+    assert sns1[-6:] == list(range(sns1[-6], sns1[-6] + 6))
+    # obj2's counter is its own, not advanced by obj1's publishes.
+    assert sns_from(pub2) == [0]
+
+
 def test_sync_dumps_returns_yaml_string():
     """Lines 700-701: sync_dumps() serialises current syncable state to a YAML string."""
 
@@ -300,15 +391,14 @@ def test_signal_unknown_path_emitted():
     unknown: list[str] = []
     mirror.synq_signal_unknown_path.connect(lambda path, *_: unknown.append(path))
 
-    _wait_for(lambda: obj.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
     # Publish from the default session without source_info so the ZID filter
     # on mirror (session_b) does not suppress it.
-    current_session.get().zenoh_session.put(
+    assert _put_until(
         f"{obj.synq_absolute_path}/nonexistent_field",
         "irrelevant",
-        encoding=zenoh.Encoding.APPLICATION_YAML,
-    )
-    assert _wait_for(lambda: len(unknown) > 0), "synq_signal_unknown_path never fired"
+        zenoh.Encoding.APPLICATION_YAML,
+        lambda: len(unknown) > 0,
+    ), "synq_signal_unknown_path never fired"
     assert unknown[0] == "nonexistent_field"
 
 
@@ -329,14 +419,13 @@ def test_signal_type_mismatch_emitted_and_value_unchanged():
         lambda path, val: mismatches.append((path, val))
     )
 
-    _wait_for(lambda: obj.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
     # YAML string is not a float — publish without source_info so it reaches mirror
-    current_session.get().zenoh_session.put(
+    assert _put_until(
         f"{obj.synq_absolute_path}/value",
         '"not_a_float"',
-        encoding=zenoh.Encoding.APPLICATION_YAML,
-    )
-    assert _wait_for(lambda: len(mismatches) > 0), "synq_signal_type_mismatch never fired"
+        zenoh.Encoding.APPLICATION_YAML,
+        lambda: len(mismatches) > 0,
+    ), "synq_signal_type_mismatch never fired"
     assert mismatches[0][0] == "value"
     assert mirror.value == 0.0, "Field must not be updated on type mismatch"
 
@@ -365,15 +454,12 @@ def test_binary_payload_rejected_for_non_bytes_field():
         lambda path, val: mismatches.append((path, val))
     )
 
-    _wait_for(lambda: obj.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
     # Publish raw binary payload (ZENOH_BYTES) to a non-bytes field
-    current_session.get().zenoh_session.put(
+    assert _put_until(
         f"{obj.synq_absolute_path}/value",
         b"raw_binary_garbage",
-        encoding=zenoh.Encoding.ZENOH_BYTES,
-    )
-    assert _wait_for(
-        lambda: len(mismatches) > 0
+        zenoh.Encoding.ZENOH_BYTES,
+        lambda: len(mismatches) > 0,
     ), "synq_signal_type_mismatch should fire for binary payload on non-bytes field"
     assert mismatches[0][0] == "value", "Mismatch path should be 'value'"
     assert mirror.value is None, "Field must not be updated on type mismatch"
@@ -405,14 +491,13 @@ def test_signal_missing_parent_emitted():
     missing: list[str] = []
     mirror.synq_signal_missing_parent.connect(lambda path, *_: missing.append(path))
 
-    _wait_for(lambda: obj.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
     # Publish inner/value while inner is None — publish without source_info
-    current_session.get().zenoh_session.put(
+    assert _put_until(
         f"{obj.synq_absolute_path}/inner/value",
         "42",
-        encoding=zenoh.Encoding.APPLICATION_YAML,
-    )
-    assert _wait_for(lambda: len(missing) > 0), "synq_signal_missing_parent never fired"
+        zenoh.Encoding.APPLICATION_YAML,
+        lambda: len(missing) > 0,
+    ), "synq_signal_missing_parent never fired"
     assert missing[0] == "inner/value"
     assert mirror.inner is None, "inner must remain None after missing-parent update"
 
@@ -496,13 +581,12 @@ def test_signal_missing_parent_triggers_auto_rehydrate():
     missing: list[str] = []
     mirror.synq_signal_missing_parent.connect(lambda path, *_: missing.append(path))
 
-    _wait_for(lambda: obj.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
-    current_session.get().zenoh_session.put(
+    assert _put_until(
         f"{obj.synq_absolute_path}/inner/value",
         "42",
-        encoding=zenoh.Encoding.APPLICATION_YAML,
-    )
-    assert _wait_for(lambda: len(missing) > 0), "synq_signal_missing_parent never fired"
+        zenoh.Encoding.APPLICATION_YAML,
+        lambda: len(missing) > 0,
+    ), "synq_signal_missing_parent never fired"
     assert mirror.inner is None  # rehydrate confirms inner=None; state is unchanged
 
 

@@ -1,6 +1,6 @@
 import sys
 import typer
-from SpiriSynq.session import Session
+from SpiriSynq.session import current_session
 from rich.console import Console
 from rich.syntax import Syntax
 import base64
@@ -10,7 +10,7 @@ app = typer.Typer()
 topic_app = typer.Typer()
 app.add_typer(topic_app, name="topic")
 
-session = Session()
+session = current_session.get()
 
 # stdout console for data output (pipeable)
 console_out = Console(file=sys.stdout, highlight=False)
@@ -25,6 +25,15 @@ def term_callback(
     if not (truncate if truncate is not None else sys.stdout.isatty()):
         console_err.print("[dim]stdout truncation disabled[/dim]")
         console_out.soft_wrap = True
+
+
+def resolve(topic: str) -> str:
+    """Resolve a topic argument (``./camera`` → ``<base_topic>/camera``), exiting on an invalid one."""
+    try:
+        return session.resolve_topic(topic)
+    except ValueError as e:
+        console_err.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
 
 
 def out_overflow():
@@ -42,7 +51,9 @@ def topic_list(
     prefix: str = typer.Option(None, "--prefix", "-p", help="Key prefix"),
 ):
     """List all topics"""
-    query_topic = f"{prefix}/**/sr_metadata/{_type}" if prefix else f"**/sr_metadata/{_type}"
+    if prefix:
+        prefix = resolve(prefix)
+    query_topic =f"{prefix}/**/sr_metadata/{_type}" if prefix else f"**/sr_metadata/{_type}"
     query_topic = query_topic.strip("/").removesuffix("/")
 
     console_err.print(f"[dim]Querying: {query_topic}[/dim]")
@@ -78,6 +89,8 @@ def topic_watch(
     import json
     import threading
     from datetime import datetime, timezone
+
+    topic = resolve(topic)
 
     # Default to showing paths when using wildcards, since the key helps identify which topic fired
     if show_paths is None:
@@ -189,6 +202,7 @@ def topic_bandwidth(
     import time
     import threading
 
+    topic = resolve(topic)
     console_err.print(f"[dim]Subscribing to: [bold]{topic}[/bold] (Ctrl+C to stop)[/dim]")
 
     byte_count = [0]
@@ -270,6 +284,9 @@ def topic_put(
     """
     import sys
 
+    if topic is not None:
+        topic = resolve(topic)
+
     def put(path: str, raw: str):
         console_err.print(f"[dim]Publishing {path}: {raw}[/dim]")
         session.zenoh_session.put(path, raw)
@@ -339,7 +356,7 @@ def topic_put(
 
         if isinstance(parsed, dict) and "path" in parsed:
             # Stream came from `topic watch --show-paths`
-            stream_path = parsed["path"]
+            stream_path = resolve(parsed["path"])
             if topic is not None:
                 validate_subpath(stream_path, topic)
             raw = str(parsed.get("value", ""))
@@ -377,9 +394,9 @@ def topic_rpc(
     Use --prefix to narrow the search, or pass a specific topic path as an argument.
     """
     if topic:
-        query_topic = f"{topic}/sr_object_schema"
+        query_topic = f"{resolve(topic)}/sr_object_schema"
     elif prefix:
-        query_topic = f"{prefix}/**/sr_object_schema"
+        query_topic = f"{resolve(prefix)}/**/sr_object_schema"
     else:
         query_topic = "**/sr_object_schema"
 
@@ -445,7 +462,7 @@ def topic_call(
         k, v = kv.split("=", 1)
         parsed_kwargs[k] = v
 
-    selector = _zenoh.Selector(topic, _zenoh.Parameters(parsed_kwargs))
+    selector = _zenoh.Selector(resolve(topic), _zenoh.Parameters(parsed_kwargs))
     console_err.print(f"[dim]Calling: {selector}[/dim]")
 
     get_kwargs: dict = dict(consolidation=_zenoh.QueryConsolidation(_zenoh.ConsolidationMode.NONE))
@@ -487,6 +504,7 @@ def topic_schema(
     topic: str = typer.Argument(..., help="Topic path to retrieve schema for"),
 ):
     """Retrieve and display the schema for a topic."""
+    topic = resolve(topic)
     query_path = f"{topic}/sr_object_schema"
     console_err.print(f"[dim]Querying: {query_path}[/dim]")
 
@@ -520,7 +538,7 @@ def topic_rehydrate(
 
     Emits a full yaml object instead of changes to sub topics.
     """
-    topic = f"{topic}/sr_rehydrate"
+    topic = f"{resolve(topic)}/sr_rehydrate"
     console_err.print(f"[dim]Querying: {topic}[/dim]")
 
     replies = session.zenoh_session.get(topic)
@@ -621,7 +639,7 @@ def meta_type_schema(
     If no type is given, lists all known types across the network.
     Queries <prefix>/sr_type_schema/<type> across the network.
     """
-    query_path = f"{prefix}/sr_type_schema/{_type}"
+    query_path = f"{resolve(prefix)}/sr_type_schema/{_type}"
     console_err.print(f"[dim]Querying: {query_path}[/dim]")
 
     replies = session.zenoh_session.get(query_path)

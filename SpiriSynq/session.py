@@ -92,7 +92,9 @@ class Session:
     """Zenoh configuration. Defaults to peer-mode auto-discovery with no router."""
     base_topic: str = field(default_factory=_default_base_topic)
     """Topic prefix prepended to all authoritative objects on this session.
-    Defaults to the hostname, or the ``SPIRI_SYNQ_BASE_TOPIC`` environment variable if set."""
+    Defaults to, in order: the ``SPIRI_SYNQ_BASE_TOPIC`` environment variable, the
+    contents of ``/etc/spirisynq_base_topic`` (e.g. the host's ``/etc/hostname``
+    bind-mounted into a container), then the hostname."""
     type_registry: SessionSerializer = field(default_factory=SessionSerializer)
     """YAML serialiser/deserialiser used for all payloads on this session.
     Types are registered here by :meth:`register_type_recursive`."""
@@ -102,7 +104,8 @@ class Session:
         default_factory=weakref.WeakValueDictionary
     )
     """Weak map of ``absolute_path → SyncableObject`` for all live objects on this session."""
-    _sequince_number_for_path: dict[str,int] = field(default_factory=lambda: defaultdict(lambda:0))
+    _sequence_number_for_source: dict[tuple, int] = field(default_factory=lambda: defaultdict(int))
+    """Next ``source_sn`` per source entity, keyed by ``(zid, eid)``. See :meth:`source_info`."""
     _codecs: list = field(default_factory=list, repr=False)
     """Custom codecs registered via :meth:`register_codec`."""
     _generic_classes: dict = field(default_factory=dict, repr=False)
@@ -138,6 +141,29 @@ class Session:
         )
         return representer_registered and constructor_registered
 
+    def resolve_topic(self, topic: str) -> str:
+        """Expand a leading ``.`` chunk to :attr:`base_topic` and validate the result.
+
+        ``./camera`` resolves to ``<base_topic>/camera`` and ``.`` alone to the base
+        topic itself, so ``./camera`` and ``myhost/camera`` name the same key. Topics
+        without a leading ``.`` are returned unchanged. ``.`` anywhere else, and
+        ``..`` anywhere, raise :class:`ValueError` — ``.`` is a valid literal Zenoh
+        chunk, so an unexpanded marker must never reach the network.
+        """
+        chunks = topic.split("/")
+        if chunks[0] == ".":
+            chunks[0] = self.base_topic
+        resolved = "/".join(chunks)
+        if {".", ".."} & set(resolved.split("/")):
+            raise ValueError(
+                f"Invalid topic {topic!r}: '.' is only allowed as the first chunk, '..' is not allowed"
+            )
+        try:
+            zenoh.KeyExpr(resolved)
+        except Exception as e:
+            raise ValueError(f"Invalid topic {topic!r}: {e}") from None
+        return resolved
+
     def from_topic(self, topic):
         """Fetch and return the current state of an object at *topic* via ``sr_rehydrate``.
 
@@ -146,8 +172,10 @@ class Session:
         which handles registration automatically).
 
         Returns the deserialised object. The concrete type depends on the YAML tag
-        in the reply, so the return type is ``Any``.
+        in the reply, so the return type is ``Any``. *topic* may be relative
+        (``./camera``); see :meth:`resolve_topic`.
         """
+        topic = self.resolve_topic(topic)
         new_obj = rpc_call(f"{topic}/sr_rehydrate", self)
         return new_obj
 
@@ -169,6 +197,7 @@ class Session:
         """
         from SpiriSynq.syncable_objects import make_generic_syncable_class
 
+        topic = self.resolve_topic(topic)
         metadata = rpc_call(f"{topic}/sr_metadata", self)
         schema = rpc_call(f"{topic}/sr_object_schema", self)
         tags = metadata.get("classes") or [f"!{topic.rsplit('/', 1)[-1]}"]
@@ -200,7 +229,8 @@ class Session:
         Args:
             type_filter: If given, only topics whose class list includes this type
                 name (without the ``!`` YAML tag prefix) are returned.
-            prefix: Restrict the search to topics under this key prefix.
+            prefix: Restrict the search to topics under this key prefix. May be
+                relative (``.`` for this session's own objects).
 
         Example::
 
@@ -209,6 +239,8 @@ class Session:
 
         Works identically to ``synq topic list`` on the CLI.
         """
+        if prefix:
+            prefix = self.resolve_topic(prefix)
         query_topic = (
             f"{prefix}/**/sr_metadata/{type_filter}"
             if prefix
@@ -335,13 +367,22 @@ class Session:
                 return codec
         return None
 
-    def source_info(self, path: str, source_id=None):
-        #We keep track of per path sequince numbers.
+    def source_info(self, source_id=None):
+        """Build a ``zenoh.SourceInfo`` for the next sample from *source_id*.
+
+        As with zenoh's own ``source_sn``, the sequence number is monotonic per
+        source entity (zid + eid), not per key, so a subscriber that sees all of
+        a publisher's samples can detect gaps and reordering. Each
+        ``SyncableObject`` publishes under its own publisher's id, so objects
+        on the same session don't share a counter."""
+        if source_id is None:
+            source_id = self.zenoh_session.id
+        key = (str(getattr(source_id, "zid", source_id)), getattr(source_id, "eid", None))
         source_info = zenoh.SourceInfo(
-            source_id=source_id if source_id is not None else self.zenoh_session.id,
-            source_sn=self._sequince_number_for_path[path],
+            source_id=source_id,
+            source_sn=self._sequence_number_for_source[key],
         )
-        self._sequince_number_for_path[path]+=1
+        self._sequence_number_for_source[key] += 1
         return source_info
 
     def close(self):

@@ -8,6 +8,13 @@ python -m SpiriSynq.cli [OPTIONS] COMMAND [ARGS]...
 
 `--truncate / --no-truncate` — long lines are truncated by default on a TTY and left unwrapped when piped. Override with `--no-truncate`.
 
+Every topic argument and `--prefix` accepts a relative topic: `./camera` means `<base_topic>/camera` for this machine (the hostname, or `SPIRI_SYNQ_BASE_TOPIC`), and `.` alone means this machine's whole tree. No shell quoting is needed.
+
+```bash
+python -m SpiriSynq.cli topic watch './camera/**'
+python -m SpiriSynq.cli topic list --prefix .
+```
+
 ---
 
 ## topic

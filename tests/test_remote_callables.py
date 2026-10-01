@@ -51,6 +51,38 @@ def test_remote_method_basic_call():
     assert result == "hello world"
 
 
+def test_remote_method_wildcard_query_replies_on_concrete_key():
+    """
+    A wildcard query must get replies keyed by each queryable's own key, not
+    by the wildcard query key -- otherwise callers can't tell which topic or
+    method a reply came from.
+    """
+    import zenoh
+
+    @dataclass
+    class WithWildcardRpc(SyncableObject):
+        @remote_method()
+        def hello(self) -> str:
+            return "hi"
+
+    obj = WithWildcardRpc("test/rpc_wildcard", synq_authoritive=True)
+    session_b = Session(config=zenoh_test_config())
+    base = obj.synq_absolute_path
+
+    keys = set()
+
+    def collect_reply_keys():
+        for r in session_b.zenoh_session.get(
+            f"{base}/*", consolidation=zenoh.ConsolidationMode.NONE
+        ):
+            if r.ok:
+                keys.add(str(r.ok.key_expr))
+        return f"{base}/hello" in keys and f"{base}/sr_rehydrate" in keys
+
+    assert _wait_for(collect_reply_keys, timeout=5.0), keys
+    assert not any("*" in k for k in keys), keys
+
+
 def test_remote_method_authoritative_executes_locally():
     """
     Calling a @remote_method on the authoritative object should run the

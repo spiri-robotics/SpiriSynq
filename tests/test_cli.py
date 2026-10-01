@@ -166,6 +166,72 @@ def test_topic_rpc_for_specific_topic():
     assert result.exit_code == 0
 
 
+def test_topic_rpc_prefix_reports_concrete_topic():
+    """topic rpc --prefix must report each object's real topic, not the wildcard."""
+    from io import StringIO
+    from rich.console import Console
+    import SpiriSynq.cli as cli_module
+    from SpiriSynq.cli import session as cli_session
+
+    @dataclass
+    class CliRpcPrefixObj(SyncableObject):
+        @remote_method()
+        def ping(self) -> str:
+            return "pong"
+
+    obj = CliRpcPrefixObj("cli_test/rpc_prefix_obj", synq_authoritive=True, synq_session=cli_session)
+
+    out = StringIO()
+    original_out = cli_module.console_out
+    cli_module.console_out = Console(file=out, highlight=False, soft_wrap=True)
+    try:
+        result = runner.invoke(app, ["topic", "rpc", "--prefix", obj.synq_absolute_path])
+    finally:
+        cli_module.console_out = original_out
+
+    assert result.exit_code == 0
+    docs = [d for d in yaml.safe_load_all(out.getvalue()) if d is not None]
+    assert [d["topic"] for d in docs] == [obj.synq_absolute_path]
+
+
+def test_topic_rpc_relative_topic():
+    """'./x' on the CLI resolves against the CLI session's base topic."""
+    from io import StringIO
+    from rich.console import Console
+    import SpiriSynq.cli as cli_module
+    from SpiriSynq.cli import session as cli_session
+
+    @dataclass
+    class CliRpcRelativeObj(SyncableObject):
+        @remote_method()
+        def ping(self) -> str:
+            return "pong"
+
+    obj = CliRpcRelativeObj("./cli_test/rpc_relative_obj", synq_authoritive=True, synq_session=cli_session)
+
+    out = StringIO()
+    original_out = cli_module.console_out
+    cli_module.console_out = Console(file=out, highlight=False, soft_wrap=True)
+    try:
+        result = runner.invoke(app, ["topic", "rpc", "./cli_test/rpc_relative_obj"])
+    finally:
+        cli_module.console_out = original_out
+
+    assert result.exit_code == 0
+    docs = [d for d in yaml.safe_load_all(out.getvalue()) if d is not None]
+    assert [d["topic"] for d in docs] == [obj.synq_absolute_path]
+
+
+@pytest.mark.parametrize("args", [
+    ["topic", "schema", "../x"],
+    ["topic", "rehydrate", "a/./x"],
+    ["topic", "list", "--prefix", "../x"],
+])
+def test_cli_rejects_invalid_relative_topic(args):
+    result = runner.invoke(app, args)
+    assert result.exit_code == 1
+
+
 def test_topic_rpc_global_query_exits_zero():
     """topic rpc with no arguments queries all topics; should exit zero."""
     result = runner.invoke(app, ["topic", "rpc"])

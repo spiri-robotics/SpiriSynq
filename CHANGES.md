@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.2.0
+
+### Features
+
+- **Relative topics: `./camera` means `<base_topic>/camera`.** A leading `.` chunk expands to
+  the session's base topic (see below for how it's chosen), so `./camera` and
+  `myhost/camera` name the same object. Accepted by `SyncableObject` constructors,
+  `from_topic`, `from_topic_untyped`, `list_topics(prefix=...)`, and every CLI topic argument
+  and `--prefix` (`.` needs no shell quoting, unlike `~`). Resolution happens locally; nothing
+  changes on the wire. New `Session.resolve_topic()` exposes the expansion.
+
+### Improvements
+
+- **Topics are validated up front.** Object topics and CLI topic arguments are checked with
+  `zenoh.KeyExpr` when resolved, raising `ValueError` (or a clean CLI error) instead of
+  failing later inside zenoh. `.` anywhere but the first chunk, and `..` anywhere, are
+  rejected, since zenoh would otherwise accept them as literal keys.
+
+### Fixes
+
+- **`source_sn` is counted per object topic, not per field name.** `Session.source_info` keyed
+  its sequence counter by the relative field path, so every object on a session sharing a
+  field name (e.g. `image`) advanced the same counter, while different fields of one object
+  had unrelated counters. Sequence numbers are now monotonic per source entity (zid + eid),
+  i.e. one counter per object's publisher, matching zenoh's own `source_sn` semantics, so a
+  subscriber on `<topic>/**` can use them for gap and reorder detection. `Session.source_info()` no longer takes a `path` argument.
+
+- **The CLI no longer opens two zenoh sessions.** `cli.py` constructed its own `Session()`
+  while importing `SpiriSynq.session` already creates the module-level default session, so
+  every `synq` invocation started (and joined the network with) an extra, unused session.
+  The CLI now uses the default session via `current_session.get()`.
+
+- **RPC replies are keyed by the queryable, not the query.** `@remote_method` handlers (and
+  the built-in `sr_*` queryables) replied with `query.key_expr`, so a wildcard query such as
+  `**/sr_object_schema` got every reply keyed by the wildcard itself. `synq topic rpc` with
+  `--prefix` or no topic therefore reported each topic as `**`. Replies now use the
+  queryable's own concrete key. Custom `@method.server()` handlers reply themselves and
+  should do the same; the example in `docs/concepts.md` has been updated.
+
+### Tests
+
+- **Fixed racy publish-from-another-session tests.** Several `test_syncable_objects.py` tests
+  waited on `obj.synq_publisher.matching_status`, which `obj`'s own subscriber satisfies
+  immediately, then sent a single put from a third session that zenoh could drop before a
+  route to the mirror existed (~10% failure rate at v0.1.4). They now re-send the
+  idempotent put until the mirror reacts.
+
 ## v0.1.4
 
 ### Fixes
