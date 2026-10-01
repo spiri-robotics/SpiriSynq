@@ -363,3 +363,102 @@ def test_field_named_like_hook_is_not_a_hook():
 
     obj = Obj("test/hook_field_name")
     assert obj._synq_field_hook("data", "publish") is None
+
+
+# ── Nested paths ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Leaf(SubSyncableDataclass):
+    x: int = 0
+    y: int = 0
+    x_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.REAL_TIME)
+
+
+@dataclass
+class Mid(SubSyncableDataclass):
+    leaf: Leaf | None = None
+    z: int = 0
+    leaf_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.INTERACTIVE_HIGH)
+
+
+@dataclass
+class Deep(SyncableObject):
+    mid: Mid | None = None
+    mid_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.BACKGROUND)
+
+
+def test_qos_resolution_three_levels():
+    obj = Deep("test/qos_deep", mid=Mid(leaf=Leaf()))
+    assert obj.synq_qos_for("mid").priority == zenoh.Priority.BACKGROUND
+    assert obj.synq_qos_for("mid/z").priority == zenoh.Priority.BACKGROUND
+    assert obj.synq_qos_for("mid/leaf").priority == zenoh.Priority.INTERACTIVE_HIGH
+    assert obj.synq_qos_for("mid/leaf/x").priority == zenoh.Priority.REAL_TIME
+    assert obj.synq_qos_for("mid/leaf/y").priority == zenoh.Priority.INTERACTIVE_HIGH
+
+    # instance override on a sub-object
+    obj.mid.leaf.y_qos = SynqQoS(priority=zenoh.Priority.DATA_HIGH)
+    assert obj.synq_qos_for("mid/leaf/y").priority == zenoh.Priority.DATA_HIGH
+
+    # a None parent stops the walk; the nearest live ancestor's QoS applies
+    obj.mid.leaf = None
+    assert obj.synq_qos_for("mid/leaf/x").priority == zenoh.Priority.INTERACTIVE_HIGH
+
+
+@dataclass
+class HookInner(SubSyncableDataclass):
+    value: int = 0
+
+    def value_publish(self, value):
+        yield f"v={value}".encode()
+
+    def value_receive(self, value, sample):
+        self.received = value
+        return int(value.removeprefix(b"v="))
+
+
+@dataclass(frozen=True)
+class FrozenInner:
+    value: int = 0
+
+    def value_publish(self, value):
+        yield b""
+
+
+@dataclass
+class HookOuter(SyncableObject):
+    bar: HookInner | None = None
+    frozen: FrozenInner | None = None
+    ready: int = 0
+
+    def value_publish(self, value):  # not bar/value's hook: wrong owner
+        raise AssertionError("unreachable")
+
+    def bar_publish(self, value):  # whole-bar replacement only, no ancestor fallback
+        raise AssertionError("unreachable")
+
+
+def test_nested_hook_lookup():
+    obj = HookOuter("test/hook_nested_lookup", bar=HookInner(), frozen=FrozenInner())
+    hook = obj._synq_field_hook("bar/value", "publish")
+    assert hook.__self__ is obj.bar and hook.__name__ == "value_publish"
+    assert obj._synq_field_hook("frozen/value", "publish").__self__ is obj.frozen
+    assert obj._synq_field_hook("bar/value", "receive").__self__ is obj.bar
+
+    obj.bar = None
+    assert obj._synq_field_hook("bar/value", "publish") is None
+
+
+def test_nested_hooks_round_trip():
+    session_a = Session(config=zenoh_test_config())
+    session_b = Session(config=zenoh_test_config())
+    auth = HookOuter(
+        "test/hook_nested_rt", bar=HookInner(), synq_authoritive=True, synq_session=session_a
+    )
+    mirror = HookOuter.from_topic(auth.synq_absolute_path, session=session_b)
+    assert mirror.bar is not None
+    _connect(auth, mirror)
+
+    auth.bar.value = 7
+    assert _wait_for(lambda: mirror.bar.value == 7)
+    assert mirror.bar.received == b"v=7"

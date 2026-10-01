@@ -445,7 +445,7 @@ class SyncableObject:
         hook = self._synq_field_hook(path, "publish")
         if hook is not None:
             logger.trace(f"publishing (hook) {full_path}")
-            hook_name = f"{type(self).__name__}.{path}_publish"
+            hook_name = f"{type(hook.__self__).__name__}.{hook.__name__}"
             for item in hook(value) or ():
                 if isinstance(item, (bytes, bytearray, str)):
                     item = {"payload": item}
@@ -479,6 +479,16 @@ class SyncableObject:
         attribute, then class attribute), then the nearest ancestor field
         (``bar/value`` falls back to ``bar_qos``). Only SynqQoS instances count.
         """
+        segments, owners = self._synq_path_owners(path)
+        for depth in range(len(owners) - 1, -1, -1):
+            qos = getattr(owners[depth], f"{segments[depth]}_qos", None)
+            if isinstance(qos, SynqQoS):
+                return qos
+        return None
+
+    def _synq_path_owners(self, path: str) -> tuple[list[str], list]:
+        """Split *path* and walk the live objects owning each segment:
+        ``owners[i]`` holds ``segments[i]``. Stops short at a None parent."""
         segments = path.split("/")
         owners: list = [self]
         for seg in segments[:-1]:
@@ -486,23 +496,23 @@ class SyncableObject:
             if owner is None:
                 break
             owners.append(owner)
-        for depth in range(len(owners) - 1, -1, -1):
-            qos = getattr(owners[depth], f"{segments[depth]}_qos", None)
-            if isinstance(qos, SynqQoS):
-                return qos
-        return None
+        return segments, owners
 
     def _synq_field_hook(self, path: str, kind: str):
-        """Bound ``<field>_publish`` / ``<field>_receive`` method for a top-level
-        field, or None. Dataclass fields that happen to share the name don't count."""
-        if "/" in path:
+        """Bound ``<field>_publish`` / ``<field>_receive`` method on the object
+        that owns the field at *path* (``bar/value`` looks for ``value_publish``
+        on ``self.bar``), or None. Unlike QoS there is no ancestor fallback.
+        Dataclass fields that happen to share the name don't count."""
+        segments, owners = self._synq_path_owners(path)
+        if len(owners) < len(segments):
             return None
-        name = f"{path}_{kind}"
-        if name in self.__dataclass_fields__ or not callable(
-            getattr(type(self), name, None)
+        owner = owners[-1]
+        name = f"{segments[-1]}_{kind}"
+        if name in getattr(owner, "__dataclass_fields__", {}) or not callable(
+            getattr(type(owner), name, None)
         ):
             return None
-        return getattr(self, name)
+        return getattr(owner, name)
 
     def _is_own_source(self, source_id) -> bool:
         """True if source_id names one of this object's own declared publishers

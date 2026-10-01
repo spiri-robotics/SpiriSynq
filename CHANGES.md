@@ -15,7 +15,8 @@
   `<field>_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.DATA_HIGH)` on a
   `SyncableObject` to set Zenoh priority, congestion control and express for that field's
   publishes. Assigning on an instance overrides the class default for later publishes without emitting
-  an event. Nested paths fall back to the nearest ancestor's `_qos`, and container publishes
+  an event, at any nesting depth. A nested field's `_qos` goes on the sub-object class that
+  declares it, and nested paths without one fall back to the nearest ancestor's `_qos`. Container publishes
   use their top-level field's. QoS is sender-local: never synced, rehydrated or in the schema.
 
 - **Custom publish and receive per field.** `<field>_publish(self, value)` replaces the
@@ -24,7 +25,9 @@
   Bare `bytes`/`str` also work. Each put carries the publisher's `source_info` so echo
   suppression works, and QoS keys left out come from the field's `_qos`.
   `<field>_receive(self, value, sample)` runs after codec decoding and returns the value to
-  apply or `SKIP`. The type check runs on that returned value. This enables formats like
+  apply or `SKIP`. The type check runs on that returned value. Hooks for a nested field go on
+  the sub-object that declares it (`Leaf.x_publish` handles `mid/leaf/x`, bound to that
+  `Leaf`), with no ancestor fallback. This enables formats like
   progressive MJPEG, where one assignment becomes several chunks at different priorities.
 
 - **Base topic can come from `/etc/spirisynq_base_topic`.** The default base topic is now,

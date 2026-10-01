@@ -460,11 +460,52 @@ The attribute counts only if it is an instance of `SynqQoS`, so an ordinary fiel
 
 Assigning it on an instance (`obj.image_qos = SynqQoS(...)`) overrides the class default for later publishes and emits no event, which lets a producer change priority from one publish to the next.
 
-To resolve QoS for a path, SpiriSynq checks the instance attribute, then the class attribute, then the nearest ancestor field on a nested path (`bar/value` falls back to `bar_qos`), then Zenoh's defaults. For a nested path, the field's own `<field>_qos` is looked up on the sub-object that owns the field. `obj.synq_qos_for(path)` returns the resolved value. Container publishes (`EventedList`/`EventedDict`/`EventedSet`) use the QoS of their top-level field.
+`obj.synq_qos_for(path)` returns the resolved QoS for a path, or `None` for Zenoh's defaults. Container publishes (`EventedList`/`EventedDict`/`EventedSet`) use the QoS of their top-level field.
+
+### Nested fields
+
+Each `<field>_qos` goes on the class that declares the field, so for a nested dataclass it goes on the nested class, not the root. Resolving `mid/leaf/x` walks the live objects and checks, from the innermost outward:
+
+| Segment | Looked up on | Attribute |
+|---|---|---|
+| `x` | `obj.mid.leaf` | `x_qos` |
+| `leaf` | `obj.mid` | `leaf_qos` |
+| `mid` | `obj` | `mid_qos` |
+
+The first `SynqQoS` found wins, checking the instance attribute before the class attribute at each level. A QoS on a parent field therefore covers its whole subtree unless a descendant sets its own:
+
+```python
+@dataclass
+class Leaf(SubSyncableDataclass):
+    x: int = 0
+    y: int = 0
+    x_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.REAL_TIME)
+
+@dataclass
+class Mid(SubSyncableDataclass):
+    leaf: Leaf | None = None
+    z: int = 0
+    leaf_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.INTERACTIVE_HIGH)
+
+@dataclass
+class Robot(SyncableObject):
+    mid: Mid | None = None
+    mid_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.BACKGROUND)
+
+# mid, mid/z         -> BACKGROUND        (mid_qos)
+# mid/leaf, .../y    -> INTERACTIVE_HIGH  (leaf_qos)
+# mid/leaf/x         -> REAL_TIME         (x_qos)
+```
+
+Some consequences:
+
+- Instance overrides work at any depth: `robot.mid.leaf.y_qos = SynqQoS(...)` affects `mid/leaf/y`. Frozen nested dataclasses can only use class attributes.
+- The walk follows the live objects, not the annotations. If a parent is `None`, the nearest live ancestor's QoS applies.
+- Replacing a whole sub-object (`robot.mid = Mid(...)`) is one put at `mid` with `mid_qos`. QoS declared inside `Mid` or `Leaf` only applies to in-place changes of their fields.
 
 ## Custom publish and receive
 
-An object can take over the wire format of a top-level field by defining `<field>_publish` and/or `<field>_receive`:
+An object can take over the wire format of a field by defining `<field>_publish` and/or `<field>_receive`:
 
 ```python
 from typing import Iterator
@@ -489,6 +530,8 @@ Yielding nothing sends nothing, and returning a list works as well as a generato
 `PutArgs` is a `TypedDict`. Annotating the hook as above lets a type checker (mypy, pyright, your editor) flag misspelled keys, a missing `payload`, or wrong value types. At runtime the dict goes straight to Zenoh, so a misspelled key raises Zenoh's own `TypeError` on publish. If a later Zenoh release adds a `put` argument, it works at runtime right away, but a type checker reports it as an unknown key until `PutArgs` is updated.
 
 `_receive` runs on the Zenoh callback thread, inside the receive guard (so applying its result doesn't echo back out), after codec decoding. It returns the value to apply, or `SKIP` to leave the field unchanged. The type check against the field's annotation runs on that returned value, not on the raw sample.
+
+Like `_qos`, hooks go on the class that declares the field. For `mid/leaf/x`, SpiriSynq calls `x_publish` / `x_receive` on `obj.mid.leaf`, with `self` bound to that sub-object. This works for `SubSyncableDataclass` and frozen dataclasses alike. Unlike QoS, hooks have no ancestor fallback: `mid_publish` on the root handles only puts at `mid` (replacing the whole sub-object), never changes to `mid/z`. A receive whose parent is `None` on the receiving side finds no hook and takes the usual missing-parent path.
 
 The two hooks are optional and independent of each other. A peer without them sees whatever the publisher actually sent, so a format with custom framing should be designed so that a hook-less peer fails safely. Hooks only apply to field updates. `sr_rehydrate` still sends the whole value as YAML.
 
