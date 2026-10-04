@@ -89,7 +89,7 @@ for metadata in session.list_topics(type_filter="Robot"):
 
 ## Cross-language compatibility
 
-The wire format is plain Zenoh with YAML payloads. Any node that implements the [SpiriSynq protocol](docs/protocol.md) — four mandatory queryables and per-field puts — is a first-class participant. No library required on the other end.
+The wire format is plain Zenoh with YAML payloads. Any node that implements the [SpiriSynq protocol](docs/protocol.md) — three built-in callables, per-field puts, and a JSON Schema describing each object — is a first-class participant. No library required on the other end.
 
 ## Key configuration options
 
