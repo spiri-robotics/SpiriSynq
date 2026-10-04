@@ -25,6 +25,7 @@ docs = [
 
 [dependency-groups]
 dev = [
+    "jsonschema>=4.26.0",
     "objgraph>=3.6.2",
     "pytest>=9.0.2",
     "pytest-benchmark>=5.2.3",

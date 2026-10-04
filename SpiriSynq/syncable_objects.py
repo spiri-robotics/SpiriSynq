@@ -2,6 +2,7 @@ from SpiriSynq.remote_callables import RemoteMethod, remote_method
 from SpiriSynq.session import Session, current_session
 from SpiriSynq.serializer import load_untyped
 from SpiriSynq.qos import SynqQoS
+from SpiriSynq.schema import JsonSchema
 
 import zenoh
 from loguru import logger
@@ -54,6 +55,7 @@ _RESERVED_PUT_ARGS = {"key_expr", "source_info"}
 
 
 class SyncableObjectMetadata(TypedDict):
+    """Reply of sr_metadata: an object's address, YAML tags, and owner."""
     topic: str
     classes: list[str]
     authoritive_node: str
@@ -330,11 +332,14 @@ class SyncableObject:
         self.synq_session.objects[self.synq_absolute_path] = self
 
         if self.synq_authoritive:
-            for name in dir(type(self)):
-                value = getattr(type(self), name, None)
-                if isinstance(value, RemoteMethod):
-                    # Only bind and setup methods if we're authoritive
-                    value.setup_zenoh_callback(self)
+            for value in {
+                id(v): v
+                for v in (getattr(type(self), name, None) for name in dir(type(self)))
+                if isinstance(v, RemoteMethod)
+            }.values():
+                # Only bind and setup methods if we're authoritive. Deduped:
+                # .client()/.server() hooks expose the same method twice.
+                value.setup_zenoh_callback(self)
 
             tags = self.synq_type_tags()
 
@@ -343,23 +348,21 @@ class SyncableObject:
                 self.sr_metadata.setup_zenoh_callback(
                     self, path=self.synq_absolute_path, name=f"sr_metadata/{tag}"
                 )
+                self.sr_object_schema.setup_zenoh_callback(
+                    self, path=self.synq_absolute_path, name=f"sr_type_schema/{tag}"
+                )
+        # One publisher per object: its id tags every sample the object sends,
+        # so field puts and the tombstone share one source_sn sequence. Field
+        # puts go through session.put() under that id (a publisher on
+        # <path>/** can't put to sub-keys), so RELIABLE here only affects what
+        # is sent through the publisher itself: the tombstone in close().
         self.synq_publisher = self.synq_session.zenoh_session.declare_publisher(
-            f"{self.synq_absolute_path}/**"
+            f"{self.synq_absolute_path}/**",
+            reliability=zenoh.Reliability.RELIABLE,
         )
         self._synq_own_source_ids = {
             (str(self.synq_publisher.id.zid), self.synq_publisher.id.eid)
         }
-        if self.synq_authoritive:
-            self._synq_tombstone_publisher = self.synq_session.zenoh_session.declare_publisher(
-                f"{self.synq_absolute_path}/**",
-                reliability=zenoh.Reliability.RELIABLE,
-            )
-            self._synq_own_source_ids.add(
-                (
-                    str(self._synq_tombstone_publisher.id.zid),
-                    self._synq_tombstone_publisher.id.eid,
-                )
-            )
         logger.trace(
             f"{self.synq_publisher} on {self.synq_session.zenoh_session.zid()}"
         )
@@ -515,9 +518,8 @@ class SyncableObject:
         return getattr(owner, name)
 
     def _is_own_source(self, source_id) -> bool:
-        """True if source_id names one of this object's own declared publishers
-        (the regular publisher or, for authoritative objects, the tombstone
-        publisher) -- i.e. this is our own publish echoing back, not another
+        """True if source_id names this object's own publisher -- i.e. this
+        is our own publish echoing back, not another
         object's genuine update. A zenoh session id (zid) is shared by every
         SyncableObject on that session, so identity must be checked at the
         per-publisher level (zid + eid), not just the session's zid.
@@ -763,11 +765,12 @@ class SyncableObject:
         return self
 
     @remote_method()
-    def sr_object_schema(self) -> dict:
+    def sr_object_schema(self) -> JsonSchema:
         """Returns the JSON Schema for this object's syncable fields and RPC endpoints."""
         from SpiriSynq.schema import get_schema
 
-        return get_schema(type(self))
+        assert self.synq_session
+        return get_schema(type(self), codecs=self.synq_session._codecs)  # type: ignore[return-value]
 
     @classmethod
     def all_skip_rehydrate(cls) -> set:
@@ -909,23 +912,20 @@ class SyncableObject:
         except Exception:
             pass
 
-        tombstone_pub = getattr(self, "_synq_tombstone_publisher", None)
-        if tombstone_pub is not None:
+        pub = getattr(self, "synq_publisher", None)
+        if pub is not None and self.synq_authoritive:
+            # Tombstone: through the object's own publisher, continuing the
+            # source_sn sequence of its field puts.
             try:
                 source_info = (
-                    self.synq_session.source_info(source_id=tombstone_pub.id)
+                    self.synq_session.source_info(source_id=pub.id)
                     if self.synq_session
                     else None
                 )
-                tombstone_pub.delete(source_info=source_info)
+                pub.delete(source_info=source_info)
                 self.synq_is_deleted = True
             except Exception:
                 pass
-            try:
-                tombstone_pub.undeclare()
-            except Exception:
-                pass
-            self._synq_tombstone_publisher = None
 
         sub = getattr(self, "synq_subscriber", None)
         if sub is not None:

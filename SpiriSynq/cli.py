@@ -634,22 +634,25 @@ def meta_type_schema(
     _type: str = typer.Argument("*", help="Type name to retrieve schema for (defaults to all types)"),
     prefix: str = typer.Option("**", "--prefix", "-p", help="Key prefix (defaults to entire tree)"),
 ):
-    """Retrieve and display the schema for a registered type.
+    """Retrieve the schema of every object of a type.
 
-    If no type is given, lists all known types across the network.
-    Queries <prefix>/sr_type_schema/<type> across the network.
+    Queries <prefix>/sr_type_schema/<type>. Each object of that type (or a
+    subtype) answers with its own sr_object_schema, so the output is one
+    {topic, schema} record per object, separated by ---.
     """
     query_path = f"{resolve(prefix)}/sr_type_schema/{_type}"
     console_err.print(f"[dim]Querying: {query_path}[/dim]")
 
-    replies = session.zenoh_session.get(query_path)
+    replies = session.zenoh_session.get(query_path, consolidation=zenoh.ConsolidationMode.NONE)
 
     found = 0
     for reply in replies:
         if reply.ok:
-            raw = reply.ok.payload.to_bytes().decode("utf-8").strip()
-            syntax = Syntax(raw, "yaml", theme="ansi_dark", background_color="default")
-            console_out.print(syntax)
+            topic_path = str(reply.ok.key_expr).rsplit("/sr_type_schema/", 1)[0]
+            schema = session.type_registry.load(reply.ok.payload.to_string())
+            out = session.type_registry.dumps({"topic": topic_path, "schema": schema}).strip()
+            console_out.print(Syntax(out, "yaml", theme="ansi_dark", background_color="default"))
+            console_out.print("---")
             found += 1
         else:
             console_err.print(f"[red]Error reply:[/red] {reply.err}")

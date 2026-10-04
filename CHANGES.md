@@ -1,5 +1,69 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- **Object schemas are now standard JSON Schema (draft 2020-12), format version 2.** Every
+  `sr_object_schema` reply carries `$schema` and `x-spirisynq-schema: 2` and passes the
+  2020-12 meta-schema. Changes from the old format:
+  - `Literal` becomes `enum`, `X | None` adds `null` to the type, `tuple` uses
+    `prefixItems`, sets use `uniqueItems`, `bytes` uses `contentEncoding: base64`, Enum
+    classes become `enum` of their values, and unknown classes become `{x-python-type}`
+    instead of a made-up `type` name.
+  - `required` now lists every field (rehydrate always sends them all). Properties carry
+    their `default`.
+  - `synq_topic` and `synq_base_topic` are no longer in `properties`.
+  - New wire keywords: `x-yaml-tag`, `x-encoding` (codec-encoded fields such as `bytes`
+    → `zenoh/bytes`), `x-classes`, `title`.
+  - `x-rpc-endpoints`: `parameters` is now a JSON Schema object with `required` and
+    `additionalProperties: false`, `returns` is always present (`{type: 'null'}` for
+    `-> None`), and generator methods carry `x-generator: true` plus `yields`. The built-in
+    `sr_*` callables describe themselves accurately (`sr_rehydrate` returns `{$ref: '#'}`).
+  - Docstrings are cleaned with `inspect.cleandoc`, and `@dataclass` auto-docstrings are
+    dropped.
+- **`synq meta type_schema` prints `{topic, schema}` records**, one per answering object,
+  separated by `---`, instead of bare schemas.
+
+### Fixes
+
+- **`sr_type_schema` is served again.** It was lost in the April session refactor, so
+  `synq meta type_schema` always reported "No schema found". It's the `sr_object_schema`
+  callable mounted at `<topic>/sr_type_schema/<Tag>` for each tag in the class's MRO, the
+  same way `sr_metadata/<Tag>` works, so `**/sr_type_schema/<Tag>` gets one reply per object
+  of that type, keyed by the object's path.
+- **`sr_rehydrate` answered every query twice.** Its `.client()` hook exposed the same
+  method under a second attribute, and `sync()` declared a queryable for each. The schema
+  also listed a nonexistent `sr_rehydrate_client` endpoint. Both are fixed.
+- **The tombstone came from a second publisher.** It had its own entity ID and `source_sn`
+  counter, so receivers couldn't order it against the object's field puts or tell whether
+  they'd missed updates before it. Each object now has exactly one publisher, declared
+  `RELIABLE`. The tombstone is sent through it and continues the field puts' sequence.
+  (Field puts go through `session.put()` under the publisher's ID, so the reliability
+  setting only affects the tombstone.)
+- Schema generation no longer crashes on annotations it can't resolve (e.g. forward
+  references to function-local classes). They're described as "any value".
+
+### Improvements
+
+- **Protocol spec rewritten and checked against the wire.** `docs/protocol.md` now documents
+  the three built-in callables and their mount points, the full schema format, wire
+  annotations and `x-rpc-endpoints`, plus tombstones, codec-encoded fields, per-publisher
+  `SourceInfo`, implementer roles and a checklist. Corrections: RPC parameters are
+  `;`-separated (not `&`), `sr_metadata` is also served at the bare key, echo suppression
+  compares zid **and** eid, and list-all discovery is `**/sr_metadata`.
+
+### Tests
+
+- `tests/test_protocol.py` checks the spec's wire-level claims with raw zenoh calls. Strict
+  `xfail` tests pin the two known bugs (`;` in RPC arguments, Enum fields).
+- `tests/test_schema.py` checks every generated schema against the JSON Schema 2020-12
+  meta-schema and validates real `sr_rehydrate` payloads against their schema. Adds
+  `jsonschema` as a dev dependency.
+- CLI tests for `topic schema`, `topic rehydrate`, `topic rpc` and `meta type_schema` now
+  assert on the printed output. They previously checked only the exit code, which is 0
+  even when nothing answers, and that's how the missing `sr_type_schema` went unnoticed.
+
 ## v0.2.0
 
 ### Features

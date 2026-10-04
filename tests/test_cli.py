@@ -24,6 +24,26 @@ def close_test_sessions():
             session.close()
 
 
+def _invoke_captured(args):
+    """Run the CLI, returning (result, stdout text, stderr text).
+
+    The CLI prints through module-level rich consoles, which CliRunner doesn't
+    capture, so swap them for StringIO-backed ones for the call."""
+    from io import StringIO
+    from rich.console import Console
+    import SpiriSynq.cli as cli_module
+
+    out, err = StringIO(), StringIO()
+    original = cli_module.console_out, cli_module.console_err
+    cli_module.console_out = Console(file=out, highlight=False, soft_wrap=True)
+    cli_module.console_err = Console(file=err, highlight=False, soft_wrap=True)
+    try:
+        result = runner.invoke(app, args)
+    finally:
+        cli_module.console_out, cli_module.console_err = original
+    return result, out.getvalue(), err.getvalue()
+
+
 # ── Error-path tests (no network interaction needed) ──────────────────────────
 
 def test_topic_put_raw_without_topic_is_error():
@@ -113,57 +133,74 @@ def test_topic_list_returns_all_objects():
 # ── topic schema ──────────────────────────────────────────────────────────────
 
 def test_topic_schema_for_existing_object():
+    from SpiriSynq.cli import session as cli_session
+
     @dataclass
     class CliSchemaObj(SyncableObject):
         speed: float = 0.0
 
-    obj = CliSchemaObj("cli_test/schema_obj", synq_authoritive=True)
-    time.sleep(0.1)
+    obj = CliSchemaObj("cli_test/schema_obj", synq_authoritive=True, synq_session=cli_session)
 
-    result = runner.invoke(app, ["topic", "schema", obj.synq_absolute_path])
+    result, out, _ = _invoke_captured(["topic", "schema", obj.synq_absolute_path])
     assert result.exit_code == 0
+    schema = yaml.safe_load(out)
+    assert schema["properties"]["speed"] == {"type": "number", "default": 0.0}
 
 
 def test_topic_schema_for_missing_topic():
     """schema for a non-existent topic exits zero (no results found)."""
-    result = runner.invoke(app, ["topic", "schema", "cli_test/does_not_exist_12345"])
+    result, out, err = _invoke_captured(["topic", "schema", "cli_test/does_not_exist_12345"])
     assert result.exit_code == 0
+    assert out == ""
+    assert "No schema found" in err
 
 
 # ── topic rehydrate ───────────────────────────────────────────────────────────
 
 def test_topic_rehydrate_for_existing_object():
+    from SpiriSynq.cli import session as cli_session
+
     @dataclass
     class CliRehydrateObj(SyncableObject):
         value: int = 0
 
-    obj = CliRehydrateObj("cli_test/rehydrate_obj", synq_authoritive=True, value=42)
-    time.sleep(0.1)
+    obj = CliRehydrateObj(
+        "cli_test/rehydrate_obj", synq_authoritive=True, value=42, synq_session=cli_session
+    )
 
-    result = runner.invoke(app, ["topic", "rehydrate", obj.synq_absolute_path])
+    result, out, _ = _invoke_captured(["topic", "rehydrate", obj.synq_absolute_path])
     assert result.exit_code == 0
+    assert out.startswith("!CliRehydrateObj\n")
+    assert "value: 42" in out
 
 
 def test_topic_rehydrate_for_missing_topic():
     """rehydrate for a non-existent topic exits zero (no results found)."""
-    result = runner.invoke(app, ["topic", "rehydrate", "cli_test/does_not_exist_12345"])
+    result, out, err = _invoke_captured(["topic", "rehydrate", "cli_test/does_not_exist_12345"])
     assert result.exit_code == 0
+    assert out == ""
+    assert "No response" in err
 
 
 # ── topic rpc ─────────────────────────────────────────────────────────────────
 
 def test_topic_rpc_for_specific_topic():
+    from SpiriSynq.cli import session as cli_session
+
     @dataclass
     class CliRpcListObj(SyncableObject):
         @remote_method()
         def ping(self) -> str:
+            """Ping."""
             return "pong"
 
-    obj = CliRpcListObj("cli_test/rpc_list_obj", synq_authoritive=True)
-    time.sleep(0.1)
+    obj = CliRpcListObj("cli_test/rpc_list_obj", synq_authoritive=True, synq_session=cli_session)
 
-    result = runner.invoke(app, ["topic", "rpc", obj.synq_absolute_path])
+    result, out, _ = _invoke_captured(["topic", "rpc", obj.synq_absolute_path])
     assert result.exit_code == 0
+    (doc,) = [d for d in yaml.safe_load_all(out) if d is not None]
+    assert doc["topic"] == obj.synq_absolute_path
+    assert "ping" in str(doc)
 
 
 def test_topic_rpc_prefix_reports_concrete_topic():
@@ -550,12 +587,42 @@ def test_topic_watch_no_truncate_emits_full_long_values():
 
 # ── meta type_schema ──────────────────────────────────────────────────────────
 
-def test_meta_type_schema_all_exits_zero():
-    result = runner.invoke(app, ["meta", "type_schema"])
-    assert result.exit_code == 0
+def _type_schema_obj(name):
+    from SpiriSynq.cli import session as cli_session
+
+    @dataclass
+    class CliTypeSchemaObj(SyncableObject):
+        """Type schema test object."""
+        speed: float = 0.0
+
+    return CliTypeSchemaObj(f"cli_test/{name}", synq_authoritive=True, synq_session=cli_session)
 
 
-def test_meta_type_schema_specific_type():
-    """Querying a specific type name exits zero even when not found."""
-    result = runner.invoke(app, ["meta", "type_schema", "SomeType"])
+def _records(out):
+    return [d for d in yaml.safe_load_all(out) if d is not None]
+
+
+def test_meta_type_schema_reports_each_object():
+    a, b = _type_schema_obj("type_schema_a"), _type_schema_obj("type_schema_b")
+    result, out, _ = _invoke_captured(["meta", "type_schema", "CliTypeSchemaObj"])
     assert result.exit_code == 0
+    records = {r["topic"]: r["schema"] for r in _records(out)}
+    assert set(records) == {a.synq_absolute_path, b.synq_absolute_path}
+    for schema in records.values():
+        assert schema["description"] == "Type schema test object."
+        assert schema["properties"]["speed"] == {"type": "number", "default": 0.0}
+
+
+def test_meta_type_schema_all_types():
+    obj = _type_schema_obj("type_schema_all")
+    result, out, _ = _invoke_captured(["meta", "type_schema"])
+    assert result.exit_code == 0
+    assert obj.synq_absolute_path in {r["topic"] for r in _records(out)}
+
+
+def test_meta_type_schema_unknown_type():
+    """Querying an unknown type name exits zero and says nothing was found."""
+    result, out, err = _invoke_captured(["meta", "type_schema", "NoSuchType12345"])
+    assert result.exit_code == 0
+    assert out == ""
+    assert "No schema found" in err

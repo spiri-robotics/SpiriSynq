@@ -616,8 +616,9 @@ def test_sr_rehydrate_no_diff():
 # ── Tombstone tests ──────────────────────────────────────────────────────────
 
 
-def test_tombstone_publisher_created_for_authoritative():
-    """Authoritative objects get a reliable tombstone publisher in sync()."""
+def test_tombstone_comes_from_the_objects_publisher():
+    """The tombstone is sent through the object's one publisher, so it continues
+    the source_sn sequence of the field puts; a mirror's close sends nothing."""
 
     @dataclass
     class Obj(SyncableObject):
@@ -625,24 +626,28 @@ def test_tombstone_publisher_created_for_authoritative():
 
     session_a = Session(config=zenoh_test_config())
     obj = Obj("test/so_tombstone_pub", synq_authoritive=True, synq_session=session_a)
-    assert hasattr(obj, "_synq_tombstone_publisher")
-    assert obj._synq_tombstone_publisher is not None
-    obj.close()
-
-
-def test_tombstone_publisher_not_created_for_non_authoritative():
-    """Non-authoritative mirrors must not get a tombstone publisher."""
-
-    @dataclass
-    class Obj(SyncableObject):
-        value: int = 0
-
-    session_a = Session(config=zenoh_test_config())
-    obj = Obj("test/so_tombstone_noauth", synq_authoritive=True, synq_session=session_a)
     session_b = Session(config=zenoh_test_config())
     mirror = Obj.from_topic(obj.synq_absolute_path, session=session_b)
-    assert not getattr(mirror, "_synq_tombstone_publisher", None)
-    obj.close()
+    assert not hasattr(obj, "_synq_tombstone_publisher")
+    pub_id = obj.synq_publisher.id  # type: ignore[union-attr]
+    assert obj._synq_own_source_ids == {(str(pub_id.zid), pub_id.eid)}
+
+    samples: list = []
+    sub = session_a.zenoh_session.declare_subscriber(f"{obj.synq_absolute_path}/**", samples.append)
+    try:
+        obj.value = 1
+        assert _wait_for(lambda: len(samples) == 1)
+        mirror.close()
+        obj.close()
+        assert _wait_for(lambda: any(s.kind == zenoh.SampleKind.DELETE for s in samples))
+    finally:
+        sub.undeclare()
+
+    deletes = [s for s in samples if s.kind == zenoh.SampleKind.DELETE]
+    assert len(deletes) == 1
+    put, tomb = samples[0].source_info, deletes[0].source_info
+    assert (str(tomb.source_id.zid), tomb.source_id.eid) == (str(pub_id.zid), pub_id.eid)
+    assert tomb.source_sn == put.source_sn + 1
 
 
 def test_authoritative_close_sets_is_deleted():
@@ -743,7 +748,7 @@ def test_mirror_on_same_session_receives_authoritative_updates():
 
 
 def test_close_swallows_tombstone_publisher_errors():
-    """close() must not raise if the tombstone publisher's delete() or undeclare() fails."""
+    """close() must not raise if the publisher's tombstone delete() or undeclare() fails."""
 
     @dataclass
     class Obj(SyncableObject):
@@ -759,5 +764,9 @@ def test_close_swallows_tombstone_publisher_errors():
         def undeclare(self):
             raise RuntimeError("tombstone undeclare failed")
 
-    obj._synq_tombstone_publisher = _FailAll()  # type: ignore[assignment]
-    obj.close()  # must not raise
+    real = obj.synq_publisher
+    obj.synq_publisher = _FailAll()  # type: ignore[assignment]
+    try:
+        obj.close()  # must not raise
+    finally:
+        real.undeclare()  # type: ignore[union-attr]

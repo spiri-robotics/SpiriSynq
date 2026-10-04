@@ -19,7 +19,7 @@ SpiriSynq synchronizes Python dataclass instances across processes/machines over
 ## Naming and API gotchas
 
 - `synq_authoritive` is **intentionally misspelled** (public API, used everywhere) — never "fix" it.
-- Wire format is plain Zenoh with YAML payloads; the protocol is documented in `docs/protocol.md` (four mandatory queryables `sr_rehydrate` / `sr_metadata` / `sr_object_schema` / `sr_type_schema`, per-field puts at `<topic>/<field>`, RPCs at `<topic>/<method>`, echo suppression via zenoh `SourceInfo` ZID).
+- Wire format is plain Zenoh with YAML payloads; the protocol is documented in `docs/protocol.md` (three built-in callables `sr_rehydrate` / `sr_metadata` / `sr_object_schema`; `sr_metadata` is also mounted at `<topic>/sr_metadata/<Tag>` and `sr_object_schema` at `<topic>/sr_type_schema/<Tag>` per MRO tag — same code path, not separate implementations; schemas are standard JSON Schema 2020-12, format version `SCHEMA_VERSION` in `SpiriSynq/schema.py`; per-field puts at `<topic>/<field>`, RPCs at `<topic>/<method>` with `;`-separated params, echo suppression via zenoh `SourceInfo` zid+eid). `tests/test_protocol.py` checks the spec's wire claims with raw zenoh — update both together. CLI tests must assert on output (`_invoke_captured` in `tests/test_cli.py`), not just the exit code: commands exit 0 even when nothing answers.
 - Serialization is PyYAML via `SessionSerializer` (`SpiriSynq/serializer.py`), not ruamel. Register custom types with `session.register_type_recursive(cls)`; str-subclasses need explicit `yaml_tag`/`to_yaml`/`from_yaml` to round-trip (see `RootFrame` in `SpiriSynq/example_types/position.py`).
 - Authoritative objects prepend the hostname as topic prefix; override with env var `SPIRI_SYNQ_BASE_TOPIC`.
 
