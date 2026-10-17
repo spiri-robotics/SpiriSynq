@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **`;` in an RPC argument.** A `;` inside an argument value split the Zenoh selector
+  parameter, and the call got no reply until it timed out. Argument values are now
+  percent-encoded for `%` and `;` (client, `synq topic call`) and percent-decoded by the
+  server; `decode_parameters(query)` does the same for custom `.server()` hooks. This is a
+  wire change: a value containing a literal `%XX` sequence from an older client is now
+  decoded. A request whose parameters fail to parse now gets `reply_err`, not silence.
+
 ## v0.3.0
 
 ### Breaking

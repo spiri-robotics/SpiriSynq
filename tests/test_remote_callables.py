@@ -10,7 +10,7 @@ import pytest
 
 from SpiriSynq.syncable_objects import SyncableObject
 from SpiriSynq.session import Session
-from SpiriSynq.remote_callables import remote_method, RpcException
+from SpiriSynq.remote_callables import remote_method, RpcException, decode_parameters
 
 
 @pytest.fixture(autouse=True)
@@ -607,7 +607,7 @@ def test_server_hook_receives_self_and_params():
         @scale.server()
         def scale(self, query: zenoh.Query):
             registry = self.synq_session.type_registry
-            params = {k: registry.load(v) for k, v in dict(query.parameters).items()}
+            params = {k: registry.load(v) for k, v in decode_parameters(query).items()}
             result = params["x"] * self.multiplier * 2
             query.reply(query.key_expr, payload=registry.dumps(result), encoding=zenoh.Encoding.APPLICATION_YAML)
 
@@ -616,6 +616,21 @@ def test_server_hook_receives_self_and_params():
     remote = WithServerSelf.from_topic(obj.synq_absolute_path, session=session_b)
 
     assert remote.scale(3) == 30  # 3 * 5 * 2
+
+
+def test_arguments_with_semicolons_and_percent_signs_round_trip():
+    """';' separates zenoh selector parameters, so the client must escape it."""
+    @dataclass
+    class WithEcho(SyncableObject):
+        @remote_method()
+        def echo(self, v: str, items: list[str]) -> list[str]:
+            return [v, *items]
+
+    obj = WithEcho("test/rpc_semicolon", synq_authoritive=True)
+    session_b = Session(config=zenoh_test_config())
+    remote = WithEcho.from_topic(obj.synq_absolute_path, session=session_b)
+
+    assert remote.echo("a;b", ["%3B", "100%;", ";"]) == ["a;b", "%3B", "100%;", ";"]
 
 
 def test_timeout_chaining():

@@ -8,6 +8,7 @@ from loguru import logger
 import functools
 import weakref
 from weakref import ref
+from urllib.parse import unquote
 
 
 if TYPE_CHECKING:
@@ -27,14 +28,29 @@ GENERATOR_DONE_ENCODING = zenoh.Encoding("x-spirisynq/generator-done")
 _EXHAUSTED = object()
 
 
+def encode_parameters(params: Dict[str, str]) -> zenoh.Parameters:
+    """Build selector parameters from already-serialised values.
+
+    Zenoh splits parameters on ``;`` and has no escaping of its own, so ``%`` and
+    ``;`` inside a value are percent-encoded. :func:`decode_parameters` undoes it.
+    """
+    return zenoh.Parameters({
+        k: v.replace("%", "%25").replace(";", "%3B") for k, v in params.items()
+    })
+
+
+def decode_parameters(query: zenoh.Query) -> Dict[str, str]:
+    """Return a query's parameters as raw (still YAML-encoded) strings."""
+    return {k: unquote(v) for k, v in dict(query.parameters).items()}
+
+
 def rpc_call(topic: str, session: 'Session', kwargs: Dict[str, Any] | None = None, retries: int = 3):
     if not kwargs:
         kwargs = {}
     yaml = session.type_registry
     z_session = session.zenoh_session
     with session.as_default():
-        params = zenoh.Parameters(kwargs)
-        selector = zenoh.Selector(topic, params)
+        selector = zenoh.Selector(topic, encode_parameters(kwargs))
         logger.trace(f"Calling {selector}")
         last_exc: Exception | None = None
         for attempt in range(retries + 1):
@@ -93,8 +109,9 @@ def _zenoh_callback(instance_ref: 'ref[RemoteMethod]', parent_ref: 'ref[Syncable
             return
 
         registry = parent.synq_session.type_registry
-        params = {k: registry.load(v) for k, v in dict(query.parameters).items()}
         try:
+            # Parsed inside the try so a malformed request gets reply_err, not silence.
+            params = {k: registry.load(v) for k, v in decode_parameters(query).items()}
             if instance._is_generator:
                 gen = instance._wrapped(parent, **params)
                 try:
@@ -200,7 +217,7 @@ class BoundRemoteMethod:
         }
         return zenoh.Selector(
             f"{instance.synq_absolute_path}/{rm._wrapped.__name__}",
-            parameters=zenoh.Parameters(all_kwargs),
+            parameters=encode_parameters(all_kwargs),
         )
 
     def _execute_remote(self, *args, **kwargs):

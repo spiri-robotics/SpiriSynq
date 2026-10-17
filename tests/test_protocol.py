@@ -120,6 +120,21 @@ def test_rpc_parameters_are_semicolon_separated_yaml(zenoh_current_session):
     assert not ok
 
 
+def test_rpc_parameter_values_are_percent_decoded(zenoh_current_session):
+    obj = _probe()
+    z = zenoh_current_session.zenoh_session
+    (ok, _, _, payload), = _get(z, f"{obj.synq_absolute_path}/echo?v='a%3Bb %25 c'")
+    assert ok and yaml.safe_load(payload) == "a;b % c"
+
+
+def test_unescaped_semicolon_in_value_is_reply_err(zenoh_current_session):
+    obj = _probe()
+    z = zenoh_current_session.zenoh_session
+    (ok, _, _, payload), = _get(z, f"{obj.synq_absolute_path}/echo?v='a;b'", timeout=0.5)
+    # A zenoh timeout is also an error reply, with payload "Timeout".
+    assert not ok and payload.startswith("RPC error")
+
+
 def test_rpc_error_is_reply_err_string(zenoh_current_session):
     obj = _probe()
     z = zenoh_current_session.zenoh_session
@@ -273,13 +288,6 @@ def test_every_described_endpoint_has_a_queryable(zenoh_current_session):
 
 
 # ── Known bugs (todo.yaml). Strict xfails: these start failing when fixed. ─────
-
-@pytest.mark.xfail(strict=True, reason="todo: ';' in an RPC argument value gets no reply")
-def test_rpc_argument_containing_semicolon(zenoh_current_session):
-    obj = _probe()
-    z = zenoh_current_session.zenoh_session
-    replies = _get(z, f"{obj.synq_absolute_path}/echo?v='a;b'", timeout=0.5)
-    assert replies and yaml.safe_load(replies[0][3]) == "a;b"
 
 
 class ProtoColor(enum.Enum):

@@ -452,7 +452,7 @@ def topic_call(
         synq topic call my/sensor/read_frames count=10
     """
     import zenoh as _zenoh
-    from SpiriSynq.remote_callables import GENERATOR_DONE_ENCODING
+    from SpiriSynq.remote_callables import GENERATOR_DONE_ENCODING, encode_parameters
 
     parsed_kwargs = {}
     for kv in (kwargs or []):
@@ -462,7 +462,7 @@ def topic_call(
         k, v = kv.split("=", 1)
         parsed_kwargs[k] = v
 
-    selector = _zenoh.Selector(resolve(topic), _zenoh.Parameters(parsed_kwargs))
+    selector = _zenoh.Selector(resolve(topic), encode_parameters(parsed_kwargs))
     console_err.print(f"[dim]Calling: {selector}[/dim]")
 
     get_kwargs: dict = dict(consolidation=_zenoh.QueryConsolidation(_zenoh.ConsolidationMode.NONE))

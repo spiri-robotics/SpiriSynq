@@ -296,6 +296,24 @@ def test_topic_call_success():
     assert result.exit_code == 0
 
 
+def test_topic_call_argument_with_semicolon():
+    from SpiriSynq.cli import session as cli_session
+
+    @dataclass
+    class CliEchoObj(SyncableObject):
+        @remote_method()
+        def echo(self, v: str) -> str:
+            return v
+
+    obj = CliEchoObj("cli_test/echo_obj", synq_authoritive=True, synq_session=cli_session)
+
+    result, out, err = _invoke_captured(
+        ["topic", "call", f"{obj.synq_absolute_path}/echo", "v=a;b", "--timeout", "5.0"],
+    )
+    assert result.exit_code == 0, err
+    assert "a;b" in out
+
+
 def test_topic_call_no_reply_exits_2():
     """Calling a non-existent RPC endpoint exits with code 2 (no reply received)."""
     result = runner.invoke(

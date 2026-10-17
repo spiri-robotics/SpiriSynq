@@ -297,8 +297,11 @@ This is useful when the return type is a `SyncableObject` subclass and you want 
 
 `@method.server()` registers a function that intercepts the raw Zenoh query before the default dispatch logic runs. It receives `self` (the authoritative instance) and the raw `zenoh.Query` object, and is fully responsible for calling the underlying method, encoding the result, and sending the reply.
 
+Use `decode_parameters(query)` rather than `query.parameters` to read the arguments: it undoes the percent-encoding clients apply to `%` and `;`.
+
 ```python
 import zenoh
+from SpiriSynq.remote_callables import decode_parameters
 
 @dataclass
 class Robot(SyncableObject):
@@ -310,7 +313,7 @@ class Robot(SyncableObject):
     @move.server()
     def move(self, query: zenoh.Query):
         registry = self.synq_session.type_registry
-        params = {k: registry.load(v) for k, v in dict(query.parameters).items()}
+        params = {k: registry.load(v) for k, v in decode_parameters(query).items()}
         if not self._auth.check(params.get("token")):
             query.reply_err("Unauthorized")
             return

@@ -188,7 +188,9 @@ myhost/probe/add?a=2;b=40
 ```
 
 - **Parameters are separated by `;`, not `&`.** This is the Zenoh 1.x selector syntax. With `?a=2&b=40`, the server sees a single parameter `a` with the value `2&b=40`.
+- **Values are percent-encoded for `%` and `;`.** Zenoh has no escaping of its own, so a raw `;` inside a value would split it. Clients must write `%` as `%25` and `;` as `%3B` (other characters may be percent-encoded too), and servers percent-decode each value before parsing it as YAML. For example, the string `a;b` is sent as `?v=a%3Bb`.
 - `&`, `=`, `|` and `#` are all fine inside a value.
+- A request whose parameters fail to parse gets an error reply, not silence.
 - The reference client sends every parameter, defaults included. Omitted parameters take the method's default. Unknown parameters are an error.
 - The Zenoh-level `ConsolidationMode` must be `NONE` for [generator methods](#generator-methods). For other methods it doesn't matter.
 
