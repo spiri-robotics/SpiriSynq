@@ -28,6 +28,7 @@ SpiriSynq synchronizes Python dataclass instances across processes/machines over
 - `SpiriSynq/syncable_objects.py` — `SyncableObject` and `SubSyncableDataclass` bases.
 - `SpiriSynq/session.py` — `Session` + `current_session` contextvar (use `session.as_default()` for scoped defaults); module-level default session created at import.
 - `SpiriSynq/remote_callables.py` — `@remote_method` RPC support, `RpcException`.
+- `SpiriSynq/completion/` — tab completion: callbacks + shell scripts (`__init__.py`), and the `synq _complete-server` daemon the scripts talk to over a socket (`server.py`). Self-contained; `cli.py` only wires `autocompletion=` callbacks to it. Tests type Tab into real bash/zsh on a pty (`tests/test_completion.py`).
 - `SpiriSynq/cli.py` — typer CLI; registered as **both** `synq` and `spirisynq` entry points. `click` is a direct dependency (needed to keep `uv run`/`uvx spirisynq` working regardless of what `typer` declares) — fine to import if needed, but prefer typer's own API where possible.
 
 ## Release conventions

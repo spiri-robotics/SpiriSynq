@@ -1,12 +1,15 @@
 import sys
 import typer
+from SpiriSynq import completion
 from SpiriSynq.session import current_session
 from rich.console import Console
 from rich.syntax import Syntax
 import base64
 import zenoh
 
-app = typer.Typer()
+# Completion scripts come from `synq completion`; Typer's own install would replace our shell classes.
+app = typer.Typer(add_completion=False)
+completion.register()
 topic_app = typer.Typer()
 app.add_typer(topic_app, name="topic")
 
@@ -47,8 +50,8 @@ def out_overflow():
 
 @topic_app.command("list")
 def topic_list(
-    _type: str = typer.Option("", "--type", "-t", help="Filter by type"),
-    prefix: str = typer.Option(None, "--prefix", "-p", help="Key prefix"),
+    _type: str = typer.Option("", "--type", "-t", help="Filter by type", autocompletion=completion.complete_tag),
+    prefix: str = typer.Option(None, "--prefix", "-p", help="Key prefix", autocompletion=completion.complete_topic),
 ):
     """List all topics"""
     if prefix:
@@ -77,7 +80,8 @@ def topic_list(
 
 @topic_app.command("watch")
 def topic_watch(
-    topic: str = typer.Argument(..., help="Topic key expression to subscribe to (wildcards supported)"),
+    topic: str = typer.Argument(..., help="Topic key expression to subscribe to (wildcards supported)",
+                               autocompletion=completion.complete_topic),
     show_paths: bool = typer.Option(None, "--show-paths/--no-show-paths", "-p/-P", help="Include key path in output"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as NDJSON (value kept as raw string)"),
     show_timestamp: bool = typer.Option(False, "--timestamp/--no-timestamp", "-t/-T", help="Include Zenoh message timestamp in output"),
@@ -194,7 +198,8 @@ def topic_watch(
 
 @topic_app.command("bandwidth")
 def topic_bandwidth(
-    topic: str = typer.Argument(..., help="Topic key expression to subscribe to (wildcards supported)"),
+    topic: str = typer.Argument(..., help="Topic key expression to subscribe to (wildcards supported)",
+                               autocompletion=completion.complete_topic),
     interval: float = typer.Option(1.0, "--interval", "-i", help="Reporting interval in seconds"),
     raw_bytes: bool = typer.Option(False, "--bytes", help="Output raw byte count per interval to stdout (machine-readable)"),
 ):
@@ -258,7 +263,7 @@ def topic_put(
         "Optional if the stream contains 'path:' fields. "
         "If provided alongside a stream with 'path:' fields, the stream path "
         "must be a subpath of this topic (used as a prefix guard)."
-    )),
+    ), autocompletion=completion.complete_topic),
     value: str = typer.Argument(None, help="Value to publish directly (omit to read from stdin)"),
     input_type: InputType = typer.Option(
         InputType.auto,
@@ -385,8 +390,10 @@ def topic_put(
 
 @topic_app.command("rpc")
 def topic_rpc(
-    prefix: str = typer.Option(None, "--prefix", "-p", help="Key prefix to search under"),
-    topic: str = typer.Argument(None, help="Specific topic path (omit to search all topics)"),
+    prefix: str = typer.Option(None, "--prefix", "-p", help="Key prefix to search under",
+                               autocompletion=completion.complete_topic),
+    topic: str = typer.Argument(None, help="Specific topic path (omit to search all topics)",
+                                autocompletion=completion.complete_topic),
 ):
     """List all RPC endpoints across topics.
 
@@ -436,8 +443,10 @@ def topic_rpc(
 
 @topic_app.command("call")
 def topic_call(
-    topic: str = typer.Argument(..., help="Full RPC path including method name (e.g. my/topic/method_name)"),
-    kwargs: list[str] = typer.Argument(default=None, help="Arguments as key=value pairs (values parsed as YAML)"),
+    topic: str = typer.Argument(..., help="Full RPC path including method name (e.g. my/topic/method_name)",
+                                autocompletion=completion.complete_method),
+    kwargs: list[str] = typer.Argument(default=None, help="Arguments as key=value pairs (values parsed as YAML)",
+                                       autocompletion=completion.complete_arguments),
     timeout: float = typer.Option(None, "--timeout", "-t", help="Timeout in seconds"),
 ):
     """Call an RPC endpoint and display the result.
@@ -501,7 +510,8 @@ def topic_call(
 
 @topic_app.command("schema")
 def topic_schema(
-    topic: str = typer.Argument(..., help="Topic path to retrieve schema for"),
+    topic: str = typer.Argument(..., help="Topic path to retrieve schema for",
+                                autocompletion=completion.complete_topic),
 ):
     """Retrieve and display the schema for a topic."""
     topic = resolve(topic)
@@ -528,7 +538,8 @@ def topic_schema(
 
 @topic_app.command("rehydrate")
 def topic_rehydrate(
-    topic: str = typer.Argument(..., help="Topic path to rehydrate current state for"),
+    topic: str = typer.Argument(..., help="Topic path to rehydrate current state for",
+                                autocompletion=completion.complete_topic),
 ):
     """Retrieve the current state of a topic via the rehydrate queryable.
 
@@ -631,8 +642,10 @@ app.add_typer(meta_app, name="meta")
 
 @meta_app.command("type_schema")
 def meta_type_schema(
-    _type: str = typer.Argument("*", help="Type name to retrieve schema for (defaults to all types)"),
-    prefix: str = typer.Option("**", "--prefix", "-p", help="Key prefix (defaults to entire tree)"),
+    _type: str = typer.Argument("*", help="Type name to retrieve schema for (defaults to all types)",
+                                autocompletion=completion.complete_tag),
+    prefix: str = typer.Option("**", "--prefix", "-p", help="Key prefix (defaults to entire tree)",
+                               autocompletion=completion.complete_topic),
 ):
     """Retrieve the schema of every object of a type.
 
@@ -663,6 +676,29 @@ def meta_type_schema(
         console_err.print(f"[dim]{found} result(s)[/dim]")
 
 console = Console()
+
+
+@app.command("completion")
+def completion_script(shell: completion.Shell):
+    """Print the tab-completion script for SHELL. It completes topics, type tags, RPC methods and their arguments.
+
+    zsh: synq completion zsh > ~/.zfunc/_synq, with ~/.zfunc in $fpath before compinit.
+    bash: synq completion bash > ~/.local/share/bash-completion/completions/synq,
+    or source the script from ~/.bashrc. Both cover synq and spirisynq. Regenerate it after upgrading.
+    """
+    typer.echo(completion.script(shell), nl=False)
+
+
+@app.command("_complete-server", hidden=True)
+def complete_server(
+    idle: float = typer.Option(600.0, "--idle", help="Exit after this many seconds without a Tab."),
+    connect: list[str] = typer.Option([], "--connect", help="Zenoh endpoint to connect to, without scouting."),
+):
+    """Answer tab completion over a socket, with a zenoh session kept open. Started by the completion script."""
+    from loguru import logger
+    from SpiriSynq.completion.server import serve
+    logger.remove()
+    serve(connect, idle=idle)
 
 
 if __name__ == "__main__":

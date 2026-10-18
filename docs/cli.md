@@ -136,6 +136,30 @@ Options:
 
 ---
 
+## Tab completion
+
+`synq completion SHELL` prints a completion script for `bash`, `zsh` or `fish`. The bash and zsh scripts cover both `synq` and `spirisynq`.
+
+```bash
+# zsh: ~/.zfunc must be in $fpath before compinit
+synq completion zsh > ~/.zfunc/_synq
+# bash
+synq completion bash > ~/.local/share/bash-completion/completions/synq
+```
+
+Regenerate the script after upgrading. It completes:
+
+- topics, one `/` chunk at a time, for every topic argument and `--prefix`. `./` stands for this machine's base topic.
+- type tags, for `--type` and `meta type_schema`.
+- the method in `topic call` below an object's topic, with its docstring's first line. Names starting with `sr_` only show up once you've typed `sr_`.
+- `topic call`'s `key=value` arguments. Keys come from the method's parameters with their types, required ones first, and keys you've already given are left out. Values come from the parameter's type hint: the members of an `Enum` or `Literal`, `true`/`false` for a `bool`, `null` for an optional, and the default.
+
+The first Tab starts a background server, `synq _complete-server`. It keeps a zenoh session open, re-scans `**/sr_metadata/*` every 5 seconds and fetches an object's schema when a Tab needs it. The shell talks to it directly (zsh over a Unix socket, bash over TCP on 127.0.0.1 with a token), so a Tab doesn't wait for Python to start. The server exits after 10 minutes without a Tab. Until it's running, Tabs complete topics and tags from the list it last saved to `~/.cache/spirisynq/topics`, without methods or arguments. Its socket is in `$XDG_RUNTIME_DIR/spirisynq`.
+
+The server only reads metadata and schemas, and never calls a method. It uses the base topic of the shell that asks: `SPIRI_SYNQ_BASE_TOPIC` if that's set, otherwise the hostname.
+
+---
+
 ## Recipes
 
 **Capture and replay a topic:**

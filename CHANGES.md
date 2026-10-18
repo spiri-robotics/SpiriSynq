@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Tab completion from a background server.** `synq completion bash|zsh|fish` prints a
+  completion script. It completes topics one chunk at a time (including `./`), type tags,
+  `topic call` methods, and their `key=value` arguments, with values taken from each
+  parameter's type hint (enum/`Literal` members, `true`/`false`, `null`, the default). The
+  script talks to `synq _complete-server`, a process that keeps a zenoh session open and
+  exits after 10 idle minutes. Without it, Tabs complete topics and tags from
+  `~/.cache/spirisynq/topics`. This replaces Typer's `--install-completion` and
+  `--show-completion`; a script installed that way keeps working like the fallback.
+- **`python -m SpiriSynq`** runs the CLI.
+
 ## v0.4.0
 
 ### Fixes
