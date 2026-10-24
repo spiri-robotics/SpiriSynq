@@ -9,6 +9,7 @@ from SpiriSynq.remote_callables import rpc_call
 from SpiriSynq.shutdown import register_session
 from SpiriSynq.codecs import Codec, BUILTIN_CODECS
 from SpiriSynq.serializer import SessionSerializer
+from SpiriSynq.link import Link
 from loguru import logger
 import weakref
 from contextvars import ContextVar
@@ -285,7 +286,9 @@ class Session:
             visited.add(t)
 
             if not _is_representable(t):
-                if not hasattr(t, "yaml_tag"):
+                # Its own tag, not one inherited from an already-registered base:
+                # that would serialize the subclass as its base.
+                if "yaml_tag" not in t.__dict__:
                     t.yaml_tag = f"!{t.__name__}"
                 self.type_registry.register_class(t)
                 if not _is_representable(t):
@@ -307,7 +310,8 @@ class Session:
                         skip.update(c.__dict__[attr])
 
             for field_name, hint in hints.items():
-                if field_name in skip:
+                # Same rule as valid_sync_paths/to_yaml: '_' fields never go on the wire.
+                if field_name in skip or field_name.startswith("_"):
                     continue
                 _register_annotation(hint)
 
@@ -402,6 +406,7 @@ class Session:
         self.type_registry.constructor.add_constructor("!EventedList", _construct_evented_list)
         self.type_registry.constructor.add_constructor("!EventedDict", _construct_evented_dict)
         self.type_registry.constructor.add_constructor("!EventedSet", _construct_evented_set)
+        self.type_registry.register_class(Link)
         self.zenoh_session = zenoh.open(self.config)
         logger.info(f"Started zenoh session {self.zenoh_session.zid()}")
 

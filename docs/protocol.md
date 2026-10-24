@@ -12,7 +12,11 @@ A node can take part at three levels. Each level includes the one before it.
 | **Mirror** — reads and writes an object it doesn't own | Observer, plus fetch initial state with [`sr_rehydrate`](#topic-sr-rehydrate), publish field puts with a [`SourceInfo`](#echo-suppression-and-sequence-numbers), discard its own echoes, call [RPCs](#rpc-methods) | 1–7 |
 | **Authoritative** — owns an object | Mirror, plus implement the three [built-in callables](#built-in-queryables), declare [RPC queryables](#rpc-methods), publish a tombstone on shutdown, describe itself with the [schema](#object-schema) | all |
 
-Being authoritative doesn't give a node exclusive write access. **Any** node may publish field puts, and receivers apply them in arrival order (last writer wins). Authority only means that the node answers the queryables and owns the object's lifetime. The protocol doesn't detect two authoritative nodes on one topic: both answer every query, and clients take whichever reply comes first.
+SpiriSynq doesn't decide who may write. Any node that can put to `<path>/<field>` changes the object for everyone, and receivers apply puts in arrival order (last writer wins). Being authoritative only means that the node answers the queryables and owns the object's lifetime.
+
+**Permissions are enforced by Zenoh, not by this protocol.** Use Zenoh's access control (the `access_control` section of the Zenoh config), configured on the routers, to say which nodes may `put` or `delete` under a key expression, send `query`s (RPC calls) to it, or `declare_queryable` on it. Every SpiriSynq operation is a plain Zenoh message on the object's keys, so those rules cover field writes, tombstones, RPCs and the built-in callables without any SpiriSynq support. Rules only apply to traffic that passes through a node enforcing them, so a deployment that relies on them should route all traffic through those routers rather than letting peers connect to each other directly.
+
+There must be only one authoritative node per topic. Two is undefined behaviour: it won't break immediately, because both nodes answer every query and clients get one of their replies, but the object's state is no longer well defined.
 
 ## 1. Key space
 
@@ -64,6 +68,7 @@ Unless a field uses a [codec](#binary-and-codec-encoded-fields), every payload (
 | `set` | `!!set {5: null}` |
 | `bytes` *(inside a larger document, e.g. rehydrate)* | `!!binary` with base64 text |
 | `EventedList` / `EventedDict` / `EventedSet` | `!EventedList [...]`, `!EventedDict {...}`, `!EventedSet [...]` |
+| `Link` (a reference to another object) | `!Link myhost/camera`, a scalar holding the target's absolute topic |
 
 (binary-and-codec-encoded-fields)=
 ### Binary and codec-encoded fields
@@ -287,6 +292,7 @@ $defs:                                 # omitted when nothing is referenced
 | `dict[K, V]` | `{type: object, additionalProperties: <V>}` (keys aren't described) |
 | `bytes` | `{type: string, contentEncoding: base64, x-yaml-tag: '!!binary'}` |
 | `EventedList` / `EventedSet` / `EventedDict` | `array` / `array` with `uniqueItems` / `object`, with `x-yaml-tag: '!EventedList'` etc. |
+| `Link` | `{type: string, x-yaml-tag: '!Link'}` |
 | an `Enum` class | `{enum: [<member values>], x-python-type: <name>}` |
 | a `str`/`int`/`float` subclass with a `yaml_tag` (e.g. `RootFrame`) | the base type plus `x-yaml-tag` |
 | a dataclass (including `SubSyncableDataclass`) or `TypedDict` | `{$ref: '#/$defs/<ClassName>'}` |

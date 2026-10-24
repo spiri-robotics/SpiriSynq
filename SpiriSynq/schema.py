@@ -16,6 +16,8 @@ from typing import Literal, NewType, Union, get_args, get_origin
 
 from psygnal.containers import EventedDict, EventedList, EventedSet
 
+from SpiriSynq.link import Link
+
 SCHEMA_VERSION = 2
 """Value of ``x-spirisynq-schema`` on every root schema."""
 
@@ -251,6 +253,8 @@ class _Builder:
         if origin is not None:
             return self.resolve(origin)
 
+        if t is Link:  # a dataclass, but sent as a scalar
+            return {"type": "string", "x-yaml-tag": Link.yaml_tag}
         if typing.is_typeddict(t):
             return self.ref(t, self.typeddict)
         if dataclasses.is_dataclass(t) and isinstance(t, type):
@@ -388,6 +392,8 @@ def _json_value(value):
         return str.__str__(value)
     if isinstance(value, (bytes, bytearray)):
         return base64.b64encode(value).decode("ascii")
+    if isinstance(value, Link):
+        return value.topic
     if isinstance(value, (list, tuple, set, frozenset, EventedList, EventedSet)):
         items = [_json_value(v) for v in value]
         if _NO_VALUE in items:

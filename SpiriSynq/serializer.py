@@ -61,10 +61,15 @@ class SessionSerializer:
 class _TagStrippingLoader(SafeLoader):
     pass
 
-def _construct_any_as_mapping(loader, _tag, node):
-    return loader.construct_mapping(node, deep=True)
+def _construct_untagged(loader, _tag, node):
+    # Tags go on scalars (str subclasses like RootFrame) and sequences too, not just mappings.
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node, deep=True)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node, deep=True)
+    return loader.construct_scalar(node)
 
-_TagStrippingLoader.add_multi_constructor("", _construct_any_as_mapping)
+_TagStrippingLoader.add_multi_constructor("", _construct_untagged)
 
 
 def load_untyped(raw: str) -> dict:

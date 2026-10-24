@@ -164,7 +164,8 @@ class SubSyncableDataclass:
     @classmethod
     def valid_sync_paths(cls) -> frozenset:
         cache_attr = "_synq_valid_paths_cache"
-        if (cached := getattr(cls, cache_attr, None)) is not None:
+        # This class's own cache: getattr would find a parent's.
+        if (cached := cls.__dict__.get(cache_attr)) is not None:
             return cached
 
         skip: set = set()
@@ -702,7 +703,8 @@ class SyncableObject:
     def synq_type_tags(cls) -> list:
         tags = []
         for c in cls.mro():
-            class_tag = getattr(c, "yaml_tag", f"!{c.__name__}")
+            # Each class's own tag: getattr would repeat a base's for an unregistered class.
+            class_tag = c.__dict__.get("yaml_tag", f"!{c.__name__}")
             if class_tag == "!object":
                 break
             tags.append(class_tag)
@@ -789,7 +791,8 @@ class SyncableObject:
         dataclass field type annotations. Cached on the class itself.
         """
         cache_attr = "_synq_valid_paths_cache"
-        if (cached := getattr(cls, cache_attr, None)) is not None:
+        # This class's own cache: getattr would find a parent's.
+        if (cached := cls.__dict__.get(cache_attr)) is not None:
             return cached
 
         skip = set()
@@ -816,9 +819,7 @@ class SyncableObject:
         Returns a tuple of valid types (for use with isinstance), or None if path is invalid.
         """
         cache_attr = "_synq_type_cache"
-        cache: dict[str, tuple[type, ...] | None] | None = getattr(
-            cls, cache_attr, None
-        )
+        cache: dict[str, tuple[type, ...] | None] | None = cls.__dict__.get(cache_attr)
         if cache is None:
             cache = {}
             setattr(cls, cache_attr, cache)

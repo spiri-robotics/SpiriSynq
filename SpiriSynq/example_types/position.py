@@ -1,10 +1,34 @@
+"""
+Positioned objects, as a tree of frames rooted in a :class:`RootFrame`.
+
+Frame conventions:
+
+- **ECEF** (the usual root): metres; x through the equator at the prime
+  meridian, y through the equator at 90°E, z through the north pole.
+- **Body frames are FRD**: x forward, y right, z down -- MAVLink's and
+  aerospace's convention, so autopilot attitudes go in without conversion. A
+  camera mounted 10 cm ahead of a drone's centre is ``Offset(x=0.1)``.
+- **Local level frames are NED** (x north, y east, z down);
+  :meth:`Orientation.ned_to_ecef` places one on the globe.
+- An :class:`Orientation` rotates vectors from the child's frame into its
+  parent's, so ``child.offset.rotate_by(parent.orientation)`` is the child's
+  offset expressed in the parent's parent.
+"""
+
 from typing import TypeAlias, Literal, ClassVar, Self, get_args
 from psygnal import SignalGroupDescriptor
-from SpiriSynq.syncable_objects import SyncableObject
+from SpiriSynq.syncable_objects import SyncableObject, WeakMethodProxy
+from SpiriSynq.serializer import load_untyped
+from SpiriSynq.link import Link
 from SpiriSynq.session import Session
 from dataclasses import dataclass, field
 import math
 import zenoh
+
+# WGS84 ellipsoid
+_WGS84_A = 6378137.0                  # semi-major axis, m
+_WGS84_F = 1 / 298.257223563          # flattening
+_WGS84_E2 = _WGS84_F * (2 - _WGS84_F)  # first eccentricity squared
 
 
 def _erfinv(p: float) -> float:
@@ -42,13 +66,47 @@ class RootFrame(str):
         return cls(constructor.construct_scalar(node))
 
 
-SpatialFrame: TypeAlias = RootFrame | str
+SpatialFrame: TypeAlias = RootFrame | Link | str
 
 @dataclass(frozen=True)
 class Offset:
-    x: float = 0  # X-axis: Equator at Prime Meridian
-    y: float = 0  # Y-axis: Equator at 90° East longitude
-    z: float = 0  # Z-axis: North Pole direction
+    """A displacement in metres along the axes of whatever frame holds it."""
+    x: float = 0
+    y: float = 0
+    z: float = 0
+
+    @classmethod
+    def from_geodetic(cls, lat: float, lon: float, height: float) -> "Offset":
+        """ECEF offset of a WGS84 point.
+
+        *lat*/*lon* in degrees; *height* in metres above the ellipsoid. MAVLink
+        altitudes are mostly MSL: add the geoid separation first (e.g.
+        ``GPS_RAW_INT.alt_ellipsoid - alt``).
+        """
+        phi, lam = math.radians(lat), math.radians(lon)
+        n = _WGS84_A / math.sqrt(1 - _WGS84_E2 * math.sin(phi) ** 2)
+        return cls(
+            x=(n + height) * math.cos(phi) * math.cos(lam),
+            y=(n + height) * math.cos(phi) * math.sin(lam),
+            z=(n * (1 - _WGS84_E2) + height) * math.sin(phi),
+        )
+
+    def to_geodetic(self) -> tuple[float, float, float]:
+        """Inverse of :meth:`from_geodetic` for an ECEF offset: (lat°, lon°, height above ellipsoid in m)."""
+        p = math.hypot(self.x, self.y)
+        lon = math.atan2(self.y, self.x)
+        lat = math.atan2(self.z, p * (1 - _WGS84_E2))
+        # Fixed-point iteration; error shrinks by ~e² per step, so sub-mm well within 10.
+        for _ in range(10):
+            n = _WGS84_A / math.sqrt(1 - _WGS84_E2 * math.sin(lat) ** 2)
+            lat = math.atan2(self.z + _WGS84_E2 * n * math.sin(lat), p)
+        # This form of the height stays well-conditioned at the poles, unlike p/cos(lat) - N.
+        height = (
+            p * math.cos(lat)
+            + self.z * math.sin(lat)
+            - _WGS84_A * math.sqrt(1 - _WGS84_E2 * math.sin(lat) ** 2)
+        )
+        return math.degrees(lat), math.degrees(lon), height
 
     def rotate_by(self, orientation: "Orientation") -> "Offset":
         """Return a new Offset rotated by the given orientation (quaternion)."""
@@ -148,6 +206,38 @@ class Orientation:
             z=cr * cp * sy - sr * sp * cy,
         )
 
+    @classmethod
+    def ned_to_ecef(cls, lat: float, lon: float) -> "Orientation":
+        """Orientation of the local NED frame at *lat*/*lon* (degrees) within ECEF.
+
+        Use it as the orientation of a NED frame's :class:`Pose`, such as an
+        autopilot's EKF origin, so children can mount in NED.
+        """
+        phi, lam = math.radians(lat), math.radians(lon)
+        sp, cp, sl, cl = math.sin(phi), math.cos(phi), math.sin(lam), math.cos(lam)
+        # Columns: the north, east and down unit vectors in ECEF.
+        return cls._from_matrix((
+            (-sp * cl, -sl, -cp * cl),
+            (-sp * sl, cl, -cp * sl),
+            (cp, 0.0, -sp),
+        ))
+
+    @classmethod
+    def _from_matrix(cls, m) -> "Orientation":
+        """Quaternion of a 3x3 rotation matrix (rows of columns), via Shepperd's method."""
+        trace = m[0][0] + m[1][1] + m[2][2]
+        if trace > 0:
+            s = math.sqrt(trace + 1) * 2
+            return cls(s / 4, (m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s, (m[1][0] - m[0][1]) / s)
+        if m[0][0] > m[1][1] and m[0][0] > m[2][2]:
+            s = math.sqrt(1 + m[0][0] - m[1][1] - m[2][2]) * 2
+            return cls((m[2][1] - m[1][2]) / s, s / 4, (m[0][1] + m[1][0]) / s, (m[0][2] + m[2][0]) / s)
+        if m[1][1] > m[2][2]:
+            s = math.sqrt(1 + m[1][1] - m[0][0] - m[2][2]) * 2
+            return cls((m[0][2] - m[2][0]) / s, (m[0][1] + m[1][0]) / s, s / 4, (m[1][2] + m[2][1]) / s)
+        s = math.sqrt(1 + m[2][2] - m[0][0] - m[1][1]) * 2
+        return cls((m[1][0] - m[0][1]) / s, (m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, s / 4)
+
 @dataclass(frozen=True)
 class Accuracy:
     """
@@ -220,157 +310,164 @@ class Accuracy:
 
 
 
+@dataclass(frozen=True)
+class Pose:
+    """Where something is and which way it faces, within some frame.
+
+    One value, published as one put: a subscriber never pairs the offset from
+    one update with the orientation from another.
+    """
+    offset: Offset = field(default_factory=Offset)
+    orientation: Orientation = field(default_factory=Orientation)
+    accuracy: Accuracy | None = None
+
+    def compose(self, child: "Pose") -> "Pose":
+        """Place *child*, given in this pose's local frame, into the frame this pose is in.
+
+        The standard rigid-body chain, T_child = T_parent ∘ T_mount:
+            offset = parent.offset + child.offset.rotate_by(parent.orientation)
+            orientation = parent.orientation * child.orientation
+        Accuracies combine in quadrature; whichever is known propagates.
+        """
+        if self.accuracy is not None and child.accuracy is not None:
+            accuracy = self.accuracy + child.accuracy
+        else:
+            accuracy = self.accuracy or child.accuracy
+        return Pose(
+            offset=self.offset + child.offset.rotate_by(self.orientation),
+            orientation=self.orientation * child.orientation,
+            accuracy=accuracy,
+        )
+
+    @classmethod
+    def from_plain(cls, data: dict | None) -> "Pose | None":
+        """Build from the tag-stripped mapping ``load_untyped`` gives for a Pose."""
+        if not data:
+            return None
+        accuracy = data.get("accuracy")
+        return cls(
+            offset=Offset(**(data.get("offset") or {})),
+            orientation=Orientation(**(data.get("orientation") or {})),
+            accuracy=Accuracy(**accuracy) if accuracy else None,
+        )
+
+
 @dataclass
 class Position(SyncableObject):
     """
-    A generic object that exists in 3D space relative to another object.
+    Something with a place in the world: a node in a tree of frames.
 
-    offset and orientation are the real position in the root (world) frame.
-    Mounts describe where the device is relative to its parent's local frame.
-    For example, if your robot is X above the center of the earth and your root
-    frame is ECEF, you mount the drone X above the root.
+    ``relative_to`` names the parent: a :class:`RootFrame`, or the topic of
+    another Position: a :class:`~SpiriSynq.link.Link`, or a topic string
+    (absolute, or relative like ``./origin``). Prefer a Link: a relative topic
+    means something different on every node that receives it. ``mount`` is
+    this object's pose in its parent's frame -- the value you set. ``pose`` is
+    the resulting pose in the root frame, which the authoritative node computes
+    and publishes; mirrors just receive it.
+
+    ``pose`` is None until it can be computed: without a mount, or while the
+    parent's own pose is unknown. An unknown parent is never treated as the
+    identity, which would put the object near the root frame's origin.
     """
     relative_to: SpatialFrame = RootFrame("unknown")
-    _relative_subscribers: set[zenoh.Subscriber] = field(default_factory=set)
-    _relative_offset: Offset | None = None
-    _relative_orientation: Orientation | None = None
-    _relative_accuracy: Accuracy | None = None
-    offset: Offset | None = None
-    orientation: Orientation | None = None
-    accuracy: Accuracy | None = None
-    # Where the device is relative to its parent (parent's local frame)
-    mount_offset: Offset | None = None
-    mount_orientation: Orientation | None = None
-    mount_accuracy: Accuracy | None = None
+    mount: Pose | None = None
+    pose: Pose | None = None
+    _parent_subscriber: zenoh.Subscriber | None = None
+    _parent_pose: Pose | None = None
+    _parent_live: bool = False
+    _parent_generation: int = 0
 
     def __post_init__(self):
         super().__post_init__()
-        self.events.relative_to.connect(self._update_relative_subscriber)
-        self.events.mount_offset.connect(self._on_mount_change)
-        self.events.mount_orientation.connect(self._on_mount_change)
-        self.events.mount_accuracy.connect(self._on_mount_change)
-
-        # Set up zenoh subscriber for the current frame
-        self._update_relative_subscriber(self.relative_to)
+        if not self.synq_authoritive:
+            return
+        self.events.relative_to.connect(self._follow_parent)
+        self.events.mount.connect(self._on_mount_change)
+        self._follow_parent(self.relative_to)
 
     def _on_mount_change(self, _):
         self._update_pos()
 
-    def _update_relative_subscriber(self, frame: SpatialFrame):
-        # Clean up all existing subscribers
-        for subscriber in self._relative_subscribers:
-            try:
-                subscriber.undeclare()
-                logger.trace(f"Undeclared stale subscriber {subscriber}")
-            except zenoh.ZError:
-                logger.trace(f"Subscriber already undeclared (session reset?): {subscriber!r}")
-        self._relative_subscribers.clear()
+    def _unfollow_parent(self):
+        if self._parent_subscriber is None:
+            return
+        try:
+            self._parent_subscriber.undeclare()
+        except zenoh.ZError:
+            logger.trace(f"Subscriber already undeclared (session reset?): {self._parent_subscriber!r}")
+        self._parent_subscriber = None
 
-        # If this is a root frame, no relative subscription needed
+    def _follow_parent(self, frame: SpatialFrame):
+        self._unfollow_parent()
+        self._parent_generation += 1
+        self._parent_pose = None
+        self._parent_live = False
+
         if isinstance(frame, RootFrame):
             logger.trace(f"New frame isn't relative: {frame}")
-            self._relative_offset = None
-            self._relative_orientation = None
-            self._relative_accuracy = None
             self._update_pos()
             return
 
         if self.synq_session is None:
             raise RuntimeError("synq_session is required to subscribe to relative frames")
 
-        # Subscribe to offset, orientation, and accuracy on separate key expressions
-        offset_sub = self.synq_session.zenoh_session.declare_subscriber(
-            f"{self.relative_to}/offset",
-            self._on_offset_sample,
+        parent = frame.topic if isinstance(frame, Link) else self.synq_session.resolve_topic(frame)
+        z_session = self.synq_session.zenoh_session
+        self._parent_subscriber = z_session.declare_subscriber(
+            f"{parent}/pose", WeakMethodProxy(self._on_parent_pose_sample)
         )
-        orientation_sub = self.synq_session.zenoh_session.declare_subscriber(
-            f"{self.relative_to}/orientation",
-            self._on_orientation_sample,
-        )
-        accuracy_sub = self.synq_session.zenoh_session.declare_subscriber(
-            f"{self.relative_to}/accuracy",
-            self._on_accuracy_sample,
-        )
-
-        self._relative_subscribers = {offset_sub, orientation_sub, accuracy_sub}
-
-    def _on_offset_sample(self, sample: zenoh.Sample):
-        """Callback fired by zenoh when the relative frame publishes an offset update."""
-        payload = sample.payload.to_string()
-        if self.synq_session is None:
-            raise RuntimeError("synq_session is required to deserialize offset")
-
-        new_offset = self.synq_session.type_registry.load(payload)
-        if not isinstance(new_offset, Offset):
-            raise TypeError(f"{new_offset} is {type(new_offset)}, not {Offset}")
-        self._relative_offset = new_offset
         self._update_pos()
 
-    def _on_orientation_sample(self, sample: zenoh.Sample):
-        """Callback fired by zenoh when the relative frame publishes an orientation update."""
-        payload = sample.payload.to_string()
-        if self.synq_session is None:
-            raise RuntimeError("synq_session is required to deserialize orientation")
+        # A parent such as an EKF origin may publish once and then go quiet, so
+        # ask for its current state rather than waiting for its next put. The
+        # reply is untyped: the parent may be a subclass this process never imported.
+        generation = self._parent_generation
+        z_session.get(
+            f"{parent}/sr_rehydrate",
+            lambda reply: self._on_parent_rehydrate(reply, generation),
+        )
 
-        new_orientation = self.synq_session.type_registry.load(payload)
-        if not isinstance(new_orientation, Orientation):
-            raise TypeError(f"{new_orientation} is {type(new_orientation)}, not {Orientation}")
-        self._relative_orientation = new_orientation
+    def _on_parent_pose_sample(self, sample: zenoh.Sample):
+        """Callback fired by zenoh when the parent publishes its pose, or is deleted."""
+        if sample.kind == zenoh.SampleKind.DELETE:
+            new_pose = None  # parent closed
+        else:
+            if self.synq_session is None:
+                raise RuntimeError("synq_session is required to deserialize pose")
+            new_pose = self.synq_session.type_registry.load(sample.payload.to_string())
+            if new_pose is not None and not isinstance(new_pose, Pose):
+                raise TypeError(f"{new_pose} is {type(new_pose)}, not {Pose}")
+        self._parent_live = True
+        self._parent_pose = new_pose
         self._update_pos()
 
-    def _on_accuracy_sample(self, sample: zenoh.Sample):
-        """Callback fired by zenoh when the relative frame publishes an accuracy update."""
-        payload = sample.payload.to_string()
-        if self.synq_session is None:
-            raise RuntimeError("synq_session is required to deserialize accuracy")
-
-        new_accuracy = self.synq_session.type_registry.load(payload)
-        if not isinstance(new_accuracy, Accuracy):
-            raise TypeError(f"{new_accuracy} is {type(new_accuracy)}, not {Accuracy}")
-        self._relative_accuracy = new_accuracy
+    def _on_parent_rehydrate(self, reply: zenoh.Reply, generation: int):
+        # A live sample is newer than this snapshot; a new frame makes it irrelevant.
+        if generation != self._parent_generation or self._parent_live:
+            return
+        if not reply.ok:
+            logger.trace(f"Parent {self.relative_to} didn't rehydrate: {reply.err}")
+            return
+        state = load_untyped(reply.ok.payload.to_string())
+        if not isinstance(state, dict):
+            return
+        self._parent_pose = Pose.from_plain(state.get("pose"))
         self._update_pos()
 
     def _update_pos(self):
-        """
-        Compute the real (root-frame) position from the parent's world-frame
-        state and the mount's local-frame offset/orientation.
-
-        For a root frame (no parent), the mount values are used directly.
-
-        For a relative frame, the rigid-body transform chain applies:
-            offset = parent_offset + mount_offset.rotate_by(parent_orientation)
-            orientation = parent_orientation * mount_orientation
-
-        This is the standard composition: T_child = T_parent ∘ T_mount
-        """
-        m_offset = self.mount_offset or Offset()
-        m_orient = self.mount_orientation or Orientation()
-
-        # No relative frame — mount values ARE the world values
-        if self._relative_offset is None and self._relative_orientation is None:
-            self.offset = m_offset or None
-            self.orientation = m_orient if m_orient != Orientation() else None
-            self.accuracy = self.mount_accuracy
-            return
-
-        # Defaults: treat missing relative values as identity
-        rel_offset = self._relative_offset or Offset()
-        rel_orient = self._relative_orientation or Orientation()
-
-        # Transform mount offset from parent's local frame into the root frame,
-        # then add the parent's root-frame position
-        self.offset = rel_offset + m_offset.rotate_by(rel_orient)
-
-        # Compose orientations: parent world orientation * mount local orientation
-        self.orientation = rel_orient * m_orient
-
-        # Combine parent and mount accuracy in quadrature; propagate whichever is known
-        rel_acc = self._relative_accuracy
-        m_acc = self.mount_accuracy
-        if rel_acc is not None and m_acc is not None:
-            self.accuracy = rel_acc + m_acc
+        """Recompute ``pose`` from the mount and the parent's root-frame pose."""
+        if self.mount is None:
+            self.pose = None
+        elif isinstance(self.relative_to, RootFrame):
+            self.pose = self.mount
+        elif self._parent_pose is None:
+            self.pose = None
         else:
-            self.accuracy = rel_acc or m_acc
+            self.pose = self._parent_pose.compose(self.mount)
+
+    def close(self):
+        self._unfollow_parent()
+        super().close()
 
 
 def fuse_positions(*positions: Position) -> tuple[Offset, Accuracy]:
@@ -378,25 +475,27 @@ def fuse_positions(*positions: Position) -> tuple[Offset, Accuracy]:
 
     Uses inverse-variance weighting when horizontal/vertical accuracies are
     known, falling back to a simple mean otherwise. More observations with
-    known accuracy produce a tighter result.
+    known accuracy produce a tighter result. Positions whose pose is unknown
+    are skipped.
 
     Returns (offset, accuracy) where either component may have None fields
     if no accuracy information was available for that axis.
     """
-    if not positions:
-        raise ValueError("At least one position is required")
+    poses = [p.pose for p in positions if p.pose is not None]
+    if not poses:
+        raise ValueError("At least one position with a known pose is required")
 
-    offsets = [p.offset or Offset() for p in positions]
+    offsets = [pose.offset for pose in poses]
 
-    # Pairs of (offset, h_accuracy) for positions that have horizontal accuracy
-    h_known = [(off, p.accuracy.horizontal)
-               for off, p in zip(offsets, positions)
-               if p.accuracy is not None and p.accuracy.horizontal is not None]
+    # Pairs of (offset, h_accuracy) for poses that have horizontal accuracy
+    h_known = [(pose.offset, pose.accuracy.horizontal)
+               for pose in poses
+               if pose.accuracy is not None and pose.accuracy.horizontal is not None]
 
-    # Pairs of (offset, v_accuracy) for positions that have vertical accuracy
-    v_known = [(off, p.accuracy.vertical)
-               for off, p in zip(offsets, positions)
-               if p.accuracy is not None and p.accuracy.vertical is not None]
+    # Pairs of (offset, v_accuracy) for poses that have vertical accuracy
+    v_known = [(pose.offset, pose.accuracy.vertical)
+               for pose in poses
+               if pose.accuracy is not None and pose.accuracy.vertical is not None]
 
     if h_known:
         inv_var = [1.0 / h ** 2 for _, h in h_known]

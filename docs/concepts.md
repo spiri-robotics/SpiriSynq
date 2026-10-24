@@ -124,6 +124,24 @@ labels:   !EventedDict {temp: hot, humidity: low}
 flags:    !EventedSet  [alarm, warning]
 ```
 
+### Links
+
+A `Link` field refers to another SpiriSynq object by its absolute topic. It holds only the topic: it doesn't keep the target alive or check that it exists. `link.resolve(Camera)` fetches a mirror, the same as `Camera.from_topic(link.topic)`; without a class, the target's type must already be registered on the session.
+
+```python
+from SpiriSynq.link import Link
+
+@dataclass
+class Mount(SyncableObject):
+    camera: Link | None = None
+
+cam = Camera("./camera", synq_authoritive=True)
+mount = Mount("./mount", synq_authoritive=True, camera=Link.to(cam))
+# publishes  camera: !Link myhost/camera
+```
+
+Links must be absolute, so `Link("./camera")` raises `ValueError`; a relative topic would name a different object on each node that received it. Every session decodes `!Link` without registering anything.
+
 ### Fields excluded from sync
 
 The `synq_skip_sync` class variable lists fields that are never published or received. All `synq_*` bookkeeping fields are in this set by default. Add your own fields to exclude them:

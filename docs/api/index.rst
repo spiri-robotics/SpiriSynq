@@ -10,4 +10,5 @@ Auto-generated from source. For conceptual documentation see the main docs.
    schema
    remote_callables
    syncable_objects
+   link
    example_types

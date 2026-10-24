@@ -13,6 +13,48 @@
   `~/.cache/spirisynq/topics`. This replaces Typer's `--install-completion` and
   `--show-completion`; a script installed that way keeps working like the fallback.
 - **`python -m SpiriSynq`** runs the CLI.
+- **`Link`, a reference to another object.** `SpiriSynq.link.Link("myhost/camera")` (or
+  `Link.to(obj)`) is sent as `!Link myhost/camera` and described in schemas as a string with
+  `x-yaml-tag: '!Link'`. Every session decodes it without registration. Links must be
+  absolute topics. `link.resolve(Camera)` fetches a mirror of the target.
+
+- **`Position` is one `pose` value.** `offset`/`orientation`/`accuracy` and the three
+  `mount_*` fields are replaced by `mount: Pose` (what you set, in the parent's frame) and
+  `pose: Pose` (the root-frame result), each published as one put. Children no longer
+  combine a new offset with a stale orientation, and each parent update costs a child one
+  recompute instead of three. Breaking for code using the old fields; `fuse_positions`
+  skips positions whose pose is unknown.
+- **Geodesy for `Position`.** `Offset.from_geodetic(lat, lon, height)` / `.to_geodetic()`
+  convert WGS84 to and from ECEF, and `Orientation.ned_to_ecef(lat, lon)` places a local NED
+  frame. Body frames are FRD; the module docstring states the conventions.
+
+### Fixes
+
+- **`Position` with an unknown parent.** It used to compose with the identity and publish
+  a pose near the root frame's origin; `pose` is now None until the parent's pose is known,
+  and goes back to None when the parent is deleted.
+- **`Position` under a quiet parent.** A child only heard the parent's later updates, so a
+  parent that published once (an EKF origin, say) never placed it. The child now asks the
+  parent's `sr_rehydrate` for its current pose. `relative_to` also accepts `./` topics now.
+- **Only the authoritative `Position` computes `pose`.** Mirrors followed the parent too,
+  and wrote the result back as their own puts.
+- **Subclasses registered after their base.** A subclass inherited its base's `yaml_tag`
+  and its base's cached `valid_sync_paths` / field types, so once the base had been used,
+  the subclass serialized as the base and lost its own fields on the wire. Tags and caches
+  are now per class. `sr_metadata`'s type tags also named an unregistered intermediate class
+  by its base's tag (`!MavRobot, !Position, !Position`, no `!Robot`); each class now reports
+  its own.
+- **Private fields and type registration.** `register_type_recursive` walked `_` fields'
+  types too, so a field like `_lock: threading.Lock` failed at `sync()`. It now skips them,
+  as `valid_sync_paths` and `to_yaml` already did.
+- **`load_untyped` on tagged scalars.** A tagged scalar or sequence such as
+  `!RootFrame ECEF` raised a `ConstructorError`; it now loads as the plain value.
+
+### Improvements
+
+- **Protocol spec: permissions.** `docs/protocol.md` now says that write access is enforced
+  by Zenoh's router-level access control, not by SpiriSynq, and that two authoritative
+  nodes on one topic is undefined behaviour.
 
 ## v0.4.0
 

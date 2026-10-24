@@ -17,6 +17,7 @@ import pytest
 from psygnal.containers import EventedList
 
 from SpiriSynq import schema as schema_module
+from SpiriSynq.link import Link
 from SpiriSynq.remote_callables import remote_method
 from SpiriSynq.serializer import load_untyped
 from SpiriSynq.syncable_objects import SubSyncableDataclass, SyncableObject
@@ -178,6 +179,16 @@ def test_str_subclass_keeps_its_yaml_tag():
 
     assert get_schema(WithFrame)["properties"]["frame"] == {
         "type": "string", "x-yaml-tag": "!Frame", "default": "world"
+    }
+
+
+def test_link_is_a_tagged_string():
+    @dataclass
+    class WithLink:
+        target: Link = Link("myhost/camera")
+
+    assert get_schema(WithLink)["properties"]["target"] == {
+        "type": "string", "x-yaml-tag": "!Link", "default": "myhost/camera"
     }
 
 

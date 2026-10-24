@@ -199,3 +199,69 @@ def test_primitive_fields_not_double_registered(session):
     session.register_type_recursive(Simple)
     assert not hasattr(int, "yaml_tag")
     assert not hasattr(str, "yaml_tag")
+
+
+def test_private_fields_are_not_registered(session):
+    """'_' fields never go on the wire, so their types needn't be YAML-able."""
+    import threading
+    from dataclasses import field
+
+    @dataclass
+    class WithPrivate(SyncableObject):
+        value: int = 0
+        _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    session.register_type_recursive(WithPrivate)
+    assert not hasattr(threading.Lock, "yaml_tag")
+
+
+def test_subclass_registered_after_base_gets_its_own_tag(session):
+    """A subclass registered after its base must not inherit the base's tag."""
+    @dataclass
+    class Base(SyncableObject):
+        a: int = 0
+
+    @dataclass
+    class Sub(Base):
+        b: int = 0
+
+    session.register_type_recursive(Base)
+    session.register_type_recursive(Sub)
+    assert Sub.yaml_tag == "!Sub"
+    assert session.type_registry.dumps(Sub("t/sub", synq_auto_start=False, b=2)).startswith("!Sub")
+
+
+def test_subclass_sync_paths_not_inherited_from_cache():
+    """valid_sync_paths on a base first must not hide a subclass's own fields."""
+    @dataclass
+    class CBase(SyncableObject):
+        a: int = 0
+
+    @dataclass
+    class CSub(CBase):
+        b: int = 0
+
+    assert "b" not in CBase.valid_sync_paths()
+    assert "b" in CSub.valid_sync_paths()
+    CBase._resolve_sync_type("a")
+    assert CSub._resolve_sync_type("b") is not None
+    assert CBase._resolve_sync_type("b") is None
+
+
+def test_type_tags_name_every_class_in_the_mro(session):
+    """An intermediate class that was never registered still reports its own tag."""
+    @dataclass
+    class TBase(SyncableObject):
+        a: int = 0
+
+    @dataclass
+    class TMid(TBase):
+        pass
+
+    @dataclass
+    class TLeaf(TMid):
+        pass
+
+    session.register_type_recursive(TBase)
+    session.register_type_recursive(TLeaf)
+    assert TLeaf.synq_type_tags() == sorted(["!TLeaf", "!TMid", "!TBase", "!SyncableObject"])
