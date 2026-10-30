@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.0
+
+### Features
+
+- **Points: a `Pose` without an orientation.** `Pose(offset, orientation=None)` is something
+  with a place but no facing, such as a region of interest, instead of one that falsely
+  faces along its parent's axes. A point child composes to a point; under a point, a child at
+  a zero offset is a point at the same place, and any other child's pose is None, since a
+  point has no axes to offset along. The default orientation is still the identity.
+
 ## v0.5.0
 
 ### Features
