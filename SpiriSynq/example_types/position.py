@@ -314,28 +314,40 @@ class Accuracy:
 class Pose:
     """Where something is and which way it faces, within some frame.
 
+    ``orientation=None`` makes it a point: something with a place but no
+    facing, such as a region of interest. The default, the identity, means
+    aligned with the parent frame.
+
     One value, published as one put: a subscriber never pairs the offset from
     one update with the orientation from another.
     """
     offset: Offset = field(default_factory=Offset)
-    orientation: Orientation = field(default_factory=Orientation)
+    orientation: Orientation | None = field(default_factory=Orientation)
     accuracy: Accuracy | None = None
 
-    def compose(self, child: "Pose") -> "Pose":
+    def compose(self, child: "Pose") -> "Pose | None":
         """Place *child*, given in this pose's local frame, into the frame this pose is in.
 
         The standard rigid-body chain, T_child = T_parent ∘ T_mount:
             offset = parent.offset + child.offset.rotate_by(parent.orientation)
             orientation = parent.orientation * child.orientation
         Accuracies combine in quadrature; whichever is known propagates.
+
+        A point has no axes to measure from: under one, a child at a zero
+        offset is a point at the same place, and any other child can't be
+        placed, so this returns None. A point child stays a point.
         """
         if self.accuracy is not None and child.accuracy is not None:
             accuracy = self.accuracy + child.accuracy
         else:
             accuracy = self.accuracy or child.accuracy
+        if self.orientation is None:
+            if child.offset != Offset():
+                return None
+            return Pose(offset=self.offset, orientation=None, accuracy=accuracy)
         return Pose(
             offset=self.offset + child.offset.rotate_by(self.orientation),
-            orientation=self.orientation * child.orientation,
+            orientation=None if child.orientation is None else self.orientation * child.orientation,
             accuracy=accuracy,
         )
 
@@ -345,9 +357,10 @@ class Pose:
         if not data:
             return None
         accuracy = data.get("accuracy")
+        orientation = data.get("orientation")
         return cls(
             offset=Offset(**(data.get("offset") or {})),
-            orientation=Orientation(**(data.get("orientation") or {})),
+            orientation=Orientation(**orientation) if orientation else None,
             accuracy=Accuracy(**accuracy) if accuracy else None,
         )
 

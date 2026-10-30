@@ -78,6 +78,20 @@ def test_compose_rotates_child_offset_into_parent_frame():
     assert math.isclose(world.orientation.yaw, math.pi / 2)
 
 
+def test_point_child_is_placed_but_faces_nowhere():
+    parent = Pose(Offset(10, 0, 0), Orientation.from_euler(0, 0, math.pi / 2))
+    world = parent.compose(Pose(Offset(1, 0, 0), orientation=None))
+    assert _close(world.offset, Offset(10, 1, 0))
+    assert world.orientation is None
+
+
+def test_under_a_point_only_a_zero_offset_is_placeable():
+    point = Pose(Offset(10, 0, 0), orientation=None)
+    world = point.compose(Pose(orientation=Orientation.from_euler(0, 0, 1.0)))
+    assert world == Pose(Offset(10, 0, 0), orientation=None)
+    assert point.compose(Pose(Offset(1, 0, 0))) is None
+
+
 def test_compose_accuracy():
     a = Accuracy(horizontal=3.0, vertical=4.0)
     assert Pose(accuracy=a).compose(Pose()).accuracy == a
@@ -95,6 +109,16 @@ def test_pose_from_plain():
         "accuracy": {"horizontal": 1.5, "vertical": None},
     })
     assert pose == Pose(Offset(1, 2, 3), Orientation(), Accuracy(horizontal=1.5))
+    point = Pose.from_plain({"offset": {"x": 1, "y": 2, "z": 3}, "orientation": None})
+    assert point == Pose(Offset(1, 2, 3), orientation=None)
+
+
+def test_point_round_trips_on_the_wire():
+    pos = Position("test/pos_point", synq_authoritive=True, relative_to=RootFrame("ECEF"))
+    pos.mount = Pose(Offset(1, 2, 3), orientation=None)
+    mirror = Position.from_topic(pos.synq_absolute_path)
+    assert mirror.pose == Pose(Offset(1, 2, 3), orientation=None)
+    pos.close()
 
 
 # ── Position tree ─────────────────────────────────────────────────────────────
