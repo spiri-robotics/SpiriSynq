@@ -1,5 +1,12 @@
 import yaml
-from yaml import SafeLoader, SafeDumper
+
+# libyaml's parser and emitter, several times faster than PyYAML's pure-
+# Python ones, which were a large part of a busy session's CPU (every
+# pose sample is a load). PyYAML's wheels ship it; fall back if not built.
+try:
+    from yaml import CSafeLoader as SafeLoader, CSafeDumper as SafeDumper
+except ImportError:
+    from yaml import SafeLoader, SafeDumper
 
 
 class SessionSerializer:

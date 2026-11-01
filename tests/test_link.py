@@ -43,8 +43,12 @@ class Mount(SyncableObject):
 
 def test_wire_format_is_a_tagged_scalar():
     registry = current_session.get().type_registry
-    assert registry.dumps(Link("myhost/camera")) == "!Link 'myhost/camera'"
+    # Quoted or not is the emitter's choice (libyaml's doesn't, PyYAML's does).
+    dumped = registry.dumps(Link("myhost/camera"))
+    assert dumped in ("!Link myhost/camera", "!Link 'myhost/camera'")
+    assert registry.load(dumped) == Link("myhost/camera")
     assert registry.load("!Link myhost/camera") == Link("myhost/camera")
+    assert registry.load("!Link 'myhost/camera'") == Link("myhost/camera")
 
 
 def test_builtin_without_registration():
