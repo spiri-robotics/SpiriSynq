@@ -1,13 +1,33 @@
 # AGENTS.md
 
-SpiriSynq synchronizes Python dataclass instances across processes/machines over a Zenoh pub/sub network. Python >=3.13, managed with `uv` (`uv.lock`). Requires no zenoh router — peers discover each other directly.
+SpiriSynq keeps Python dataclass instances in sync across processes, machines and languages over
+Zenoh. It requires no zenoh router: peers discover each other directly. Python >=3.13, managed
+with `uv` (`uv.lock` is committed). Generated from the SpiriProjectTemplates copier template;
+`uvx copier update` pulls in template changes.
 
 ## Commands
 
-- Tests: `uv run pytest` (config in `pyproject.toml`: `testpaths=["tests"]`, `pythonpath=["."]`). Single test: `uv run pytest tests/test_session.py::test_name`.
-- `test_performance.py` is heavier; run separately when needed.
-- Docs: `make -C docs` (Sphinx, uses `uv run sphinx-build`). `autodoc_mock_imports` stubs the optional `examples` deps (PIL, cv2, nicegui, imagecodecs), so docs build without them.
-- No formatter/linter/typecheck config exists; don't invent one.
+- Everything CI checks: `make check`.
+- Format and autofix: `make format`.
+- Tests: `uv run pytest`. Single test: `uv run pytest tests/test_session.py::test_name`.
+  `test_performance.py` is heavier; run it separately when needed.
+- Docs: `make docs` (Sphinx, MyST markdown; warnings are errors), `make pdf` for the controlled
+  PDF, `make lint-docs` for prose (Vale).
+  `autodoc_mock_imports` stubs the optional `examples` deps (PIL, cv2, nicegui, imagecodecs), so
+  docs build without them. HTML is published to GitHub Pages from `main`.
+
+## Conventions
+
+- The docs are a controlled document (spiri-docs, as for every Spiri manual): `revisions.yaml`
+  is the only place the document's revision is written. Revise it when what the docs say
+  changes; it's separate from the package version.
+- The template owns the versions it ships (base dependencies, workflow actions, the uv image)
+  and bumps them weekly; take them with `uvx copier update` and `uv lock`, not by hand.
+- Every change gets a categorized entry in `CHANGES.md` (Features / Fixes / Improvements /
+  Tests / Internal) under `## Unreleased`; commits use conventional-commit style (`feat:`,
+  `fix:`, `refactor:`).
+- Version lives in `pyproject.toml` + `CHANGES.md`. A pushed `vX.Y.Z` tag publishes to PyPI
+  (`.github/workflows/pypi-publish.yml`, trusted publishing via `environment: pypi`).
 
 ## Tests: TCP-only zenoh network
 
@@ -30,8 +50,3 @@ SpiriSynq synchronizes Python dataclass instances across processes/machines over
 - `src/SpiriSynq/remote_callables.py` — `@remote_method` RPC support, `RpcException`.
 - `src/SpiriSynq/completion/` — tab completion: callbacks + shell scripts (`__init__.py`), and the `synq _complete-server` daemon the scripts talk to over a socket (`server.py`). Self-contained; `cli.py` only wires `autocompletion=` callbacks to it. Tests type Tab into real bash/zsh on a pty (`tests/test_completion.py`).
 - `src/SpiriSynq/cli.py` — typer CLI; registered as **both** `synq` and `spirisynq` entry points. `click` is a direct dependency (needed to keep `uv run`/`uvx spirisynq` working regardless of what `typer` declares) — fine to import if needed, but prefer typer's own API where possible.
-
-## Release conventions
-
-- Every change gets a categorized entry in `CHANGES.md` (Features / Fixes / Improvements / Tests / Internal) under `## Unreleased`, and commits use conventional-commit style (`feat:`, `fix:`, `refactor:`).
-- Version lives in `pyproject.toml` + `CHANGES.md`. Publishing is automatic: GitHub Actions publishes to PyPI when a `v*` git tag is pushed (build with `python -m build`, trusted publishing via `environment: pypi`).

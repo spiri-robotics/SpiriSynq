@@ -1,0 +1,24 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: v0.5.0
+_src_path: gh:spiri-robotics/SpiriProjectTemplates
+audience: customer
+author_email: ''
+author_name: Spiri Robotics
+description: Keeps Python dataclass instances in sync across processes, machines and
+    languages over Zenoh
+distribution_statement: Uncontrolled when printed.
+document_number: SPIRI-SPIRISYNQ-001
+github_org: spiri-robotics
+include_docs: true
+include_nix: false
+include_tests: true
+kind: library
+license: MIT
+project_name: SpiriSynq
+python_package_name: SpiriSynq
+python_version: '3.13'
+scaffold: false
+spirisynq: false
+use_spiri_brand: true
+use_vale: true
+version: 0.6.0

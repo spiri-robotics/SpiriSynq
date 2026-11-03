@@ -103,7 +103,33 @@ The wire format is plain Zenoh with YAML payloads. Any node that implements the 
 
 ## Docs
 
-- [Overview](docs/overview.md)
-- [Getting Started](docs/getting_started.md)
-- [Concepts](docs/concepts.md)
-- [Protocol Specification](docs/protocol.md)
+The full documentation, including the API reference, is at
+https://spiri-robotics.github.io/SpiriSynq/. Each release also attaches it as a PDF.
+
+## Development
+
+```console
+uv sync          # creates .venv and uv.lock; commit uv.lock
+make check       # what CI runs: lint, tests, docs
+```
+
+## Releasing
+
+1. Move the `## Unreleased` entries in `CHANGES.md` under the new version.
+2. Bump `version` in `pyproject.toml`, then `uv lock`.
+3. Tag `vX.Y.Z` and push the tag. CI then:
+   - publishes the package to PyPI (trusted publishing; the tag must match the version);
+   - attaches the docs' controlled PDF to the release.
+
+## First-time GitHub setup
+
+Docs are published to GitHub Pages by `.github/workflows/docs.yml`. Turn it on once, in
+**Settings → Pages → Build and deployment → Source: GitHub Actions**.
+
+## Template
+
+Generated from [SpiriProjectTemplates](https://github.com/spiri-robotics/SpiriProjectTemplates).
+Pull in template changes with `uvx copier update`.
+
+## License
+Licensed under the MIT License.

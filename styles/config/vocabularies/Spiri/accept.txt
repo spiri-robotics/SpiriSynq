@@ -1,0 +1,12 @@
+Spiri
+SpiriSynq
+SpiriSynq
+Spiri Robotics
+airframe
+autopilot
+geofence
+telemetry
+waypoint
+zenoh
+SpiriSynq
+SpiriConfig
