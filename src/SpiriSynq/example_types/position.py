@@ -328,9 +328,11 @@ class Pose:
     def compose(self, child: "Pose") -> "Pose | None":
         """Place *child*, given in this pose's local frame, into the frame this pose is in.
 
-        The standard rigid-body chain, T_child = T_parent ∘ T_mount:
+        The standard rigid-body chain, T_child = T_parent ∘ T_mount::
+
             offset = parent.offset + child.offset.rotate_by(parent.orientation)
             orientation = parent.orientation * child.orientation
+
         Accuracies combine in quadrature; whichever is known propagates.
 
         A point has no axes to measure from: under one, a child at a zero

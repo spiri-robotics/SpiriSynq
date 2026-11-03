@@ -269,6 +269,7 @@ class Session:
         """Register *cls* and every type reachable from its field annotations.
 
         Walks all type hints transitively. For each type:
+
         - Already representable (via MRO against the YAML representer) → skip.
         - Otherwise → assign a yaml_tag if missing, call register_class, then
           verify it took. Raises TypeError if a type cannot be registered so
