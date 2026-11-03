@@ -19,17 +19,17 @@ SpiriSynq synchronizes Python dataclass instances across processes/machines over
 ## Naming and API gotchas
 
 - `synq_authoritive` is **intentionally misspelled** (public API, used everywhere) — never "fix" it.
-- Wire format is plain Zenoh with YAML payloads; the protocol is documented in `docs/protocol.md` (three built-in callables `sr_rehydrate` / `sr_metadata` / `sr_object_schema`; `sr_metadata` is also mounted at `<topic>/sr_metadata/<Tag>` and `sr_object_schema` at `<topic>/sr_type_schema/<Tag>` per MRO tag — same code path, not separate implementations; schemas are standard JSON Schema 2020-12, format version `SCHEMA_VERSION` in `SpiriSynq/schema.py`; per-field puts at `<topic>/<field>`, RPCs at `<topic>/<method>` with `;`-separated params, echo suppression via zenoh `SourceInfo` zid+eid). `tests/test_protocol.py` checks the spec's wire claims with raw zenoh — update both together. CLI tests must assert on output (`_invoke_captured` in `tests/test_cli.py`), not just the exit code: commands exit 0 even when nothing answers.
-- Serialization is PyYAML via `SessionSerializer` (`SpiriSynq/serializer.py`), not ruamel. Register custom types with `session.register_type_recursive(cls)`; str-subclasses need explicit `yaml_tag`/`to_yaml`/`from_yaml` to round-trip (see `RootFrame` in `SpiriSynq/example_types/position.py`).
+- Wire format is plain Zenoh with YAML payloads; the protocol is documented in `docs/protocol.md` (three built-in callables `sr_rehydrate` / `sr_metadata` / `sr_object_schema`; `sr_metadata` is also mounted at `<topic>/sr_metadata/<Tag>` and `sr_object_schema` at `<topic>/sr_type_schema/<Tag>` per MRO tag — same code path, not separate implementations; schemas are standard JSON Schema 2020-12, format version `SCHEMA_VERSION` in `src/SpiriSynq/schema.py`; per-field puts at `<topic>/<field>`, RPCs at `<topic>/<method>` with `;`-separated params, echo suppression via zenoh `SourceInfo` zid+eid). `tests/test_protocol.py` checks the spec's wire claims with raw zenoh — update both together. CLI tests must assert on output (`_invoke_captured` in `tests/test_cli.py`), not just the exit code: commands exit 0 even when nothing answers.
+- Serialization is PyYAML via `SessionSerializer` (`src/SpiriSynq/serializer.py`), not ruamel. Register custom types with `session.register_type_recursive(cls)`; str-subclasses need explicit `yaml_tag`/`to_yaml`/`from_yaml` to round-trip (see `RootFrame` in `src/SpiriSynq/example_types/position.py`).
 - Authoritative objects prepend the hostname as topic prefix; override with env var `SPIRI_SYNQ_BASE_TOPIC`.
 
 ## Architecture map
 
-- `SpiriSynq/syncable_objects.py` — `SyncableObject` and `SubSyncableDataclass` bases.
-- `SpiriSynq/session.py` — `Session` + `current_session` contextvar (use `session.as_default()` for scoped defaults); module-level default session created at import.
-- `SpiriSynq/remote_callables.py` — `@remote_method` RPC support, `RpcException`.
-- `SpiriSynq/completion/` — tab completion: callbacks + shell scripts (`__init__.py`), and the `synq _complete-server` daemon the scripts talk to over a socket (`server.py`). Self-contained; `cli.py` only wires `autocompletion=` callbacks to it. Tests type Tab into real bash/zsh on a pty (`tests/test_completion.py`).
-- `SpiriSynq/cli.py` — typer CLI; registered as **both** `synq` and `spirisynq` entry points. `click` is a direct dependency (needed to keep `uv run`/`uvx spirisynq` working regardless of what `typer` declares) — fine to import if needed, but prefer typer's own API where possible.
+- `src/SpiriSynq/syncable_objects.py` — `SyncableObject` and `SubSyncableDataclass` bases.
+- `src/SpiriSynq/session.py` — `Session` + `current_session` contextvar (use `session.as_default()` for scoped defaults); module-level default session created at import.
+- `src/SpiriSynq/remote_callables.py` — `@remote_method` RPC support, `RpcException`.
+- `src/SpiriSynq/completion/` — tab completion: callbacks + shell scripts (`__init__.py`), and the `synq _complete-server` daemon the scripts talk to over a socket (`server.py`). Self-contained; `cli.py` only wires `autocompletion=` callbacks to it. Tests type Tab into real bash/zsh on a pty (`tests/test_completion.py`).
+- `src/SpiriSynq/cli.py` — typer CLI; registered as **both** `synq` and `spirisynq` entry points. `click` is a direct dependency (needed to keep `uv run`/`uvx spirisynq` working regardless of what `typer` declares) — fine to import if needed, but prefer typer's own API where possible.
 
 ## Release conventions
 

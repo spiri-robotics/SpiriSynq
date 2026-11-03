@@ -1,4 +1,4 @@
-"""Tests for SpiriSynq/syncable_objects.py covering previously uncovered code paths."""
+"""Tests for src/SpiriSynq/syncable_objects.py covering previously uncovered code paths."""
 
 import time
 from dataclasses import dataclass
