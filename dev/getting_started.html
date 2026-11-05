@@ -1,0 +1,717 @@
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="./">
+  <head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="3. Concepts" href="concepts.html"><link rel="prev" title="1. SpiriSynq" href="overview.html">
+        <link rel="canonical" href="https://spiri-robotics.github.io/SpiriSynq/latest/getting_started.html">
+        <link rel="prefetch" href="_static/spiri-logo-light.svg" as="image">
+        <link rel="prefetch" href="_static/spiri-logo-dark.svg" as="image">
+
+    <!-- Generated with Sphinx 9.2.0 and Furo 2025.12.19 -->
+        <title>2. Getting Started - SpiriSynq</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=bde8c6b5" />
+    <link rel="stylesheet" type="text/css" href="_static/spiri-safety-icon.css?v=01762096" />
+    <link rel="stylesheet" type="text/css" href="_static/spiri-safety.css?v=84605d0a" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f2f2f2;
+  --color-code-foreground: #1e1e1e;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+      }
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+    </script>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+</svg>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation" aria-label="Toggle site navigation sidebar">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc" aria-label="Toggle table of contents sidebar">
+<label class="overlay sidebar-overlay" for="__navigation"></label>
+<label class="overlay toc-overlay" for="__toc"></label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <span class="icon"><svg><use href="#svg-menu"></use></svg></span>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="index.html"><div class="brand">SpiriSynq</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
+        <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
+  <div class="sidebar-logo-container">
+    <img class="sidebar-logo only-light" src="_static/spiri-logo-light.svg" alt="Light Logo"/>
+    <img class="sidebar-logo only-dark" src="_static/spiri-logo-dark.svg" alt="Dark Logo"/>
+  </div>
+  
+  <span class="sidebar-brand-text">SpiriSynq</span>
+  
+</a><form class="sidebar-search-container" method="get" action="search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
+</form>
+<div id="searchbox"></div>
+<div class="spiri-versions" hidden>
+  <label class="spiri-versions__label" for="spiri-version">Version</label>
+  <select class="spiri-versions__select" id="spiri-version"></select>
+  <a class="spiri-versions__pdf" hidden>Download PDF</a>
+</div>
+<script>
+  (() => {
+    const box = document.currentScript.previousElementSibling;
+    // This version's root, and the site's root above it.
+    const root = new URL(document.documentElement.dataset.content_root || "./", location.href);
+    const site = new URL("../", root);
+    const current = root.href.slice(site.href.length).replace(/\/$/, "");
+    const page = location.pathname.slice(root.pathname.length);
+
+    fetch(new URL("versions.json", site))
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        const name = current === "latest" ? data?.latest : current;
+        const here = data?.versions.find((v) => v.name === name);
+        if (!here) return;
+
+        const select = box.querySelector("select");
+        for (const v of data.versions) {
+          const label =
+            v.name === "dev" ? "dev (main)" : v.name === data.latest ? `${v.name} (latest)` : v.name;
+          select.add(new Option(label, v.name, false, v === here));
+        }
+        // The same page in the chosen version, or its front page if it has no such page.
+        select.addEventListener("change", async () => {
+          const chosen = data.versions.find((v) => v.name === select.value);
+          const front = new URL(chosen.path, site);
+          const same = new URL(page, front);
+          const exists = await fetch(same, { method: "HEAD" }).then((r) => r.ok, () => false);
+          location.href = (exists ? same : front).href;
+        });
+
+        if (here.pdf) {
+          const pdf = box.querySelector("a");
+          pdf.href = new URL(here.pdf, site).href;
+          pdf.hidden = false;
+        }
+        box.hidden = false;
+      })
+      .catch(() => {});
+  })();
+</script><div class="sidebar-scroll"><div class="sidebar-tree">
+  <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">1. SpiriSynq</a></li>
+<li class="toctree-l1 current current-page"><a class="current reference internal" href="#">2. Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="concepts.html">3. Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cli.html">4. CLI Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="protocol.html">5. Protocol Specification</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="api/index.html">6. API Reference</a><input aria-label="Toggle navigation of 6. API Reference" class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><span class="icon"><svg><use href="#svg-arrow-right"></use></svg></span></label><ul>
+<li class="toctree-l2"><a class="reference internal" href="api/session.html">6.1. Session</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/schema.html">6.2. Schema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/remote_callables.html">6.3. Remote Callables</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/syncable_objects.html">6.4. Syncable Objects</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/link.html">6.5. Link</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/example_types.html">6.6. Example Types</a></li>
+</ul>
+</li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Document control</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="revisions.html">Revision history</a></li>
+</ul>
+
+</div>
+</div>
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="view-this-page">
+  <a class="muted-link" href="_sources/getting_started.md.txt" title="View this page">
+    <svg><use href="#svg-eye"></use></svg>
+    <span class="visually-hidden">View this page</span>
+  </a>
+</div>
+<div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
+            <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <section id="getting-started">
+<h1><span class="section-number">2. </span>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">¶</a></h1>
+<section id="installation">
+<h2><span class="section-number">2.1. </span>Installation<a class="headerlink" href="#installation" title="Link to this heading">¶</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>SpiriSynq
+</pre></div>
+</div>
+<p>SpiriSynq requires Python 3.13+. A Zenoh router is optional for local use — peers can discover each other directly.</p>
+</section>
+<section id="your-first-syncable-object">
+<h2><span class="section-number">2.2. </span>Your first syncable object<a class="headerlink" href="#your-first-syncable-object" title="Link to this heading">¶</a></h2>
+<p>Define a dataclass that inherits from <code class="docutils literal notranslate"><span class="pre">SyncableObject</span></code>. Every field becomes a syncable field — changes are published automatically.</p>
+<p>Save this as <code class="docutils literal notranslate"><span class="pre">counter.py</span></code> and run it:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.syncable_objects</span><span class="w"> </span><span class="kn">import</span> <span class="n">SyncableObject</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.remote_callables</span><span class="w"> </span><span class="kn">import</span> <span class="n">remote_method</span>
+
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Counter</span><span class="p">(</span><span class="n">SyncableObject</span><span class="p">):</span>
+    <span class="n">value</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="nd">@remote_method</span><span class="p">()</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">to</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">to</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>
+
+<span class="n">counter</span> <span class="o">=</span> <span class="n">Counter</span><span class="p">(</span><span class="s2">&quot;myapp/counter&quot;</span><span class="p">,</span> <span class="n">synq_authoritive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Publishing on: </span><span class="si">{</span><span class="n">counter</span><span class="o">.</span><span class="n">synq_absolute_path</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+    <span class="n">counter</span><span class="o">.</span><span class="n">value</span> <span class="o">+=</span> <span class="mi">1</span>
+    <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ python counter.py
+Publishing on: myhost/myapp/counter
+</pre></div>
+</div>
+<p>While it runs, open a second terminal and watch the field changes arrive in real time:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ python -m SpiriSynq.cli topic watch myhost/myapp/counter
+received: 2026-01-01T00:00:01.000000+00:00
+value: 0
+---
+received: 2026-01-01T00:00:02.000000+00:00
+value: 1
+---
+received: 2026-01-01T00:00:03.000000+00:00
+value: 2
+---
+</pre></div>
+</div>
+<p>Or fetch the current state at any point without waiting for an update:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ python -m SpiriSynq.cli topic rehydrate myhost/myapp/counter
+!Counter
+value: 7
+</pre></div>
+</div>
+<p>To call the <code class="docutils literal notranslate"><span class="pre">reset</span></code> RPC from another process, create a mirror and call the method directly. Save this as <code class="docutils literal notranslate"><span class="pre">reset_counter.py</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.syncable_objects</span><span class="w"> </span><span class="kn">import</span> <span class="n">SyncableObject</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.remote_callables</span><span class="w"> </span><span class="kn">import</span> <span class="n">remote_method</span>
+
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Counter</span><span class="p">(</span><span class="n">SyncableObject</span><span class="p">):</span>
+    <span class="n">value</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="nd">@remote_method</span><span class="p">()</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">to</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">to</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>
+
+<span class="n">mirror</span> <span class="o">=</span> <span class="n">Counter</span><span class="o">.</span><span class="n">from_topic</span><span class="p">(</span><span class="s2">&quot;myhost/myapp/counter&quot;</span><span class="p">)</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">mirror</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">to</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Counter reset, value is now </span><span class="si">{</span><span class="n">result</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ python reset_counter.py
+Counter reset, value is now 0
+</pre></div>
+</div>
+<p>The call is routed to the authoritative process over Zenoh and the return value is sent back. The <code class="docutils literal notranslate"><span class="pre">counter.py</span></code> script will also receive the field update and continue incrementing from 0.</p>
+<p>You can also call RPCs directly from the CLI without writing a script:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ python -m SpiriSynq.cli topic call myhost/myapp/counter/reset to=0
+0
+</pre></div>
+</div>
+<p>Arguments are passed as <code class="docutils literal notranslate"><span class="pre">key=value</span></code> pairs where values are YAML literals (<code class="docutils literal notranslate"><span class="pre">to=0</span></code> sends an integer, <code class="docutils literal notranslate"><span class="pre">name=world</span></code> sends a string, <code class="docutils literal notranslate"><span class="pre">flag=true</span></code> sends a boolean).</p>
+<p>To see all objects currently on the network:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ python -m SpiriSynq.cli topic list
+topic: myhost/myapp/counter
+classes:
+  - &#39;!Counter&#39;
+  - &#39;!SyncableObject&#39;
+authoritive_node: abc123...
+</pre></div>
+</div>
+</section>
+<section id="authoritative-vs-mirror">
+<h2><span class="section-number">2.3. </span>Authoritative vs mirror<a class="headerlink" href="#authoritative-vs-mirror" title="Link to this heading">¶</a></h2>
+<p>Sync is <strong>bidirectional</strong> — any instance can publish field changes and all others on the same topic receive them. The <code class="docutils literal notranslate"><span class="pre">synq_authoritive</span></code> flag controls something narrower: which instance answers queryable calls like <code class="docutils literal notranslate"><span class="pre">sr_rehydrate</span></code> (full-state fetch on connect) and <code class="docutils literal notranslate"><span class="pre">&#64;remote_method</span></code> RPCs.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">synq_authoritive=True</span></code> — responds to rehydration requests and RPC calls. Also sets the base topic prefix from the hostname automatically.</p></li>
+<li><p>Mirror (default, <code class="docutils literal notranslate"><span class="pre">synq_authoritive=False</span></code>) — still publishes and receives field changes, but does not register queryables.</p></li>
+</ul>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Process A</span>
+<span class="n">counter</span> <span class="o">=</span> <span class="n">Counter</span><span class="p">(</span><span class="s2">&quot;myapp/counter&quot;</span><span class="p">,</span> <span class="n">synq_authoritive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">counter</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="mi">1</span>
+
+<span class="c1"># Process B — can also write</span>
+<span class="n">mirror</span> <span class="o">=</span> <span class="n">Counter</span><span class="o">.</span><span class="n">from_topic</span><span class="p">(</span><span class="s2">&quot;myapp/counter&quot;</span><span class="p">)</span>
+<span class="n">mirror</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="mi">2</span>  <span class="c1"># published back; process A receives it</span>
+</pre></div>
+</div>
+<p>In practice you’ll usually have one authoritative instance that “owns” the initial state and handles RPCs, but the field sync itself flows both ways.</p>
+</section>
+<section id="topics">
+<h2><span class="section-number">2.4. </span>Topics<a class="headerlink" href="#topics" title="Link to this heading">¶</a></h2>
+<p>The first argument to a <code class="docutils literal notranslate"><span class="pre">SyncableObject</span></code> is the <strong>topic</strong> — a slash-separated Zenoh key expression that identifies this object on the network. By default, authoritative objects are published under <code class="docutils literal notranslate"><span class="pre">&lt;base_topic&gt;/&lt;topic&gt;</span></code>. The base topic comes from, in order: the <code class="docutils literal notranslate"><span class="pre">SPIRI_SYNQ_BASE_TOPIC</span></code> environment variable, the contents of <code class="docutils literal notranslate"><span class="pre">/etc/spirisynq_base_topic</span></code>, then the hostname. Per object, <code class="docutils literal notranslate"><span class="pre">synq_base_topic</span></code> overrides it.</p>
+<p>In a container, the kernel hostname belongs to the container, not the machine it runs on. Bind-mount the host’s <code class="docutils literal notranslate"><span class="pre">/etc/hostname</span></code> to <code class="docutils literal notranslate"><span class="pre">/etc/spirisynq_base_topic</span></code> so every container on a machine shares that machine’s base topic:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">volumes</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/etc/hostname:/etc/spirisynq_base_topic:ro</span>
+</pre></div>
+</div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">counter</span> <span class="o">=</span> <span class="n">Counter</span><span class="p">(</span><span class="s2">&quot;counter&quot;</span><span class="p">,</span> <span class="n">synq_authoritive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">counter</span><span class="o">.</span><span class="n">synq_absolute_path</span><span class="p">)</span>  <span class="c1"># e.g. &quot;myhost/counter&quot;</span>
+</pre></div>
+</div>
+<section id="relative-topics">
+<h3><span class="section-number">2.4.1. </span>Relative topics<a class="headerlink" href="#relative-topics" title="Link to this heading">¶</a></h3>
+<p>A topic starting with <code class="docutils literal notranslate"><span class="pre">./</span></code> is relative to this node’s base topic, so <code class="docutils literal notranslate"><span class="pre">./counter</span></code> and <code class="docutils literal notranslate"><span class="pre">myhost/counter</span></code> name the same object. This works everywhere a topic is accepted — constructors, <code class="docutils literal notranslate"><span class="pre">from_topic</span></code>, <code class="docutils literal notranslate"><span class="pre">list_topics(prefix=&quot;.&quot;)</span></code>, and the CLI:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">counter</span> <span class="o">=</span> <span class="n">Counter</span><span class="p">(</span><span class="s2">&quot;./counter&quot;</span><span class="p">,</span> <span class="n">synq_authoritive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>  <span class="c1"># myhost/counter</span>
+<span class="n">mirror</span> <span class="o">=</span> <span class="n">Counter</span><span class="o">.</span><span class="n">from_topic</span><span class="p">(</span><span class="s2">&quot;./counter&quot;</span><span class="p">)</span>               <span class="c1"># same object, from this node</span>
+<span class="n">other</span> <span class="o">=</span> <span class="n">Counter</span><span class="o">.</span><span class="n">from_topic</span><span class="p">(</span><span class="s2">&quot;otherhost/counter&quot;</span><span class="p">)</span>        <span class="c1"># absolute: another node&#39;s object</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">./</span></code> always resolves against the <em>calling</em> session’s base topic, so another node’s objects must be named absolutely. <code class="docutils literal notranslate"><span class="pre">.</span></code> is only allowed as the first chunk and <code class="docutils literal notranslate"><span class="pre">..</span></code> is rejected, so a relative marker can never reach the network as a literal key. Use <code class="docutils literal notranslate"><span class="pre">session.resolve_topic(topic)</span></code> to see what a topic expands to.</p>
+</section>
+</section>
+<section id="discovering-objects">
+<h2><span class="section-number">2.5. </span>Discovering objects<a class="headerlink" href="#discovering-objects" title="Link to this heading">¶</a></h2>
+<p>Use <code class="docutils literal notranslate"><span class="pre">session.list_topics()</span></code> to find all objects currently on the network:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.session</span><span class="w"> </span><span class="kn">import</span> <span class="n">current_session</span>
+
+<span class="n">session</span> <span class="o">=</span> <span class="n">current_session</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+<span class="k">for</span> <span class="n">metadata</span> <span class="ow">in</span> <span class="n">session</span><span class="o">.</span><span class="n">list_topics</span><span class="p">():</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">metadata</span><span class="p">[</span><span class="s2">&quot;topic&quot;</span><span class="p">],</span> <span class="n">metadata</span><span class="p">[</span><span class="s2">&quot;classes&quot;</span><span class="p">])</span>
+</pre></div>
+</div>
+<p>You can filter by type tag:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">metadata</span> <span class="ow">in</span> <span class="n">session</span><span class="o">.</span><span class="n">list_topics</span><span class="p">(</span><span class="n">type_filter</span><span class="o">=</span><span class="s2">&quot;Counter&quot;</span><span class="p">):</span>
+    <span class="o">...</span>
+</pre></div>
+</div>
+</section>
+<section id="remote-methods">
+<h2><span class="section-number">2.6. </span>Remote methods<a class="headerlink" href="#remote-methods" title="Link to this heading">¶</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">Counter</span></code> above already has a <code class="docutils literal notranslate"><span class="pre">&#64;remote_method</span></code> — <code class="docutils literal notranslate"><span class="pre">reset</span></code> is callable from any mirror instance and is transparently routed to the authoritative node over Zenoh:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">mirror</span> <span class="o">=</span> <span class="n">Counter</span><span class="o">.</span><span class="n">from_topic</span><span class="p">(</span><span class="s2">&quot;myhost/myapp/counter&quot;</span><span class="p">)</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">mirror</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">to</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>  <span class="c1"># 0</span>
+</pre></div>
+</div>
+<p>Generator methods are also supported — the caller receives a regular Python generator that streams values from the authoritative node:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@remote_method</span><span class="p">()</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">count_down</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">from_value</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">10</span><span class="p">):</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">from_value</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">i</span>
+        <span class="k">yield</span> <span class="n">i</span>
+
+<span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">mirror</span><span class="o">.</span><span class="n">count_down</span><span class="p">(</span><span class="n">from_value</span><span class="o">=</span><span class="mi">5</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Generator methods also work from the CLI — each yielded value is printed separated by <code class="docutils literal notranslate"><span class="pre">---</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ python -m SpiriSynq.cli topic call myhost/myapp/counter/count_down from_value=3
+3
+---
+2
+---
+1
+---
+0
+</pre></div>
+</div>
+<p>Use <code class="docutils literal notranslate"><span class="pre">&#64;method.client()</span></code> to post-process the return value on the mirror side only — useful for decoding, unit conversion, or any transform you don’t want to run on the server:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@remote_method</span><span class="p">()</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">get_reading</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bytes</span><span class="p">:</span>
+    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_sensor</span><span class="o">.</span><span class="n">read_raw</span><span class="p">()</span>
+
+<span class="nd">@get_reading</span><span class="o">.</span><span class="n">client</span><span class="p">()</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">get_reading</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">result</span><span class="p">:</span> <span class="nb">bytes</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+    <span class="k">return</span> <span class="n">struct</span><span class="o">.</span><span class="n">unpack</span><span class="p">(</span><span class="s2">&quot;f&quot;</span><span class="p">,</span> <span class="n">result</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+
+<span class="n">value</span> <span class="o">=</span> <span class="n">mirror</span><span class="o">.</span><span class="n">get_reading</span><span class="p">()</span>  <span class="c1"># float, decoded on the caller</span>
+</pre></div>
+</div>
+<p>See <a class="reference internal" href="concepts.html#client-side-transforms"><span class="std std-ref">Concepts — Client-side transforms</span></a> for full details including generator and async support.</p>
+</section>
+<section id="cleanup">
+<h2><span class="section-number">2.7. </span>Cleanup<a class="headerlink" href="#cleanup" title="Link to this heading">¶</a></h2>
+<p>Objects undeclare their Zenoh resources when garbage collected. For deterministic cleanup, call <code class="docutils literal notranslate"><span class="pre">obj.close()</span></code> explicitly.</p>
+</section>
+<section id="integrating-with-existing-code">
+<h2><span class="section-number">2.8. </span>Integrating with existing code<a class="headerlink" href="#integrating-with-existing-code" title="Link to this heading">¶</a></h2>
+<p>SpiriSynq does not own the main loop. Zenoh I/O runs on its own background threads, so you can drop a <code class="docutils literal notranslate"><span class="pre">SyncableObject</span></code> into any existing application — an asyncio service, a robotics framework, a game loop — without yielding control.</p>
+<p>For a long-running producer, spin up your own thread and write to the object’s fields from it.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.syncable_objects</span><span class="w"> </span><span class="kn">import</span> <span class="n">SyncableObject</span>
+
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Sensor</span><span class="p">(</span><span class="n">SyncableObject</span><span class="p">):</span>
+    <span class="n">reading</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+
+<span class="n">sensor</span> <span class="o">=</span> <span class="n">Sensor</span><span class="p">(</span><span class="s2">&quot;myapp/sensor&quot;</span><span class="p">,</span> <span class="n">synq_authoritive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">read_loop</span><span class="p">():</span>
+    <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+        <span class="n">sensor</span><span class="o">.</span><span class="n">reading</span> <span class="o">=</span> <span class="n">hardware</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
+
+<span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">(</span><span class="n">target</span><span class="o">=</span><span class="n">read_loop</span><span class="p">,</span> <span class="n">daemon</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+
+<span class="c1"># your existing main loop continues here uninterrupted</span>
+</pre></div>
+</div>
+<p>For asyncio, use <code class="docutils literal notranslate"><span class="pre">.as_async()</span></code> on remote method calls so you don’t block the event loop:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">mirror</span> <span class="o">=</span> <span class="n">Sensor</span><span class="o">.</span><span class="n">from_topic</span><span class="p">(</span><span class="s2">&quot;myhost/myapp/sensor&quot;</span><span class="p">)</span>
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">mirror</span><span class="o">.</span><span class="n">calibrate</span><span class="o">.</span><span class="n">as_async</span><span class="p">()</span>
+</pre></div>
+</div>
+<section id="reacting-to-field-changes">
+<h3><span class="section-number">2.8.1. </span>Reacting to field changes<a class="headerlink" href="#reacting-to-field-changes" title="Link to this heading">¶</a></h3>
+<p>Instead of polling, connect a callback to the field’s signal. The callback runs on Zenoh’s background I/O thread whenever a change arrives — whether it came from the network or from a local assignment.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.syncable_objects</span><span class="w"> </span><span class="kn">import</span> <span class="n">SyncableObject</span>
+
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Sensor</span><span class="p">(</span><span class="n">SyncableObject</span><span class="p">):</span>
+    <span class="n">reading</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+
+<span class="n">mirror</span> <span class="o">=</span> <span class="n">Sensor</span><span class="o">.</span><span class="n">from_topic</span><span class="p">(</span><span class="s2">&quot;myhost/myapp/sensor&quot;</span><span class="p">)</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">on_reading</span><span class="p">(</span><span class="n">value</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;reading changed to </span><span class="si">{</span><span class="n">value</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="n">mirror</span><span class="o">.</span><span class="n">events</span><span class="o">.</span><span class="n">reading</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">on_reading</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>To react to <strong>any</strong> field change on a single object, connect to the group signal. The callback receives a psygnal <code class="docutils literal notranslate"><span class="pre">EmissionInfo</span></code> that carries the field name and the new value:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">psygnal</span><span class="w"> </span><span class="kn">import</span> <span class="n">EmissionInfo</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">on_any_change</span><span class="p">(</span><span class="n">event</span><span class="p">:</span> <span class="n">EmissionInfo</span><span class="p">):</span>
+    <span class="n">field</span> <span class="o">=</span> <span class="n">event</span><span class="o">.</span><span class="n">path</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">attr</span>
+    <span class="n">value</span> <span class="o">=</span> <span class="n">event</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">field</span><span class="si">}</span><span class="s2"> changed to </span><span class="si">{</span><span class="n">value</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="n">mirror</span><span class="o">.</span><span class="n">events</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">on_any_change</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>To stop receiving notifications, call <code class="docutils literal notranslate"><span class="pre">disconnect</span></code> with the same callable:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">mirror</span><span class="o">.</span><span class="n">events</span><span class="o">.</span><span class="n">reading</span><span class="o">.</span><span class="n">disconnect</span><span class="p">(</span><span class="n">on_reading</span><span class="p">)</span>
+</pre></div>
+</div>
+<section id="asyncio-integration">
+<h4><span class="section-number">2.8.1.1. </span>Asyncio integration<a class="headerlink" href="#asyncio-integration" title="Link to this heading">¶</a></h4>
+<p>Callbacks run on the Zenoh background thread, not the asyncio event loop. To hand off to asyncio safely, use a <code class="docutils literal notranslate"><span class="pre">Queue</span></code> or <code class="docutils literal notranslate"><span class="pre">run_coroutine_threadsafe</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+    <span class="n">mirror</span> <span class="o">=</span> <span class="n">Sensor</span><span class="o">.</span><span class="n">from_topic</span><span class="p">(</span><span class="s2">&quot;myhost/myapp/sensor&quot;</span><span class="p">)</span>
+    <span class="n">loop</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span>
+    <span class="n">queue</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Queue</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Queue</span><span class="p">()</span>
+
+    <span class="n">mirror</span><span class="o">.</span><span class="n">events</span><span class="o">.</span><span class="n">reading</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span>
+        <span class="k">lambda</span> <span class="n">value</span><span class="p">:</span> <span class="n">loop</span><span class="o">.</span><span class="n">call_soon_threadsafe</span><span class="p">(</span><span class="n">queue</span><span class="o">.</span><span class="n">put_nowait</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="p">)</span>
+
+    <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+        <span class="n">value</span> <span class="o">=</span> <span class="k">await</span> <span class="n">queue</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;reading: </span><span class="si">{</span><span class="n">value</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">call_soon_threadsafe</span></code> is the correct bridge — it schedules the <code class="docutils literal notranslate"><span class="pre">put_nowait</span></code> on the event loop from the Zenoh thread without blocking it. Keep signal callbacks short and non-blocking; hand heavy work off to the event loop or a worker thread.</p>
+</section>
+</section>
+<section id="handling-bad-or-unexpected-data">
+<h3><span class="section-number">2.8.2. </span>Handling bad or unexpected data<a class="headerlink" href="#handling-bad-or-unexpected-data" title="Link to this heading">¶</a></h3>
+<p>Three signals fire when an incoming update can’t be applied cleanly. Connecting to them lets you log diagnostics, trigger recovery logic, or surface errors to a monitoring system.</p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">synq_signal_unknown_path</span></code></strong> — the incoming path isn’t a field on this class at all. This usually means a publisher is sending a field that doesn’t exist on the receiver’s schema version. The second argument is the raw <code class="docutils literal notranslate"><span class="pre">zenoh.Sample</span></code> (not decoded).</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">on_unknown</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">sample</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;received unknown field &#39;</span><span class="si">{</span><span class="n">path</span><span class="si">}</span><span class="s2">&#39; — value ignored&quot;</span><span class="p">)</span>
+
+<span class="n">mirror</span><span class="o">.</span><span class="n">synq_signal_unknown_path</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">on_unknown</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong><code class="docutils literal notranslate"><span class="pre">synq_signal_type_mismatch</span></code></strong> — the path is valid but the decoded value’s type doesn’t match the field annotation. Fires when <code class="docutils literal notranslate"><span class="pre">synq_check_receive_types</span> <span class="pre">=</span> <span class="pre">True</span></code> (the default). Both arguments are the relative path and the decoded object.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">on_type_mismatch</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">obj</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;wrong type at &#39;</span><span class="si">{</span><span class="n">path</span><span class="si">}</span><span class="s2">&#39;: got </span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="n">mirror</span><span class="o">.</span><span class="n">synq_signal_type_mismatch</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">on_type_mismatch</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong><code class="docutils literal notranslate"><span class="pre">synq_signal_missing_parent</span></code></strong> — the path and type are both valid, but an intermediate nested object is <code class="docutils literal notranslate"><span class="pre">None</span></code>. For example, a publisher sends <code class="docutils literal notranslate"><span class="pre">bar/value</span></code> while this instance has <code class="docutils literal notranslate"><span class="pre">bar</span> <span class="pre">=</span> <span class="pre">None</span></code>, so the value can’t be applied. Both arguments are the relative path and the decoded object.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Robot</span><span class="p">(</span><span class="n">SyncableObject</span><span class="p">):</span>
+    <span class="n">arm</span><span class="p">:</span> <span class="n">Arm</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># if this is None, arm/position updates will emit this signal</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">on_missing_parent</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">obj</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;can&#39;t apply &#39;</span><span class="si">{</span><span class="n">path</span><span class="si">}</span><span class="s2">&#39;: parent is None — consider initialising the field first&quot;</span><span class="p">)</span>
+
+<span class="n">mirror</span><span class="o">.</span><span class="n">synq_signal_missing_parent</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="n">on_missing_parent</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>All three signals fire on the Zenoh background thread, so the same asyncio bridging rules apply as above.</p>
+</section>
+</section>
+</section>
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          <a class="next-page" href="concepts.html">
+              <div class="page-info">
+                <div class="context">
+                  <span>Next</span>
+                </div>
+                <div class="title"><span class="section-number">3. </span>Concepts</div>
+              </div>
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+            </a>
+          <a class="prev-page" href="overview.html">
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+              <div class="page-info">
+                <div class="context">
+                  <span>Previous</span>
+                </div>
+                
+                <div class="title"><span class="section-number">1. </span>SpiriSynq</div>
+                
+              </div>
+            </a>
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 2026, Spiri Robotics
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer">
+      
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">2. Getting Started</a><ul>
+<li><a class="reference internal" href="#installation">2.1. Installation</a></li>
+<li><a class="reference internal" href="#your-first-syncable-object">2.2. Your first syncable object</a></li>
+<li><a class="reference internal" href="#authoritative-vs-mirror">2.3. Authoritative vs mirror</a></li>
+<li><a class="reference internal" href="#topics">2.4. Topics</a><ul>
+<li><a class="reference internal" href="#relative-topics">2.4.1. Relative topics</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#discovering-objects">2.5. Discovering objects</a></li>
+<li><a class="reference internal" href="#remote-methods">2.6. Remote methods</a></li>
+<li><a class="reference internal" href="#cleanup">2.7. Cleanup</a></li>
+<li><a class="reference internal" href="#integrating-with-existing-code">2.8. Integrating with existing code</a><ul>
+<li><a class="reference internal" href="#reacting-to-field-changes">2.8.1. Reacting to field changes</a><ul>
+<li><a class="reference internal" href="#asyncio-integration">2.8.1.1. Asyncio integration</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#handling-bad-or-unexpected-data">2.8.2. Handling bad or unexpected data</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
+      
+      
+    </aside>
+  </div>
+</div><script src="_static/documentation_options.js?v=1b390748"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/furo.js?v=46bd48cc"></script>
+    </body>
+</html>

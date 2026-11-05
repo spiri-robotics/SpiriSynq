@@ -1,0 +1,585 @@
+# Concepts
+
+## Authoritative and mirror nodes
+
+Field sync is **bidirectional** — every instance, whether authoritative or not, both publishes its own changes and receives changes from others on the same topic. `synq_authoritive` controls only the queryable side:
+
+The authoritative instance:
+- Registers Zenoh queryables for `@remote_method` RPCs and the built-in `sr_rehydrate`, `sr_metadata`, and `sr_object_schema` endpoints.
+- Sets its base topic prefix automatically from the hostname.
+
+Mirror instances (`synq_authoritive=False`):
+- Publish and receive field changes just like an authoritative instance.
+- Forward `@remote_method` calls to the authoritative node's queryable instead of running them locally.
+- Do not register queryables, so they cannot answer rehydration or discovery requests.
+
+SpiriSynq does not enforce a single-authoritative constraint at the protocol level. Running two authoritative instances on the same topic will cause conflicting queryable registrations and undefined rehydration behaviour.
+
+## How field sync works
+
+Each syncable field maps to a Zenoh key expression `<topic>/<field>`. When you assign a new value to a field on an authoritative object, psygnal fires a change signal, SpiriSynq serialises the new value to YAML, and publishes it to `<topic>/<field>`.
+
+Mirrors have a subscriber on `<topic>/**`. When a put arrives, SpiriSynq:
+
+1. Strips the topic prefix to get the relative field path.
+2. Validates it against the class's `valid_sync_paths` (derived from field type annotations).
+3. Deserialises the YAML payload.
+4. Applies it as a DeepDiff delta — mutating the local instance in-place without firing the change signal again, so the update doesn't echo back.
+
+Echo prevention uses Zenoh `SourceInfo`: each session tags its puts with its own Zenoh session ID, and mirrors discard updates from their own ID.
+
+### Nested dataclasses
+
+Nested dataclass fields sync at the field level, not the object level. A change to `robot.gps.latitude` publishes to `<topic>/gps/latitude`, not `<topic>/gps`.
+
+For this to work, the nested type must fire change signals on mutation. There are three ways to satisfy this:
+
+**`SubSyncableDataclass` (recommended for mutable nested objects)**
+
+Inherit from `SubSyncableDataclass` to get psygnal events, `synq_skip_sync`, and `synq_skip_rehydrate` — the same filtering machinery as `SyncableObject` — without any Zenoh publish/subscribe overhead. Individual sub-field assignments propagate automatically:
+
+```python
+from dataclasses import dataclass
+from SpiriSynq.syncable_objects import SyncableObject, SubSyncableDataclass
+
+@dataclass
+class GPS(SubSyncableDataclass):
+    latitude: float = 0.0
+    longitude: float = 0.0
+    altitude: float = 0.0
+
+@dataclass
+class Robot(SyncableObject):
+    gps: GPS = field(default_factory=GPS)
+
+robot = Robot("fleet/robot1", synq_authoritive=True, gps=GPS())
+
+# Each assignment is a separate publish to <topic>/gps/latitude etc.
+robot.gps.latitude = 37.77
+robot.gps.longitude = -122.41
+```
+
+**`@dataclass(frozen=True)` (for value objects)**
+
+Frozen dataclasses cannot be mutated in-place, so you replace the whole field. SpiriSynq publishes the new value to `<topic>/gps` as a single YAML put:
+
+```python
+@dataclass(frozen=True)
+class Offset:
+    x: float = 0.0
+    y: float = 0.0
+
+@dataclass
+class Arm(SyncableObject):
+    offset: Offset | None = None
+
+arm.offset = Offset(x=1.0, y=2.0)  # publishes the whole Offset
+```
+
+Use frozen dataclasses when the object is a small immutable value type and you always want to replace it atomically.
+
+If neither condition holds, SpiriSynq logs a warning at startup. Silence it with `warn_non_evented = False` on the parent `SyncableObject`.
+
+#### Filtering sub-fields
+
+`SubSyncableDataclass` supports the same `synq_skip_sync` and `synq_skip_rehydrate` class variables as `SyncableObject`. Fields listed in `synq_skip_sync` are excluded from the valid sync paths that the parent computes; fields in `synq_skip_rehydrate` are excluded from `to_yaml()` serialisation.
+
+```python
+@dataclass
+class Sensor(SubSyncableDataclass):
+    synq_skip_rehydrate = {"raw_buffer"}
+    value: float = 0.0
+    raw_buffer: bytes = b""  # never included in rehydration snapshots
+```
+
+### Evented containers
+
+`EventedList`, `EventedDict`, and `EventedSet` (from `psygnal.containers`) can be used as field types and will synchronise automatically. Any mutation — `append`, `__setitem__`, `add`, `discard`, etc. — causes the **entire container** to be re-serialised and published as a single atomic payload:
+
+```python
+from psygnal.containers import EventedList, EventedDict, EventedSet
+from dataclasses import dataclass, field
+
+@dataclass
+class Dashboard(SyncableObject):
+    readings: EventedList = field(default_factory=EventedList)
+    labels: EventedDict = field(default_factory=EventedDict)
+    active_flags: EventedSet = field(default_factory=EventedSet)
+
+dash = Dashboard("ui/dashboard", synq_authoritive=True)
+dash.readings.append(42.0)      # publishes !EventedList [42.0]
+dash.labels["temp"] = "hot"     # publishes !EventedDict {temp: hot}
+dash.active_flags.add("alarm")  # publishes !EventedSet [alarm]
+```
+
+On the receive side the container is updated **in-place** so existing references stay valid.
+
+**Trade-offs.** Because the whole container is sent on every mutation, evented containers are less efficient than field-level sync for large or frequently-mutated collections. Prefer them for small sets of values where atomic consistency matters (e.g. a list of active connections, a dict of UI state). For large streams of data, a `bytes` field with a custom codec is more appropriate.
+
+The wire format is a YAML-tagged sequence or mapping:
+
+```yaml
+readings: !EventedList [1.0, 2.0, 3.0]
+labels:   !EventedDict {temp: hot, humidity: low}
+flags:    !EventedSet  [alarm, warning]
+```
+
+### Links
+
+A `Link` field refers to another SpiriSynq object by its absolute topic. It holds only the topic: it doesn't keep the target alive or check that it exists. `link.resolve(Camera)` fetches a mirror, the same as `Camera.from_topic(link.topic)`; without a class, the target's type must already be registered on the session.
+
+```python
+from SpiriSynq.link import Link
+
+@dataclass
+class Mount(SyncableObject):
+    camera: Link | None = None
+
+cam = Camera("./camera", synq_authoritive=True)
+mount = Mount("./mount", synq_authoritive=True, camera=Link.to(cam))
+# publishes  camera: !Link myhost/camera
+```
+
+Links must be absolute, so `Link("./camera")` raises `ValueError`; a relative topic would name a different object on each node that received it. Every session decodes `!Link` without registering anything.
+
+### Fields excluded from sync
+
+The `synq_skip_sync` class variable lists fields that are never published or received. All `synq_*` bookkeeping fields are in this set by default. Add your own fields to exclude them:
+
+```python
+@dataclass
+class MyObject(SyncableObject):
+    synq_skip_sync = SyncableObject.synq_skip_sync | {"local_cache"}
+    value: int = 0
+    local_cache: dict = field(default_factory=dict)
+```
+
+`synq_skip_rehydrate` additionally excludes fields from the full-state snapshot returned by `sr_rehydrate` — useful for large binary fields like raw images.
+
+## Type registry
+
+SpiriSynq serialises everything as YAML using [ruamel.yaml](https://sourceforge.net/projects/ruamel-yaml/). Each `SyncableObject` subclass is registered with a YAML tag (`!ClassName` by default, or overridden via `yaml_tag`).
+
+When you call `SyncableObject.from_topic()` or `session.register_type_recursive()`, SpiriSynq walks the class's field type annotations and registers every `SyncableObject` subclass it finds, recursively. You must register a type before you can receive it — calling `from_topic()` handles this for you.
+
+## Remote methods
+
+`@remote_method` turns a regular method into a descriptor that behaves differently depending on which side you're on:
+
+- **Authoritative**: calls the method directly in the same process.
+- **Mirror**: serialises arguments to YAML query parameters, sends a Zenoh `get` to `<topic>/<method_name>`, and deserialises the reply.
+
+The call is transparent — `mirror.reset()` works identically whether the instance is authoritative or a mirror. The `Counter` from [Getting Started](getting_started.md) already shows this pattern:
+
+```python
+@dataclass
+class Counter(SyncableObject):
+    value: int = 0
+
+    @remote_method()
+    def reset(self, to: int = 0) -> int:
+        self.value = to
+        return self.value
+```
+
+```python
+mirror = Counter.from_topic("myhost/myapp/counter")
+result = mirror.reset(to=0)  # routed to the authoritative process
+```
+
+### Sync vs async
+
+`@remote_method` works on regular, `async def`, generator, and async generator functions. The method signature drives the behaviour on both sides:
+
+| Function type | Authoritative side | Mirror side (sync call) | Mirror side (`.as_async()`) |
+|---|---|---|---|
+| `def f()` | called directly | blocks until reply | `await`able coroutine |
+| `async def f()` | awaited in a new event loop | blocks until reply | `await`able coroutine |
+| `def f()` with `yield` | called directly, returns generator | returns generator; blocks per `next()` | async generator |
+| `async def f()` with `yield` | iterated in a new event loop | returns generator; blocks per `next()` | async generator |
+
+On the authoritative side, `async def` methods are always run to completion synchronously (via `asyncio.run`) when called from a sync context. On the mirror side, the Zenoh round-trip is always blocking by default — use `.as_async()` to avoid blocking an event loop.
+
+```python
+# Sync call — blocks until the authoritative node replies
+result = mirror.reset(to=0)
+
+# Async call — awaitable, doesn't block the event loop
+result = await mirror.reset.as_async(to=0)
+```
+
+### Generator methods
+
+If the decorated function uses `yield`, the mirror receives a regular Python generator that streams values as each Zenoh reply arrives. Zenoh consolidation is disabled for these calls so no intermediate values are dropped.
+
+```python
+@dataclass
+class Counter(SyncableObject):
+    value: int = 0
+
+    @remote_method()
+    def count_down(self, from_value: int = 10):
+        for i in range(from_value, -1, -1):
+            self.value = i
+            yield i
+        return "done"
+
+# Mirror side — iterates as replies arrive
+for value in mirror.count_down(from_value=5):
+    print(value)
+
+# Or async
+async for value in mirror.count_down.as_async(from_value=5):
+    print(value)
+```
+
+The return value of a generator method (the value passed to `StopIteration`) is transmitted as the final reply and is accessible as the `StopIteration` value if you iterate manually with `next()`.
+
+Async generators cannot carry a return value — the final reply payload is `None`.
+
+### Client-side transforms
+
+`@method.client()` registers a post-processing function that runs on the mirror side after the RPC reply is received. It is never called on the authoritative side.
+
+```python
+@dataclass
+class Camera(SyncableObject):
+
+    @remote_method()
+    def capture(self) -> bytes:
+        return self._device.read_frame()
+
+    @capture.client()
+    def capture(self, result: bytes) -> np.ndarray:
+        return decode_jpeg(result)
+```
+
+The client function receives `self` (the mirror instance) and the deserialized return value, and returns the transformed result. Having access to `self` lets you use instance state in the transform — a local calibration matrix, a unit preference, etc.
+
+```python
+mirror = Camera.from_topic("robot/camera")
+frame = mirror.capture()  # returns np.ndarray on the caller, bytes never leaves the library
+```
+
+On the authoritative object, `capture()` returns `bytes` directly and the client function is not invoked.
+
+For generator methods the client function is applied **per yielded item**:
+
+```python
+@dataclass
+class Sensor(SyncableObject):
+
+    @remote_method()
+    def stream(self):
+        while True:
+            yield self._read_raw()
+
+    @stream.client()
+    def stream(self, item: bytes) -> float:
+        return struct.unpack("f", item)[0]
+
+# Mirror side — each item is already decoded
+for value in mirror.stream():
+    print(value)  # float
+```
+
+Client transforms also apply when using `.as_async()`.
+
+#### raw=True — take the raw Zenoh reply
+
+Pass `raw=True` to skip deserialization entirely and receive the raw `zenoh.Reply` object instead. The client function is then responsible for extracting and parsing whatever it needs.
+
+```python
+import zenoh
+
+@dataclass
+class Robot(SyncableObject):
+
+    @remote_method()
+    def get_state(self) -> Self:
+        return self
+
+    @get_state.client(raw=True)
+    def get_state(self, reply: zenoh.Reply) -> dict:
+        from ruamel.yaml import YAML
+        plain = YAML()
+        plain.constructor.add_multi_constructor(
+            '', lambda loader, _tag, node: loader.construct_mapping(node, deep=True)
+        )
+        return plain.load(reply.ok.payload.to_string())
+```
+
+This is useful when the return type is a `SyncableObject` subclass and you want to avoid the full deserialisation cost (which would otherwise start a new Zenoh session), when you need to inspect the reply encoding before deciding how to decode, or when you need to apply the result to `self` in-place rather than returning a new object.
+
+### Server-side transforms
+
+`@method.server()` registers a function that intercepts the raw Zenoh query before the default dispatch logic runs. It receives `self` (the authoritative instance) and the raw `zenoh.Query` object, and is fully responsible for calling the underlying method, encoding the result, and sending the reply.
+
+Use `decode_parameters(query)` rather than `query.parameters` to read the arguments: it undoes the percent-encoding clients apply to `%` and `;`.
+
+```python
+import zenoh
+from SpiriSynq.remote_callables import decode_parameters
+
+@dataclass
+class Robot(SyncableObject):
+
+    @remote_method()
+    def move(self, x: float, y: float) -> bool:
+        return self._actuator.go(x, y)
+
+    @move.server()
+    def move(self, query: zenoh.Query):
+        registry = self.synq_session.type_registry
+        params = {k: registry.load(v) for k, v in decode_parameters(query).items()}
+        if not self._auth.check(params.get("token")):
+            query.reply_err("Unauthorized")
+            return
+        result = self.move.__wrapped__(self, **{k: v for k, v in params.items() if k != "token"})
+        query.reply(f"{self.synq_absolute_path}/move", payload=registry.dumps(result), encoding=zenoh.Encoding.APPLICATION_YAML)
+```
+
+Reply on the method's own key rather than `query.key_expr`: the query may be a wildcard (e.g. `**/move`), and replying with it would hide which object the reply came from.
+
+The server function is **only** invoked by the Zenoh callback — direct local calls on an authoritative instance skip it entirely and call the original method directly. This keeps local usage fast and unaffected.
+
+Common uses:
+
+- **Authentication / authorisation** — inspect query parameters or payload before dispatching.
+- **Custom encoding** — accept or return binary payloads that the default YAML path cannot handle.
+- **Streaming from external sources** — send multiple replies (e.g. from a hardware buffer) without requiring a generator on the Python side.
+
+If the server function raises an exception, SpiriSynq catches it and calls `query.reply_err()` automatically, matching the behaviour of the default path.
+
+### Errors
+
+If the authoritative side raises an exception, the mirror receives an `RpcException` with the error message as its string. The original traceback is logged on the authoritative side.
+
+### Timeouts
+
+`.timeout(seconds)` returns a bound method with a custom timeout. The default is the Zenoh session default.
+
+```python
+result = robot.arm.timeout(5.0)(mode="manual")
+await robot.arm.timeout(5.0).as_async(mode="manual")
+```
+
+## Lifecycle and garbage collection
+
+Zenoh resources (publishers, subscribers, queryables) are tied to the `SyncableObject` instance. When the object is garbage collected, `__del__` calls `close()` to undeclare them. SpiriSynq uses weak references for internal callbacks so that objects are not kept alive by their own Zenoh subscriptions.
+
+The `Session` object is similarly cleaned up on GC, and is also registered with a shutdown hook so that Zenoh's non-daemon threads don't prevent interpreter exit.
+
+## Publish and receive flags
+
+Four boolean fields on `SyncableObject` control whether an instance participates in the pub/sub exchange:
+
+| Field | Default | Effect |
+|---|---|---|
+| `synq_publish` | `True` | Publish local field changes to Zenoh. Set to `False` for a receive-only instance. |
+| `synq_receive` | `True` | Apply incoming changes from Zenoh. Set to `False` for a publish-only instance. |
+| `sync_lazy_publish` | `False` | Skip publishing when there are no active subscribers. Reduces network traffic at the cost of subscribers that join late potentially missing updates. |
+| `synq_auto_start` | `True` | Call `sync()` automatically in `__post_init__`. Set to `False` if you need to finish configuring the object before it begins synchronising. |
+
+`synq_check_receive_types` (default `True`) validates that incoming values match the field's type annotation before applying them. A mismatch logs a warning and discards the update. Disable it only if you are deliberately receiving subtypes or loosely-typed values.
+
+## Codecs
+
+By default, SpiriSynq serialises every field value as YAML before putting it on the Zenoh network. For most types this is fine, but for binary data — images, audio, raw sensor buffers — YAML base64-encodes the bytes, adding roughly 33 % size overhead and a full YAML parse on receive.
+
+Codecs let you register a custom serialiser/deserialiser pair on a `Session` for a specific Python type. When a codec is registered, it takes over from YAML for that type in both directions.
+
+### How codec selection works
+
+- **Encoding (publish)**: when a field value is about to be put to Zenoh, SpiriSynq walks the value's MRO and picks the first registered codec whose `python_type` matches. If none matches, it falls back to YAML.
+- **Decoding (receive)**: when a sample arrives, SpiriSynq checks the sample's Zenoh encoding against each registered codec's `zenoh_schema`. If one matches, that codec's `decode` method is called instead of the YAML parser.
+
+This means the encoding carried in the Zenoh message is the unambiguous signal for which decoder to use — no out-of-band negotiation required.
+
+### Built-in codecs
+
+`BytesCodec` is registered on every `Session` by default. It transmits `bytes` fields as raw `APPLICATION_OCTET_STREAM` payloads, bypassing YAML entirely:
+
+```python
+@dataclass
+class Camera(SyncableObject):
+    frame: bytes = b""  # published as raw binary, not base64 YAML
+```
+
+No configuration is needed — any `bytes`-typed field is automatically handled.
+
+### Writing a custom codec
+
+Subclass `Codec`, set `python_type` and `zenoh_schema` as class attributes, and implement `encode` and `decode`:
+
+```python
+import numpy as np
+import zenoh
+from SpiriSynq.codecs import Codec
+
+class JpegCodec(Codec):
+    python_type = np.ndarray
+    zenoh_schema = zenoh.Encoding.IMAGE_JPEG
+
+    def encode(self, value: np.ndarray) -> tuple[bytes, zenoh.Encoding]:
+        ok, buf = cv2.imencode(".jpg", value)
+        return buf.tobytes(), zenoh.Encoding.IMAGE_JPEG
+
+    def decode(self, sample: zenoh.Sample) -> np.ndarray:
+        buf = np.frombuffer(sample.payload.to_bytes(), dtype=np.uint8)
+        return cv2.imdecode(buf, cv2.IMREAD_COLOR)
+```
+
+Then register it on the session before any objects are created:
+
+```python
+from SpiriSynq.session import Session
+
+session = Session()
+session.register_codec(JpegCodec())
+
+@dataclass
+class Camera(SyncableObject):
+    frame: np.ndarray | None = None  # encoded as JPEG, decoded back to ndarray
+```
+
+Codecs are checked in registration order; the first match wins. Built-in codecs are prepended, so user-registered codecs take priority over them.
+
+### What codecs do not cover
+
+Codecs apply only to the field pub/sub path. They do not affect:
+
+- **RPC parameters and replies** — `@remote_method` arguments and return values are always YAML-serialised.
+- **`sr_rehydrate`** — the full-state snapshot uses YAML. If a `bytes` field should be excluded from rehydration snapshots (e.g. a large image), add it to `synq_skip_rehydrate`.
+
+## Per-field QoS
+
+A `SyncableObject` can set Zenoh QoS for one field by declaring a class attribute `<field>_qos: ClassVar[SynqQoS]`:
+
+```python
+from typing import ClassVar
+import zenoh
+from SpiriSynq.qos import SynqQoS
+
+@dataclass
+class Camera(SyncableObject):
+    image: bytes = b""
+    image_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.DATA_HIGH)
+```
+
+`SynqQoS` is a frozen dataclass with three fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `priority` | `zenoh.Priority.DATA` | A `zenoh.Priority`, from `REAL_TIME` (highest) to `BACKGROUND` (lowest). |
+| `congestion_control` | `zenoh.CongestionControl.DROP` | A `zenoh.CongestionControl`. |
+| `express` | `False` | Send without batching. |
+
+Plain ints are rejected with a `TypeError`. Use the `zenoh` enum members.
+
+The attribute counts only if it is an instance of `SynqQoS`, so an ordinary field that happens to be called `mode_qos` stays an ordinary field. Because it is a `ClassVar`, it is never synced, never rehydrated, and never appears in the schema. QoS is local to the sender and doesn't travel over the network.
+
+Assigning it on an instance (`obj.image_qos = SynqQoS(...)`) overrides the class default for later publishes and emits no event, which lets a producer change priority from one publish to the next.
+
+`obj.synq_qos_for(path)` returns the resolved QoS for a path, or `None` for Zenoh's defaults. Container publishes (`EventedList`/`EventedDict`/`EventedSet`) use the QoS of their top-level field.
+
+### Nested fields
+
+Each `<field>_qos` goes on the class that declares the field, so for a nested dataclass it goes on the nested class, not the root. Resolving `mid/leaf/x` walks the live objects and checks, from the innermost outward:
+
+| Segment | Looked up on | Attribute |
+|---|---|---|
+| `x` | `obj.mid.leaf` | `x_qos` |
+| `leaf` | `obj.mid` | `leaf_qos` |
+| `mid` | `obj` | `mid_qos` |
+
+The first `SynqQoS` found wins, checking the instance attribute before the class attribute at each level. A QoS on a parent field therefore covers its whole subtree unless a descendant sets its own:
+
+```python
+@dataclass
+class Leaf(SubSyncableDataclass):
+    x: int = 0
+    y: int = 0
+    x_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.REAL_TIME)
+
+@dataclass
+class Mid(SubSyncableDataclass):
+    leaf: Leaf | None = None
+    z: int = 0
+    leaf_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.INTERACTIVE_HIGH)
+
+@dataclass
+class Robot(SyncableObject):
+    mid: Mid | None = None
+    mid_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.BACKGROUND)
+
+# mid, mid/z         -> BACKGROUND        (mid_qos)
+# mid/leaf, .../y    -> INTERACTIVE_HIGH  (leaf_qos)
+# mid/leaf/x         -> REAL_TIME         (x_qos)
+```
+
+Some consequences:
+
+- Instance overrides work at any depth: `robot.mid.leaf.y_qos = SynqQoS(...)` affects `mid/leaf/y`. Frozen nested dataclasses can only use class attributes.
+- The walk follows the live objects, not the annotations. If a parent is `None`, the nearest live ancestor's QoS applies.
+- Replacing a whole sub-object (`robot.mid = Mid(...)`) is one put at `mid` with `mid_qos`. QoS declared inside `Mid` or `Leaf` only applies to in-place changes of their fields.
+
+## Custom publish and receive
+
+An object can take over the wire format of a field by defining `<field>_publish` and/or `<field>_receive`:
+
+```python
+from typing import Iterator
+from SpiriSynq.syncable_objects import SKIP, PutArgs
+
+def image_publish(self, value) -> Iterator[PutArgs | bytes | str]: ...
+def image_receive(self, value, sample) -> bytes: ...  # or return SKIP
+```
+
+When `_publish` is present, it replaces the default publish for that field. It yields the puts to send, and SpiriSynq sends each one to `<topic>/<field>` with the object's publisher `source_info`, so the echo filter keeps working.
+
+Each yielded dict holds keyword arguments for Zenoh's `Session.put`, so any argument Zenoh's `put` accepts can go in it:
+
+- `payload` is required.
+- The optional keys are `encoding`, `priority`, `congestion_control`, `express`, `attachment`, `timestamp` and `allowed_destination`.
+- QoS keys you leave out come from the field's resolved `_qos`.
+- `key_expr` and `source_info` are set by SpiriSynq; yielding either raises `ValueError`.
+- Bare `bytes` or `str` is shorthand for `{"payload": ...}`.
+
+Yielding nothing sends nothing, and returning a list works as well as a generator. Because the hook only describes what to send, you can test it without a network: `list(cam.image_publish(jpeg))`.
+
+`PutArgs` is a `TypedDict`. Annotating the hook as above lets a type checker (mypy, pyright, your editor) flag misspelled keys, a missing `payload`, or wrong value types. At runtime the dict goes straight to Zenoh, so a misspelled key raises Zenoh's own `TypeError` on publish. If a later Zenoh release adds a `put` argument, it works at runtime right away, but a type checker reports it as an unknown key until `PutArgs` is updated.
+
+`_receive` runs on the Zenoh callback thread, inside the receive guard (so applying its result doesn't echo back out), after codec decoding. It returns the value to apply, or `SKIP` to leave the field unchanged. The type check against the field's annotation runs on that returned value, not on the raw sample.
+
+Like `_qos`, hooks go on the class that declares the field. For `mid/leaf/x`, SpiriSynq calls `x_publish` / `x_receive` on `obj.mid.leaf`, with `self` bound to that sub-object. This works for `SubSyncableDataclass` and frozen dataclasses alike. Unlike QoS, hooks have no ancestor fallback: `mid_publish` on the root handles only puts at `mid` (replacing the whole sub-object), never changes to `mid/z`. A receive whose parent is `None` on the receiving side finds no hook and takes the usual missing-parent path.
+
+The two hooks are optional and independent of each other. A peer without them sees whatever the publisher actually sent, so a format with custom framing should be designed so that a hook-less peer fails safely. Hooks only apply to field updates. `sr_rehydrate` still sends the whole value as YAML.
+
+The motivating example is progressive MJPEG: one assignment of a full JPEG becomes several chunks at different priorities, and the receiver reassembles them into a JPEG that refines as chunks arrive:
+
+```python
+@dataclass
+class Camera(SyncableObject):
+    image: bytes = b""
+    image_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.DATA_LOW)
+    _scans: dict = field(default_factory=dict)  # leading underscore: not synced
+
+    def image_publish(self, value) -> Iterator[PutArgs]:
+        for i, chunk in enumerate(split_progressive_scans(value)):
+            args: PutArgs = {"payload": bytes([i]) + chunk}
+            if i == 0:
+                # coarse first scan jumps the queue; refinements use image_qos
+                args["priority"] = zenoh.Priority.INTERACTIVE_HIGH
+            yield args
+
+    def image_receive(self, value, sample):
+        self._scans[value[0]] = value[1:]
+        if 0 not in self._scans:
+            return SKIP
+        return assemble_jpeg(self._scans)
+```
+
+## Multiple sessions
+
+Most applications use the default session created at import time and never touch `Session` directly. If you need to connect to multiple Zenoh networks in one process, you can create additional `Session` instances and pass them via `synq_session=`, or use `session.as_default()` as a context manager to set the default for a block of code.

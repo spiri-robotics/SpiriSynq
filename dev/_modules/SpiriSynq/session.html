@@ -1,0 +1,792 @@
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="../../">
+  <head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light dark"><link rel="index" title="Index" href="../../genindex.html"><link rel="search" title="Search" href="../../search.html">
+        <link rel="canonical" href="https://spiri-robotics.github.io/SpiriSynq/latest/_modules/SpiriSynq/session.html">
+        <link rel="prefetch" href="../../_static/spiri-logo-light.svg" as="image">
+        <link rel="prefetch" href="../../_static/spiri-logo-dark.svg" as="image">
+
+    <!-- Generated with Sphinx 9.2.0 and Furo 2025.12.19 -->
+        <title>SpiriSynq.session - SpiriSynq</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=d111a655" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/furo.css?v=7bdb33bb" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/furo-extensions.css?v=8dab3a3b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=bde8c6b5" />
+    <link rel="stylesheet" type="text/css" href="../../_static/spiri-safety-icon.css?v=01762096" />
+    <link rel="stylesheet" type="text/css" href="../../_static/spiri-safety.css?v=84605d0a" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f2f2f2;
+  --color-code-foreground: #1e1e1e;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+      }
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+    </script>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+</svg>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation" aria-label="Toggle site navigation sidebar">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc" aria-label="Toggle table of contents sidebar">
+<label class="overlay sidebar-overlay" for="__navigation"></label>
+<label class="overlay toc-overlay" for="__toc"></label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <span class="icon"><svg><use href="#svg-menu"></use></svg></span>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="../../index.html"><div class="brand">SpiriSynq</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon no-toc" for="__toc">
+        <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="../../index.html">
+  <div class="sidebar-logo-container">
+    <img class="sidebar-logo only-light" src="../../_static/spiri-logo-light.svg" alt="Light Logo"/>
+    <img class="sidebar-logo only-dark" src="../../_static/spiri-logo-dark.svg" alt="Dark Logo"/>
+  </div>
+  
+  <span class="sidebar-brand-text">SpiriSynq</span>
+  
+</a><form class="sidebar-search-container" method="get" action="../../search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
+</form>
+<div id="searchbox"></div>
+<div class="spiri-versions" hidden>
+  <label class="spiri-versions__label" for="spiri-version">Version</label>
+  <select class="spiri-versions__select" id="spiri-version"></select>
+  <a class="spiri-versions__pdf" hidden>Download PDF</a>
+</div>
+<script>
+  (() => {
+    const box = document.currentScript.previousElementSibling;
+    // This version's root, and the site's root above it.
+    const root = new URL(document.documentElement.dataset.content_root || "./", location.href);
+    const site = new URL("../", root);
+    const current = root.href.slice(site.href.length).replace(/\/$/, "");
+    const page = location.pathname.slice(root.pathname.length);
+
+    fetch(new URL("versions.json", site))
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        const name = current === "latest" ? data?.latest : current;
+        const here = data?.versions.find((v) => v.name === name);
+        if (!here) return;
+
+        const select = box.querySelector("select");
+        for (const v of data.versions) {
+          const label =
+            v.name === "dev" ? "dev (main)" : v.name === data.latest ? `${v.name} (latest)` : v.name;
+          select.add(new Option(label, v.name, false, v === here));
+        }
+        // The same page in the chosen version, or its front page if it has no such page.
+        select.addEventListener("change", async () => {
+          const chosen = data.versions.find((v) => v.name === select.value);
+          const front = new URL(chosen.path, site);
+          const same = new URL(page, front);
+          const exists = await fetch(same, { method: "HEAD" }).then((r) => r.ok, () => false);
+          location.href = (exists ? same : front).href;
+        });
+
+        if (here.pdf) {
+          const pdf = box.querySelector("a");
+          pdf.href = new URL(here.pdf, site).href;
+          pdf.hidden = false;
+        }
+        box.hidden = false;
+      })
+      .catch(() => {});
+  })();
+</script><div class="sidebar-scroll"><div class="sidebar-tree">
+  <ul>
+<li class="toctree-l1"><a class="reference internal" href="../../overview.html">1. SpiriSynq</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../getting_started.html">2. Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts.html">3. Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../cli.html">4. CLI Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../protocol.html">5. Protocol Specification</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../api/index.html">6. API Reference</a><input aria-label="Toggle navigation of 6. API Reference" class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><span class="icon"><svg><use href="#svg-arrow-right"></use></svg></span></label><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../api/session.html">6.1. Session</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../api/schema.html">6.2. Schema</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../api/remote_callables.html">6.3. Remote Callables</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../api/syncable_objects.html">6.4. Syncable Objects</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../api/link.html">6.5. Link</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../api/example_types.html">6.6. Example Types</a></li>
+</ul>
+</li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Document control</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../revisions.html">Revision history</a></li>
+</ul>
+
+</div>
+</div>
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon no-toc" for="__toc">
+            <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <h1>Source code for SpiriSynq.session</h1><div class="highlight"><pre>
+<span></span><span class="kn">import</span><span class="w"> </span><span class="nn">zenoh</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">socket</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">deepdiff</span><span class="w"> </span><span class="kn">import</span> <span class="n">DeepDiff</span><span class="p">,</span> <span class="n">Delta</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">field</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_type_hints</span><span class="p">,</span> <span class="n">get_origin</span><span class="p">,</span> <span class="n">get_args</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.remote_callables</span><span class="w"> </span><span class="kn">import</span> <span class="n">rpc_call</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.shutdown</span><span class="w"> </span><span class="kn">import</span> <span class="n">register_session</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.codecs</span><span class="w"> </span><span class="kn">import</span> <span class="n">Codec</span><span class="p">,</span> <span class="n">BUILTIN_CODECS</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.serializer</span><span class="w"> </span><span class="kn">import</span> <span class="n">SessionSerializer</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.link</span><span class="w"> </span><span class="kn">import</span> <span class="n">Link</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">loguru</span><span class="w"> </span><span class="kn">import</span> <span class="n">logger</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">weakref</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">contextvars</span><span class="w"> </span><span class="kn">import</span> <span class="n">ContextVar</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">contextlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">contextmanager</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">collections</span><span class="w"> </span><span class="kn">import</span> <span class="n">defaultdict</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">psygnal.containers</span><span class="w"> </span><span class="kn">import</span> <span class="n">EventedList</span><span class="p">,</span> <span class="n">EventedDict</span><span class="p">,</span> <span class="n">EventedSet</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_represent_evented_list</span><span class="p">(</span><span class="n">representer</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">representer</span><span class="o">.</span><span class="n">represent_sequence</span><span class="p">(</span><span class="s2">&quot;!EventedList&quot;</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">data</span><span class="p">))</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_construct_evented_list</span><span class="p">(</span><span class="n">constructor</span><span class="p">,</span> <span class="n">node</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">EventedList</span><span class="p">(</span><span class="n">constructor</span><span class="o">.</span><span class="n">construct_sequence</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">deep</span><span class="o">=</span><span class="kc">True</span><span class="p">))</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_represent_evented_dict</span><span class="p">(</span><span class="n">representer</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">representer</span><span class="o">.</span><span class="n">represent_mapping</span><span class="p">(</span><span class="s2">&quot;!EventedDict&quot;</span><span class="p">,</span> <span class="nb">dict</span><span class="p">(</span><span class="n">data</span><span class="p">))</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_construct_evented_dict</span><span class="p">(</span><span class="n">constructor</span><span class="p">,</span> <span class="n">node</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">EventedDict</span><span class="p">(</span><span class="n">constructor</span><span class="o">.</span><span class="n">construct_mapping</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">deep</span><span class="o">=</span><span class="kc">True</span><span class="p">))</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_represent_evented_set</span><span class="p">(</span><span class="n">representer</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">representer</span><span class="o">.</span><span class="n">represent_sequence</span><span class="p">(</span><span class="s2">&quot;!EventedSet&quot;</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">data</span><span class="p">))</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_construct_evented_set</span><span class="p">(</span><span class="n">constructor</span><span class="p">,</span> <span class="n">node</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">EventedSet</span><span class="p">(</span><span class="n">constructor</span><span class="o">.</span><span class="n">construct_sequence</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">deep</span><span class="o">=</span><span class="kc">True</span><span class="p">))</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_default_base_topic</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">override</span> <span class="o">:=</span> <span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="s2">&quot;SPIRI_SYNQ_BASE_TOPIC&quot;</span><span class="p">))</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">override</span>
+    <span class="c1"># Prefer /etc/spirisynq_base_topic (the host&#39;s /etc/hostname, bind-</span>
+    <span class="c1"># mounted here by our compose templates rather than over the</span>
+    <span class="c1"># container&#39;s own /etc/hostname, which would break hostname/etc-hosts</span>
+    <span class="c1"># consistency for anything else in the container) over</span>
+    <span class="c1"># socket.gethostname(): inside a container the kernel hostname is</span>
+    <span class="c1"># per-container, not per-UAV, so it drifts from the host&#39;s.</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">name</span> <span class="o">:=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;/etc/spirisynq_base_topic&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_text</span><span class="p">()</span><span class="o">.</span><span class="n">strip</span><span class="p">():</span>
+            <span class="k">return</span> <span class="n">name</span>
+    <span class="k">except</span> <span class="ne">OSError</span><span class="p">:</span>
+        <span class="k">pass</span>
+    <span class="k">return</span> <span class="n">socket</span><span class="o">.</span><span class="n">gethostname</span><span class="p">()</span>
+
+
+<div class="viewcode-block" id="Session">
+<a class="viewcode-back" href="../../api/session.html#SpiriSynq.session.Session">[docs]</a>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Session</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;A connection to the Zenoh network.</span>
+
+<span class="sd">    Most applications use the module-level default session created at import time</span>
+<span class="sd">    and never construct a ``Session`` directly. You only need to create one explicitly</span>
+<span class="sd">    if you want to connect with custom Zenoh config, or to connect to multiple</span>
+<span class="sd">    independent Zenoh networks from the same process.</span>
+
+<span class="sd">    The session opens a Zenoh peer connection on construction and closes it on</span>
+<span class="sd">    garbage collection. For deterministic cleanup, call :meth:`close` explicitly.</span>
+
+<span class="sd">    Example — custom config::</span>
+
+<span class="sd">        import zenoh</span>
+<span class="sd">        from SpiriSynq.session import Session</span>
+
+<span class="sd">        config = zenoh.Config.from_file(&quot;zenoh.json5&quot;)</span>
+<span class="sd">        session = Session(config=config)</span>
+<span class="sd">        counter = Counter(&quot;myapp/counter&quot;, synq_session=session, synq_authoritive=True)</span>
+
+<span class="sd">    Example — multiple sessions::</span>
+
+<span class="sd">        session_a = Session()</span>
+<span class="sd">        session_b = Session()</span>
+
+<span class="sd">        with session_b.as_default():</span>
+<span class="sd">            # Objects created here use session_b</span>
+<span class="sd">            mirror = Counter.from_topic(&quot;myhost/myapp/counter&quot;)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">config</span><span class="p">:</span> <span class="n">zenoh</span><span class="o">.</span><span class="n">Config</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="n">zenoh</span><span class="o">.</span><span class="n">Config</span><span class="p">)</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Zenoh configuration. Defaults to peer-mode auto-discovery with no router.&quot;&quot;&quot;</span>
+    <span class="n">base_topic</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="n">_default_base_topic</span><span class="p">)</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Topic prefix prepended to all authoritative objects on this session.</span>
+<span class="sd">    Defaults to, in order: the ``SPIRI_SYNQ_BASE_TOPIC`` environment variable, the</span>
+<span class="sd">    contents of ``/etc/spirisynq_base_topic`` (e.g. the host&#39;s ``/etc/hostname``</span>
+<span class="sd">    bind-mounted into a container), then the hostname.&quot;&quot;&quot;</span>
+    <span class="n">type_registry</span><span class="p">:</span> <span class="n">SessionSerializer</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="n">SessionSerializer</span><span class="p">)</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;YAML serialiser/deserialiser used for all payloads on this session.</span>
+<span class="sd">    Types are registered here by :meth:`register_type_recursive`.&quot;&quot;&quot;</span>
+    <span class="n">zenoh_session</span><span class="p">:</span> <span class="n">zenoh</span><span class="o">.</span><span class="n">Session</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">init</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;The underlying Zenoh session. Available after construction.&quot;&quot;&quot;</span>
+    <span class="n">objects</span><span class="p">:</span> <span class="n">weakref</span><span class="o">.</span><span class="n">WeakValueDictionary</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span>
+        <span class="n">default_factory</span><span class="o">=</span><span class="n">weakref</span><span class="o">.</span><span class="n">WeakValueDictionary</span>
+    <span class="p">)</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Weak map of ``absolute_path → SyncableObject`` for all live objects on this session.&quot;&quot;&quot;</span>
+    <span class="n">_sequence_number_for_source</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">tuple</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="n">defaultdict</span><span class="p">(</span><span class="nb">int</span><span class="p">))</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Next ``source_sn`` per source entity, keyed by ``(zid, eid)``. See :meth:`source_info`.&quot;&quot;&quot;</span>
+    <span class="n">_codecs</span><span class="p">:</span> <span class="nb">list</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">,</span> <span class="nb">repr</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Custom codecs registered via :meth:`register_codec`.&quot;&quot;&quot;</span>
+    <span class="n">_generic_classes</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">,</span> <span class="nb">repr</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Cache of tag-tuple -&gt; synthesized class, populated by :meth:`from_topic_untyped`.&quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="Session.as_default">
+<a class="viewcode-back" href="../../api/session.html#SpiriSynq.session.Session.as_default">[docs]</a>
+    <span class="nd">@contextmanager</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">as_default</span><span class="p">(</span><span class="bp">self</span><span class="p">:</span> <span class="s2">&quot;Session&quot;</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Context manager that makes this session the default for the current thread/task.</span>
+
+<span class="sd">        Any ``SyncableObject`` constructed inside the block that does not pass</span>
+<span class="sd">        ``synq_session=`` explicitly will use this session instead of the</span>
+<span class="sd">        module-level default.</span>
+
+<span class="sd">        Can also be used as a plain context manager around a block of code::</span>
+
+<span class="sd">            session2 = Session()</span>
+<span class="sd">            with session2.as_default():</span>
+<span class="sd">                mirror = Counter.from_topic(&quot;myhost/myapp/counter&quot;)</span>
+<span class="sd">                # mirror was created on session2</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">token</span> <span class="o">=</span> <span class="n">current_session</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">yield</span> <span class="bp">self</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="n">current_session</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">token</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="Session.is_class_registered">
+<a class="viewcode-back" href="../../api/session.html#SpiriSynq.session.Session.is_class_registered">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_class_registered</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="bp">cls</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Return True if *cls* has been registered with this session&#39;s type registry.&quot;&quot;&quot;</span>
+        <span class="n">representer_registered</span> <span class="o">=</span> <span class="bp">cls</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">representer</span><span class="o">.</span><span class="n">yaml_representers</span>
+        <span class="n">tag</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="s2">&quot;yaml_tag&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="n">constructor_registered</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">tag</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">constructor</span><span class="o">.</span><span class="n">yaml_constructors</span> <span class="k">if</span> <span class="n">tag</span> <span class="k">else</span> <span class="kc">False</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="n">representer_registered</span> <span class="ow">and</span> <span class="n">constructor_registered</span></div>
+
+
+<div class="viewcode-block" id="Session.resolve_topic">
+<a class="viewcode-back" href="../../api/session.html#SpiriSynq.session.Session.resolve_topic">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">resolve_topic</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">topic</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Expand a leading ``.`` chunk to :attr:`base_topic` and validate the result.</span>
+
+<span class="sd">        ``./camera`` resolves to ``&lt;base_topic&gt;/camera`` and ``.`` alone to the base</span>
+<span class="sd">        topic itself, so ``./camera`` and ``myhost/camera`` name the same key. Topics</span>
+<span class="sd">        without a leading ``.`` are returned unchanged. ``.`` anywhere else, and</span>
+<span class="sd">        ``..`` anywhere, raise :class:`ValueError` — ``.`` is a valid literal Zenoh</span>
+<span class="sd">        chunk, so an unexpanded marker must never reach the network.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">chunks</span> <span class="o">=</span> <span class="n">topic</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;/&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">chunks</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;.&quot;</span><span class="p">:</span>
+            <span class="n">chunks</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_topic</span>
+        <span class="n">resolved</span> <span class="o">=</span> <span class="s2">&quot;/&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">chunks</span><span class="p">)</span>
+        <span class="k">if</span> <span class="p">{</span><span class="s2">&quot;.&quot;</span><span class="p">,</span> <span class="s2">&quot;..&quot;</span><span class="p">}</span> <span class="o">&amp;</span> <span class="nb">set</span><span class="p">(</span><span class="n">resolved</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;/&quot;</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Invalid topic </span><span class="si">{</span><span class="n">topic</span><span class="si">!r}</span><span class="s2">: &#39;.&#39; is only allowed as the first chunk, &#39;..&#39; is not allowed&quot;</span>
+            <span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">zenoh</span><span class="o">.</span><span class="n">KeyExpr</span><span class="p">(</span><span class="n">resolved</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Invalid topic </span><span class="si">{</span><span class="n">topic</span><span class="si">!r}</span><span class="s2">: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="kc">None</span>
+        <span class="k">return</span> <span class="n">resolved</span></div>
+
+
+<div class="viewcode-block" id="Session.from_topic">
+<a class="viewcode-back" href="../../api/session.html#SpiriSynq.session.Session.from_topic">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_topic</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">topic</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Fetch and return the current state of an object at *topic* via ``sr_rehydrate``.</span>
+
+<span class="sd">        The type must already be registered with this session (call</span>
+<span class="sd">        :meth:`register_type_recursive` first, or use ``SyncableObject.from_topic``</span>
+<span class="sd">        which handles registration automatically).</span>
+
+<span class="sd">        Returns the deserialised object. The concrete type depends on the YAML tag</span>
+<span class="sd">        in the reply, so the return type is ``Any``. *topic* may be relative</span>
+<span class="sd">        (``./camera``); see :meth:`resolve_topic`.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">topic</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">resolve_topic</span><span class="p">(</span><span class="n">topic</span><span class="p">)</span>
+        <span class="n">new_obj</span> <span class="o">=</span> <span class="n">rpc_call</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">topic</span><span class="si">}</span><span class="s2">/sr_rehydrate&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">new_obj</span></div>
+
+
+<div class="viewcode-block" id="Session.from_topic_untyped">
+<a class="viewcode-back" href="../../api/session.html#SpiriSynq.session.Session.from_topic_untyped">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_topic_untyped</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">topic</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Mirror an object at *topic* without its dataclass being importable here.</span>
+
+<span class="sd">        Discovers the object&#39;s field names (``sr_object_schema``) and wire type</span>
+<span class="sd">        tags (``sr_metadata``), synthesizes a matching ``SyncableObject``</span>
+<span class="sd">        subclass with every field typed ``object``, registers it for those</span>
+<span class="sd">        tags, and returns a mirror -- same as :meth:`from_topic`, but for</span>
+<span class="sd">        types this process never defined or imported (e.g. a peer written in</span>
+<span class="sd">        another language, or a dynamically-defined class on the authoritative</span>
+<span class="sd">        side).</span>
+
+<span class="sd">        Nested custom dataclass fields still decode to whatever type tag they</span>
+<span class="sd">        carry on the wire; if that type also isn&#39;t registered here, decoding</span>
+<span class="sd">        those nested values will fail. Only the object&#39;s own top-level fields</span>
+<span class="sd">        are guaranteed to work generically.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">SpiriSynq.syncable_objects</span><span class="w"> </span><span class="kn">import</span> <span class="n">make_generic_syncable_class</span>
+
+        <span class="n">topic</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">resolve_topic</span><span class="p">(</span><span class="n">topic</span><span class="p">)</span>
+        <span class="n">metadata</span> <span class="o">=</span> <span class="n">rpc_call</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">topic</span><span class="si">}</span><span class="s2">/sr_metadata&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">schema</span> <span class="o">=</span> <span class="n">rpc_call</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">topic</span><span class="si">}</span><span class="s2">/sr_object_schema&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">tags</span> <span class="o">=</span> <span class="n">metadata</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;classes&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="p">[</span><span class="sa">f</span><span class="s2">&quot;!</span><span class="si">{</span><span class="n">topic</span><span class="o">.</span><span class="n">rsplit</span><span class="p">(</span><span class="s1">&#39;/&#39;</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">)[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">]</span>
+        <span class="n">field_names</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">schema</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;properties&quot;</span><span class="p">,</span> <span class="p">{})</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
+
+        <span class="n">cache_key</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">tags</span><span class="p">)</span>
+        <span class="bp">cls</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_generic_classes</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">cache_key</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">cls</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">class_name</span> <span class="o">=</span> <span class="n">tags</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">lstrip</span><span class="p">(</span><span class="s2">&quot;!&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="s2">&quot;UntypedObject&quot;</span>
+            <span class="bp">cls</span> <span class="o">=</span> <span class="n">make_generic_syncable_class</span><span class="p">(</span><span class="n">class_name</span><span class="p">,</span> <span class="n">field_names</span><span class="p">)</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">yaml_tag</span> <span class="o">=</span> <span class="n">tags</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">register_type_recursive</span><span class="p">(</span><span class="bp">cls</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">tag</span> <span class="ow">in</span> <span class="n">tags</span><span class="p">[</span><span class="mi">1</span><span class="p">:]:</span>
+                <span class="k">if</span> <span class="n">tag</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">constructor</span><span class="o">.</span><span class="n">yaml_constructors</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">constructor</span><span class="o">.</span><span class="n">add_constructor</span><span class="p">(</span>
+                        <span class="n">tag</span><span class="p">,</span>
+                        <span class="k">lambda</span> <span class="n">loader</span><span class="p">,</span> <span class="n">node</span><span class="p">,</span> <span class="n">_cls</span><span class="o">=</span><span class="bp">cls</span><span class="p">:</span> <span class="n">loader</span><span class="o">.</span><span class="n">construct_yaml_object</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">_cls</span><span class="p">),</span>
+                    <span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_generic_classes</span><span class="p">[</span><span class="n">cache_key</span><span class="p">]</span> <span class="o">=</span> <span class="bp">cls</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">from_topic</span><span class="p">(</span><span class="n">topic</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="Session.list_topics">
+<a class="viewcode-back" href="../../api/session.html#SpiriSynq.session.Session.list_topics">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">list_topics</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">type_filter</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">prefix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Yield metadata dicts for all objects currently discoverable on the network.</span>
+
+<span class="sd">        Queries ``**/sr_metadata/&lt;type_filter&gt;`` and yields one dict per reply.</span>
+<span class="sd">        Each dict contains at minimum ``topic``, ``classes``, and ``authoritive_node``.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            type_filter: If given, only topics whose class list includes this type</span>
+<span class="sd">                name (without the ``!`` YAML tag prefix) are returned.</span>
+<span class="sd">            prefix: Restrict the search to topics under this key prefix. May be</span>
+<span class="sd">                relative (``.`` for this session&#39;s own objects).</span>
+
+<span class="sd">        Example::</span>
+
+<span class="sd">            for meta in session.list_topics(type_filter=&quot;Counter&quot;):</span>
+<span class="sd">                print(meta[&quot;topic&quot;])</span>
+
+<span class="sd">        Works identically to ``synq topic list`` on the CLI.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">prefix</span><span class="p">:</span>
+            <span class="n">prefix</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">resolve_topic</span><span class="p">(</span><span class="n">prefix</span><span class="p">)</span>
+        <span class="n">query_topic</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">prefix</span><span class="si">}</span><span class="s2">/**/sr_metadata/</span><span class="si">{</span><span class="n">type_filter</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="k">if</span> <span class="n">prefix</span>
+            <span class="k">else</span> <span class="sa">f</span><span class="s2">&quot;**/sr_metadata/</span><span class="si">{</span><span class="n">type_filter</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="p">)</span>
+        <span class="n">query_topic</span> <span class="o">=</span> <span class="n">query_topic</span><span class="o">.</span><span class="n">strip</span><span class="p">(</span><span class="s2">&quot;/&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">removesuffix</span><span class="p">(</span><span class="s2">&quot;/&quot;</span><span class="p">)</span>
+
+        <span class="n">replies</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">zenoh_session</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+            <span class="n">query_topic</span><span class="p">,</span> <span class="n">consolidation</span><span class="o">=</span><span class="n">zenoh</span><span class="o">.</span><span class="n">ConsolidationMode</span><span class="o">.</span><span class="n">NONE</span>
+        <span class="p">)</span>
+        <span class="k">for</span> <span class="n">reply</span> <span class="ow">in</span> <span class="n">replies</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">reply</span><span class="o">.</span><span class="n">ok</span><span class="p">:</span>
+                <span class="n">raw</span> <span class="o">=</span> <span class="n">reply</span><span class="o">.</span><span class="n">ok</span><span class="o">.</span><span class="n">payload</span><span class="o">.</span><span class="n">to_bytes</span><span class="p">()</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+                <span class="c1"># parse YAML into dict</span>
+                <span class="n">metadata</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">raw</span><span class="p">)</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Found topic: </span><span class="si">{</span><span class="n">metadata</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="k">yield</span> <span class="n">metadata</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">assert</span> <span class="n">reply</span><span class="o">.</span><span class="n">err</span><span class="p">,</span> <span class="s2">&quot;Reply not OK and no reply err. Weird.&quot;</span> <span class="c1">#Begone type checker</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;Error reply in list_topics: </span><span class="si">{</span><span class="n">reply</span><span class="o">.</span><span class="n">err</span><span class="o">.</span><span class="n">payload</span><span class="o">.</span><span class="n">to_string</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="Session.register_type_recursive">
+<a class="viewcode-back" href="../../api/session.html#SpiriSynq.session.Session.register_type_recursive">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">register_type_recursive</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="bp">cls</span><span class="p">:</span> <span class="nb">type</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Register *cls* and every type reachable from its field annotations.</span>
+
+<span class="sd">        Walks all type hints transitively. For each type:</span>
+
+<span class="sd">        - Already representable (via MRO against the YAML representer) → skip.</span>
+<span class="sd">        - Otherwise → assign a yaml_tag if missing, call register_class, then</span>
+<span class="sd">          verify it took. Raises TypeError if a type cannot be registered so</span>
+<span class="sd">          the problem surfaces at sync() time rather than at first serialisation.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">visited</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">type</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">_is_representable</span><span class="p">(</span><span class="n">t</span><span class="p">:</span> <span class="nb">type</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+            <span class="n">rep</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">representer</span>
+            <span class="k">return</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">rep</span><span class="o">.</span><span class="n">yaml_representers</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">_register</span><span class="p">(</span><span class="n">t</span><span class="p">:</span> <span class="nb">type</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="nb">type</span><span class="p">)</span> <span class="ow">or</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">visited</span><span class="p">:</span>
+                <span class="k">return</span>
+            <span class="n">visited</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
+
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_representable</span><span class="p">(</span><span class="n">t</span><span class="p">):</span>
+                <span class="c1"># Its own tag, not one inherited from an already-registered base:</span>
+                <span class="c1"># that would serialize the subclass as its base.</span>
+                <span class="k">if</span> <span class="s2">&quot;yaml_tag&quot;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">t</span><span class="o">.</span><span class="vm">__dict__</span><span class="p">:</span>
+                    <span class="n">t</span><span class="o">.</span><span class="n">yaml_tag</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;!</span><span class="si">{</span><span class="n">t</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">register_class</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_representable</span><span class="p">(</span><span class="n">t</span><span class="p">):</span>
+                    <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">t</span><span class="o">.</span><span class="vm">__qualname__</span><span class="si">!r}</span><span class="s2"> cannot be YAML-serialized. &quot;</span>
+                        <span class="sa">f</span><span class="s2">&quot;Add to_yaml / from_yaml class methods or register a &quot;</span>
+                        <span class="sa">f</span><span class="s2">&quot;custom representer/constructor before calling sync().&quot;</span>
+                    <span class="p">)</span>
+
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">hints</span> <span class="o">=</span> <span class="n">get_type_hints</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="n">hints</span> <span class="o">=</span> <span class="p">{}</span>
+
+            <span class="n">skip</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+            <span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="s2">&quot;__mro__&quot;</span><span class="p">,</span> <span class="p">[</span><span class="n">t</span><span class="p">]):</span>
+                <span class="k">for</span> <span class="n">attr</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;synq_skip_sync&quot;</span><span class="p">,</span> <span class="s2">&quot;synq_skip_rehydrate&quot;</span><span class="p">):</span>
+                    <span class="k">if</span> <span class="n">attr</span> <span class="ow">in</span> <span class="n">c</span><span class="o">.</span><span class="vm">__dict__</span><span class="p">:</span>
+                        <span class="n">skip</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="vm">__dict__</span><span class="p">[</span><span class="n">attr</span><span class="p">])</span>
+
+            <span class="k">for</span> <span class="n">field_name</span><span class="p">,</span> <span class="n">hint</span> <span class="ow">in</span> <span class="n">hints</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+                <span class="c1"># Same rule as valid_sync_paths/to_yaml: &#39;_&#39; fields never go on the wire.</span>
+                <span class="k">if</span> <span class="n">field_name</span> <span class="ow">in</span> <span class="n">skip</span> <span class="ow">or</span> <span class="n">field_name</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;_&quot;</span><span class="p">):</span>
+                    <span class="k">continue</span>
+                <span class="n">_register_annotation</span><span class="p">(</span><span class="n">hint</span><span class="p">)</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">_register_annotation</span><span class="p">(</span><span class="n">annotation</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">annotation</span> <span class="ow">is</span> <span class="nb">object</span><span class="p">:</span>
+                <span class="c1"># Bare `object` (used by synthesized generic/untyped fields) is</span>
+                <span class="c1"># never representable on its own and can&#39;t take a yaml_tag --</span>
+                <span class="c1"># it just means &quot;accept anything&quot;, so there&#39;s nothing to register.</span>
+                <span class="k">return</span>
+            <span class="n">origin</span> <span class="o">=</span> <span class="n">get_origin</span><span class="p">(</span><span class="n">annotation</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">origin</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">annotation</span><span class="p">,</span> <span class="nb">type</span><span class="p">):</span>
+                    <span class="n">_register</span><span class="p">(</span><span class="n">annotation</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">for</span> <span class="n">arg</span> <span class="ow">in</span> <span class="n">get_args</span><span class="p">(</span><span class="n">annotation</span><span class="p">):</span>
+                    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">arg</span><span class="p">,</span> <span class="nb">type</span><span class="p">):</span>
+                        <span class="n">_register</span><span class="p">(</span><span class="n">arg</span><span class="p">)</span>
+
+        <span class="n">_register</span><span class="p">(</span><span class="bp">cls</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="Session.register_codec">
+<a class="viewcode-back" href="../../api/session.html#SpiriSynq.session.Session.register_codec">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">register_codec</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">codec</span><span class="p">:</span> <span class="s2">&quot;Codec&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Register a custom :class:`Codec` on this session.</span>
+
+<span class="sd">        The encoder is selected by matching ``codec.python_type`` against the</span>
+<span class="sd">        Python type of the value being published (MRO walk, most-specific first).</span>
+<span class="sd">        The decoder is selected by matching ``codec.zenoh_schema`` against the</span>
+<span class="sd">        encoding reported by an incoming zenoh sample.</span>
+
+<span class="sd">        Example::</span>
+
+<span class="sd">            import numpy as np</span>
+<span class="sd">            import zenoh</span>
+<span class="sd">            from SpiriSynq.session import Codec, current_session</span>
+
+<span class="sd">            session = current_session.get()</span>
+<span class="sd">            session.register_codec(Codec(</span>
+<span class="sd">                python_type=np.ndarray,</span>
+<span class="sd">                zenoh_schema=zenoh.Encoding(&quot;image/jpeg&quot;),</span>
+<span class="sd">                encoder=lambda arr: (encode_jpeg(arr), zenoh.Encoding(&quot;image/jpeg&quot;)),</span>
+<span class="sd">                decoder=lambda sample: decode_jpeg(sample.payload.to_bytes()),</span>
+<span class="sd">            ))</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_codecs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">codec</span><span class="p">)</span></div>
+
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_encoder_for</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;Codec | None&quot;</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Return the first registered codec whose python_type matches type(value) via MRO.&quot;&quot;&quot;</span>
+        <span class="k">for</span> <span class="n">mro_type</span> <span class="ow">in</span> <span class="nb">type</span><span class="p">(</span><span class="n">value</span><span class="p">)</span><span class="o">.</span><span class="vm">__mro__</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">codec</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_codecs</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">codec</span><span class="o">.</span><span class="n">python_type</span> <span class="ow">is</span> <span class="n">mro_type</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="n">codec</span>
+        <span class="k">return</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_decoder_for</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">encoding</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;Codec | None&quot;</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Return the first registered codec whose zenoh_schema matches *encoding*.&quot;&quot;&quot;</span>
+        <span class="k">for</span> <span class="n">codec</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_codecs</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">codec</span><span class="o">.</span><span class="n">zenoh_schema</span> <span class="o">==</span> <span class="n">encoding</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">codec</span>
+        <span class="k">return</span> <span class="kc">None</span>
+
+<div class="viewcode-block" id="Session.source_info">
+<a class="viewcode-back" href="../../api/session.html#SpiriSynq.session.Session.source_info">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">source_info</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">source_id</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Build a ``zenoh.SourceInfo`` for the next sample from *source_id*.</span>
+
+<span class="sd">        As with zenoh&#39;s own ``source_sn``, the sequence number is monotonic per</span>
+<span class="sd">        source entity (zid + eid), not per key, so a subscriber that sees all of</span>
+<span class="sd">        a publisher&#39;s samples can detect gaps and reordering. Each</span>
+<span class="sd">        ``SyncableObject`` publishes under its own publisher&#39;s id, so objects</span>
+<span class="sd">        on the same session don&#39;t share a counter.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">source_id</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">source_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">zenoh_session</span><span class="o">.</span><span class="n">id</span>
+        <span class="n">key</span> <span class="o">=</span> <span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">source_id</span><span class="p">,</span> <span class="s2">&quot;zid&quot;</span><span class="p">,</span> <span class="n">source_id</span><span class="p">)),</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">source_id</span><span class="p">,</span> <span class="s2">&quot;eid&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">))</span>
+        <span class="n">source_info</span> <span class="o">=</span> <span class="n">zenoh</span><span class="o">.</span><span class="n">SourceInfo</span><span class="p">(</span>
+            <span class="n">source_id</span><span class="o">=</span><span class="n">source_id</span><span class="p">,</span>
+            <span class="n">source_sn</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_sequence_number_for_source</span><span class="p">[</span><span class="n">key</span><span class="p">],</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_sequence_number_for_source</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">return</span> <span class="n">source_info</span></div>
+
+
+<div class="viewcode-block" id="Session.close">
+<a class="viewcode-back" href="../../api/session.html#SpiriSynq.session.Session.close">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">zenoh_session</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="k">pass</span></div>
+
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__del__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">__post_init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_codecs</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">BUILTIN_CODECS</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">representer</span><span class="o">.</span><span class="n">add_representer</span><span class="p">(</span><span class="n">EventedList</span><span class="p">,</span> <span class="n">_represent_evented_list</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">representer</span><span class="o">.</span><span class="n">add_representer</span><span class="p">(</span><span class="n">EventedDict</span><span class="p">,</span> <span class="n">_represent_evented_dict</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">representer</span><span class="o">.</span><span class="n">add_representer</span><span class="p">(</span><span class="n">EventedSet</span><span class="p">,</span> <span class="n">_represent_evented_set</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">constructor</span><span class="o">.</span><span class="n">add_constructor</span><span class="p">(</span><span class="s2">&quot;!EventedList&quot;</span><span class="p">,</span> <span class="n">_construct_evented_list</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">constructor</span><span class="o">.</span><span class="n">add_constructor</span><span class="p">(</span><span class="s2">&quot;!EventedDict&quot;</span><span class="p">,</span> <span class="n">_construct_evented_dict</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">constructor</span><span class="o">.</span><span class="n">add_constructor</span><span class="p">(</span><span class="s2">&quot;!EventedSet&quot;</span><span class="p">,</span> <span class="n">_construct_evented_set</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">type_registry</span><span class="o">.</span><span class="n">register_class</span><span class="p">(</span><span class="n">Link</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">zenoh_session</span> <span class="o">=</span> <span class="n">zenoh</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Started zenoh session </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">zenoh_session</span><span class="o">.</span><span class="n">zid</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="c1"># Register for deterministic shutdown. This does NOT keep the session</span>
+        <span class="c1"># alive (the registry is weak); it only lets the shutdown hook find and</span>
+        <span class="c1"># close it before the interpreter joins zenoh&#39;s non-daemon threads. See</span>
+        <span class="c1"># SpiriSynq/shutdown.py for why this, and not __del__ / atexit / context</span>
+        <span class="c1"># managers, is what works.</span>
+        <span class="n">register_session</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span></div>
+
+
+
+<span class="n">current_session</span><span class="p">:</span> <span class="n">ContextVar</span><span class="p">[</span><span class="n">Session</span><span class="p">]</span> <span class="o">=</span> <span class="n">ContextVar</span><span class="p">(</span><span class="s2">&quot;current_session&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="n">Session</span><span class="p">())</span>
+</pre></div>
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          
+          
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 2026, Spiri Robotics
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer no-toc">
+      
+      
+      
+    </aside>
+  </div>
+</div><script src="../../_static/documentation_options.js?v=1b390748"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../../_static/scripts/furo.js?v=46bd48cc"></script>
+    </body>
+</html>
