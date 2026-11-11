@@ -215,6 +215,103 @@ or adapts.
   host functions (`field_get_*`, `field_set_*`, `arg_get_*`) to every loader, so a module can read
   or set one field or argument by name without decoding the whole input.
 
+## Language targets
+
+Decided 2026-11-11: **Python, C++ and browser JavaScript.** Node isn't a target.
+
+- Python: PyO3 + maturin, hand-written (the decorator/descriptor surface needs it).
+- C++: a C ABI (cbindgen header) with a header-only C++ wrapper over it, as zenoh-cpp does.
+- Browser JS: the browser runs the same Rust core, compiled to wasm32, and speaks **real zenoh
+  over a WebSocket**, decoded by a Rust zenoh implementation in the browser (decided 2026-11-11).
+  No zenoh-ts, no remote-api plugin: SourceInfo, liveliness and the rest are ordinary zenoh.
+  Native zenoh has a `ws/` link, so any native peer (drone, ground station) can listen for
+  browsers directly. The core can't assume Tokio or threads. WASM methods sit behind a host
+  abstraction (wasmtime natively, the browser's own engine in the browser).
+- C++ and browser users only mirror types defined in Python, for now. Defining their own types
+  comes later.
+- YAML is parsed and emitted in the Rust core, never by the binding, so every language reads the
+  wire the same way (no third-party C++ YAML parsers). Bindings receive a parsed value tree, YAML
+  tags included, and build their native values from it.
+- The wire is a restricted subset of YAML 1.2 (decided 2026-11-11). The core's parser rejects
+  anything outside it, and its writer emits one canonical style that always reads back:
+  - Scalars use YAML 1.2's JSON schema: only `true`, `false`, `null` and JSON-style numbers are
+    typed, plus `.inf`, `-.inf` and `.nan`; everything else is a string (`on`, `yes`, `0755`,
+    `1_000` are strings). The writer quotes any string that would read as something else.
+  - Banned: anchors and aliases, directives, multiple documents, non-scalar mapping keys,
+    duplicate keys, anything that isn't UTF-8.
+  - Local tags (`!Link`, `!RootFrame`, any registered type's tag) are allowed; `bytes` travel as
+    `!!binary` (base64). The core rejects every other `!!` tag (e.g. `!!python/object/apply`)
+    and verbatim `!<...>` tags. A local tag no type has registered passes through to the binding
+    as a tagged value; the binding treats it as bad data if nothing claims it.
+  - Change detection treats NaN as equal to NaN, so a field set to NaN again doesn't republish.
+    `spirisynq_yaml::Value` equality is "would be written as the same text": floats compare by
+    bits except NaN, so `0.0` and `-0.0` differ.
+  - A plain scalar with no text (`key:`) is rejected rather than read as null; write `null`.
+  - Integers must fit an `i64`; floats too large to be finite (`1e999`) are rejected.
+  - Nesting is limited to 128 levels, so hostile input can't overflow the parser's stack.
+  - Implemented in `spirisynq-yaml` (2026-11-11).
+
+- The browser runs **zenoh-nostd** (decided 2026-11-11). Main zenoh (0764376, 2026-11-09) has
+  no wasm support. zenoh-nostd (Eclipse; 9e12ae8, 2026-10-27; "early development") already runs
+  in the browser as a client over `ws/`, but its API has only put/subscribe/get/queryable: no
+  liveliness, no matching status, the Interest protocol isn't implemented, and samples expose
+  only key and payload (its protocol crate does encode SourceInfo and attachments). We
+  contribute those upstream; browser mirrors can ship with fields and remote calls first.
+- `zenoh-link-ws` listens on plain `ws` only, so pages served over https (which must use `wss`)
+  need TLS terminated in front of the peer, or `wss` added upstream.
+- Previously considered (zenoh-ts over `zenoh-plugin-remote-api`): it carries no SourceInfo and
+  its WebSocket protocol is crate-private. Rejected in favour of real zenoh.
+
+## Crate layout
+
+A Cargo workspace in `rust/`. Lower crates know nothing about the ones above them.
+
+| Crate | What it is | Runs in |
+| --- | --- | --- |
+| `spirisynq-yaml` | The strict YAML 1.2 subset: parser and canonical writer, producing a `Value` tree that keeps tags. Built on `saphyr-parser`'s event stream; the subset rules are ours. | everywhere |
+| `spirisynq-schema` | The JSON Schema model we use, `$id`, `x-wasm` entries, and compiling a type tree into its key plan (the exact keys an object publishes and subscribes to). | everywhere |
+| `spirisynq-core` | The engine: authoritative objects and mirrors, field state, change detection, echo suppression, links, liveliness reporting, remote-call bookkeeping. Talks to the network only through a `Transport` trait and runs WASM only through a `WasmHost` trait. Runtime-agnostic async (`futures`, no Tokio, no threads), so it compiles for the browser. | everywhere |
+| `spirisynq-zenoh` | `Transport` over main zenoh. | native |
+| `spirisynq-extism` | `WasmHost` over Extism (wasmtime). | native |
+| `spirisynq-python` | PyO3 extension module `SpiriSynq._core`; the Python package in `src/SpiriSynq/` builds the user API on it. | native |
+| `spirisynq-c` | The C ABI and its cbindgen header. The header-only C++ wrapper lives beside it in `rust/spirisynq-c/cpp/`. | native |
+| `spirisynq-web` | The browser build: `Transport` over zenoh-nostd's `ws/` link, `WasmHost` over the browser's own WebAssembly engine, and the JS API (wasm-bindgen). | browser |
+
+- Field values inside the core are `spirisynq_yaml::Value`. Each binding converts them to and
+  from native values; none of them parses YAML.
+- The core reports what happened (field changed, link re-pointed, token gone, call arrived) as
+  events. Each binding delivers them its own way: Python posts them to the asyncio loop, C calls a
+  function pointer, JS resolves promises and fires callbacks.
+- Native bindings run the core on a Tokio runtime owned by `spirisynq-zenoh`; the browser runs
+  it on the page's event loop (`wasm-bindgen-futures`).
+- Python packaging moves from hatchling to maturin (mixed Rust/Python project:
+  `python-source = "src"`, manifest `rust/spirisynq-python/Cargo.toml`). The project template
+  currently assumes hatchling, so the template needs a maturin variant or a local override.
+
+### Testing
+
+Every crate keeps 100% line and function coverage (`cargo llvm-cov --fail-under-lines 100
+--fail-under-functions 100`, run by `make rust-test` and the `Rust` workflow). Region coverage
+is reported but not enforced: some regions are error paths that can't occur, such as a `?` on a
+call that can't fail in that context. Defensive branches that can't be reached go on a line that
+is reached, rather than behind an exclusion; unit tests inside a crate don't count towards its
+coverage, because cargo-llvm-cov measures the library and its unit-test build separately.
+
+### Unsafe code
+
+Every crate starts with `#![forbid(unsafe_code)]`, so the compiler refuses any `unsafe`. A crate
+that needs it switches to `#![deny(unsafe_code)]` and allows it only on the specific items, each
+with a `// SAFETY:` comment saying why it holds. Every such item is listed here, with why it's
+needed, and the maintainer is told when one is added. Unsafe inside dependencies (zenoh, PyO3,
+wasmtime, wasm-bindgen) isn't ours and isn't listed.
+
+| Where | Why | Status |
+| --- | --- | --- |
+| `spirisynq-c`: every exported `extern "C"` function | A C API receives raw pointers (strings, buffers, handles) from C/C++ code; Rust can't check them, so reading them is `unsafe` by definition. Each function checks for null and documents what the caller must guarantee. Unavoidable for a C API. | expected, not written yet |
+
+Build order: `yaml` → `schema` → `core` with an in-memory `Transport` for tests → `zenoh` →
+`python` → `c` → `web` → `extism`. Each is tested before the next starts.
+
 ## Still open
 
 - How an object is told its parent when it's created (and so its derived topic).

@@ -49,3 +49,6 @@ Thumbs.db
 .aider*
 wheels/
 .benchmarks/
+
+# Rust
+rust/target/

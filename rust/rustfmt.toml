@@ -1,0 +1,3 @@
+edition = "2024"
+# Short let-else guards stay on one line.
+single_line_let_else_max_width = 100

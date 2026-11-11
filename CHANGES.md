@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Features
+
+- **`spirisynq-yaml`, the first Rust crate of the v2 core**: the strict YAML 1.2 subset the wire
+  uses, with one parser and one canonical writer for every language. Scalars are typed by YAML
+  1.2's JSON schema plus `.inf`/`-.inf`/`.nan`, so `on`, `yes` and `0755` are strings. Anchors,
+  aliases, `---`, multiple documents, collection keys, duplicate keys, empty values and every
+  tag except local ones and `!!binary` are rejected.
+
+### Tests
+
+- **The Rust core must keep 100% line and function coverage.** `make rust-test` and the new
+  `Rust` workflow fail below it. `spirisynq-yaml` has 58 tests, including property tests that
+  everything written reads back equal and that the parser never panics on arbitrary input.
+
 ### Internal
 
 - **The docs specify SpiriSynq v2**, a Rust core with Python as a binding over it, written ahead of

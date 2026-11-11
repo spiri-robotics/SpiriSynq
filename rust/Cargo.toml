@@ -1,0 +1,8 @@
+[workspace]
+resolver = "3"
+members = ["spirisynq-yaml"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/spiri-robotics/SpiriSynq"
