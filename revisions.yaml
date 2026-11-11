@@ -28,3 +28,8 @@ revisions:
     #
     # Remove this line to issue the revision.
     draft: true
+  - revision: "0.2"
+    date: 2026-11-11
+    summary: Rewritten as the specification of SpiriSynq v2, ahead of its implementation.
+    author: Spiri Robotics
+    draft: true

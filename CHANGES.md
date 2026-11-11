@@ -4,6 +4,13 @@
 
 ### Internal
 
+- **The docs specify SpiriSynq v2**, a Rust core with Python as a binding over it, written ahead of
+  the code as the specification it has to meet. They cover objects and field settings, links,
+  liveliness, methods and remote methods (key templates, hooks, raw methods, call chaining),
+  callbacks, WASM (MicroPython, mamba, Lua, JavaScript, inline WebAssembly) and type identity.
+  The v1 docs move to `docs-v1/` for reference and are no longer built. `rust/ARCHITECTURE.md`
+  records the design decisions behind them.
+
 - **Follows the Spiri project template** (SpiriProjectTemplates v0.5.0): the docs are a
   controlled document published to GitHub Pages with a PDF per release, CI lints, tests and
   builds the docs, and the PyPI workflow is now `pypi-publish.yml`. Lint findings in the
