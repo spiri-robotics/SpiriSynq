@@ -1,7 +1,7 @@
 # SpiriSynq v2: Rust core architecture
 
 Status: decisions from the architecture pass of 2026-11-11. Implemented so far: `spirisynq-yaml`,
-`spirisynq-schema` and `spirisynq-core`.
+`spirisynq-schema`, `spirisynq-core` and `spirisynq-zenoh`.
 
 SpiriSynq v2 moves the protocol into a Rust core. Python becomes a binding on top of it (PyO3). v2
 may break both the wire protocol and the Python API.
@@ -369,29 +369,58 @@ A Cargo workspace in `rust/`. Lower crates know nothing about the ones above the
 | `spirisynq-yaml` | The strict YAML 1.2 subset: parser and canonical writer, producing a `Value` tree that keeps tags. Built on `saphyr-parser`'s event stream; the subset rules are ours. | everywhere |
 | `spirisynq-schema` | The JSON Schema model we use, `$id`, `x-wasm` entries, and compiling a type tree into its key plan (the exact keys an object publishes and subscribes to). | everywhere |
 | `spirisynq-core` | The engine: authoritative objects and mirrors, field state, change detection, echo suppression, the built-in queries, remote-call routing, liveliness and listener reports. Sans-IO: it emits `Command`s for a transport to carry out and takes the network's `Event`s back, so it has no runtime, no threads and no clock, and runs unchanged in the browser. `memory::MemoryNetwork` connects sessions in one process for tests. WASM will run through a `WasmHost` trait. | everywhere |
-| `spirisynq-zenoh` | The transport over main zenoh, with the `shared-memory` and `unstable` features (`SourceInfo` needs `unstable` anyway). | native |
+| `spirisynq-zenoh` | The transport over main zenoh (1.10), with the `shared-memory` and `unstable` features (`SourceInfo` needs `unstable` anyway). A `Node` owns a zenoh session and an engine; see "The zenoh transport" below. | native |
 | `spirisynq-extism` | `WasmHost` over Extism (wasmtime). | native |
 | `spirisynq-python` | PyO3 extension module `SpiriSynq._core`; the Python package in `src/SpiriSynq/` builds the user API on it. | native |
 | `spirisynq-c` | The C ABI and its cbindgen header. The header-only C++ wrapper lives beside it in `rust/spirisynq-c/cpp/`. | native |
 | `spirisynq-web` | The browser build: `Transport` over zenoh-nostd's `ws/` link, `WasmHost` over the browser's own WebAssembly engine, and the JS API (wasm-bindgen). | browser |
 
-- **Shared memory** (zenoh's experimental SHM transport): with `shared-memory` compiled in,
-  zenoh moves messages of 3 KiB and up between processes on one machine through shared memory
-  by itself (`transport/shared_memory` in the zenoh config, on by default). Payloads are
-  `spirisynq_core::Payload`, a shared handle over any byte container, which the core never
-  copies: a transport's own buffer, shared memory included, passes through a custom encoding, a
-  raw method or a raw reply and comes back as the same buffer. Explicit SHM allocation, saving
-  the copy into shared memory, is the zenoh crate's choice to make later.
+- **Shared memory** (zenoh's experimental SHM transport), between processes on one machine,
+  measured with zenoh 1.10:
+  - **Zero-copy** when the payload is written into a shared-memory buffer in the first place:
+    `Node::alloc_shm(len)` gives one, sent as a `ZenohBytes` payload (a raw field, a raw call or
+    a raw reply). The receiver maps the same memory; nothing goes through the socket.
+  - **One copy** otherwise: zenoh copies a message of 3 KiB or more into shared memory as it
+    sends it (`transport/shared_memory/transport_optimization`, on by default). The provider
+    starts on first use (`mode: lazy`), so the first large message goes the usual way;
+    `mode: init` starts it with the session, at the cost of its 16 MiB pool in every process.
+  - Payloads are `spirisynq_core::Payload`, a shared handle the core never copies. A payload
+    that arrives is zenoh's own buffer, shared memory included, readable in place, and goes
+    back out as the same buffer. Field values the core encodes as YAML are copied once into
+    zenoh; they're small.
+  - zenoh 1.10 bug, worked around in `alloc_shm`: `.wait()` on the session's provider while it
+    is still starting takes the one message saying it's ready, so the session never records it
+    and frees it, and every buffer from it, with the last handle ("Buffer is invalidated" on
+    the receiver). It also stops implicit shared memory for the session. `alloc_shm` polls
+    instead. Worth reporting upstream.
 - Field values inside the core are `spirisynq_yaml::Value`. Each binding converts them to and
   from native values; none of them parses YAML.
 - The core reports what happened (field changed, link re-pointed, token gone, call arrived) as
   events. Each binding delivers them its own way: Python posts them to the asyncio loop, C calls a
   function pointer, JS resolves promises and fires callbacks.
-- Native bindings run the core on a Tokio runtime owned by `spirisynq-zenoh`; the browser runs
-  it on the page's event loop (`wasm-bindgen-futures`).
+- Native bindings run the core on one driver thread owned by `spirisynq-zenoh` (zenoh brings
+  its own runtime; no Tokio of ours); the browser runs it on the page's event loop
+  (`wasm-bindgen-futures`).
 - Python packaging moves from hatchling to maturin (mixed Rust/Python project:
   `python-source = "src"`, manifest `rust/spirisynq-python/Cargo.toml`). The project template
   currently assumes hatchling, so the template needs a maturin variant or a local override.
+
+### The zenoh transport
+
+- zenoh's callbacks only queue what arrived. One driver thread hands it to the engine and
+  carries out the engine's commands, so the engine is never called from inside zenoh. The
+  binding works the engine through `Node::with(|session| …)` (commands go out when it returns)
+  and takes notices from a channel.
+- Every put carries `SourceInfo` (the publisher's id and a sequence number); zenoh doesn't add
+  it by itself. A sample or reply from this session is matched to the local publisher or
+  queryable by entity id.
+- Gets go to every matching queryable (`QueryTarget::All`). zenoh reports a timeout as an
+  error reply with payload `Timeout`, either from the getter's own session (no replier) or from
+  a routing node (entity 0); the transport drops it, so the engine sees the get end without
+  its done marker and reports it cut short.
+- QoS: a reliable field is sent reliably with congestion control `Block`; others best effort,
+  `Drop`. Priorities map one to one.
+- A failed zenoh operation is logged (`log`) and the engine carries on; a failed get still ends.
 
 ### Testing
 
@@ -421,6 +450,13 @@ Build order: `yaml` → `schema` → `core` with an in-memory `Transport` for te
 `python` → `c` → `web` → `extism`. Each is tested before the next starts.
 
 ## Still open
+
+- A mirror opened while its owner's declarations are still on their way, as when both start
+  together, can fetch before the owner's queryable reaches it and get nothing (`Rehydrated`
+  not complete), or get the owner's first value live. The binding should fetch again when the
+  owner's token appears after an incomplete fetch. Not decided whether the core should do that
+  itself.
+
 
 - Following links is the binding's job for now: the core carries `!Link` values like any other.
   Moving it into the core, so every binding follows links the same way, comes with the C and

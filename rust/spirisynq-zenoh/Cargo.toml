@@ -1,0 +1,15 @@
+[package]
+name = "spirisynq-zenoh"
+version = "0.1.0"
+description = "Runs the SpiriSynq engine over zenoh, shared memory included"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+flume = "0.11"
+log = "0.4"
+spirisynq-core = { path = "../spirisynq-core" }
+spirisynq-schema = { path = "../spirisynq-schema" }
+spirisynq-yaml = { path = "../spirisynq-yaml" }
+zenoh = { version = "1.10", features = ["shared-memory", "unstable"] }

@@ -27,6 +27,13 @@
   and in tests; payloads pass through it uncopied, ready for zenoh's shared-memory transport.
   The v2 wire protocol is in `rust/ARCHITECTURE.md`.
 
+- **`spirisynq-zenoh`, the engine over zenoh**: a `Node` owns a zenoh session and an engine,
+  with one driver thread between them. Puts carry `SourceInfo` for echo suppression and owner
+  checks; zenoh's timeout replies end a call as cut short rather than failed. Shared memory is
+  compiled in: large messages go through it with one copy, and `Node::alloc_shm` gives a buffer
+  to write into for zero-copy, working around a zenoh 1.10 bug that freed such buffers in
+  flight.
+
 ### Tests
 
 - **The Rust core must keep 100% line and function coverage.** `make rust-test` and the new
@@ -34,7 +41,8 @@
   everything written reads back equal and that the parser never panics on arbitrary input.
   `spirisynq-schema` has 46, including property tests that every key built from a template
   decodes back to the same arguments. `spirisynq-core` has 57, run over an in-memory network
-  that connects several sessions as zenoh would.
+  that connects several sessions as zenoh would. `spirisynq-zenoh` has 21, over real zenoh
+  sessions on loopback TCP, shared memory and zenoh failures included.
 
 ### Internal
 

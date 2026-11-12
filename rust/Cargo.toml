@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["spirisynq-core", "spirisynq-schema", "spirisynq-yaml"]
+members = ["spirisynq-core", "spirisynq-schema", "spirisynq-yaml", "spirisynq-zenoh"]
 
 [workspace.package]
 edition = "2024"
