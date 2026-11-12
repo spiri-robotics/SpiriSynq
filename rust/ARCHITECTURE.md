@@ -1,7 +1,7 @@
 # SpiriSynq v2: Rust core architecture
 
-Status: decisions from the architecture pass of 2026-11-11. Implemented so far: `spirisynq-yaml`
-and `spirisynq-schema`.
+Status: decisions from the architecture pass of 2026-11-11. Implemented so far: `spirisynq-yaml`,
+`spirisynq-schema` and `spirisynq-core`.
 
 SpiriSynq v2 moves the protocol into a Rust core. Python becomes a binding on top of it (PyO3). v2
 may break both the wire protocol and the Python API.
@@ -114,8 +114,9 @@ x-wasm: {...}                # see "Code entries and loaders"
 
 ## Liveliness
 
-- Each authoritative object declares a zenoh liveliness token. The token says whether the object
-  is alive. It replaces the v1 tombstone.
+- Each authoritative object declares a zenoh liveliness token,
+  `<topic>/sr_alive/<zid of the owner's session>`. The token says whether the object is alive,
+  and which session owns it. It replaces the v1 tombstone.
 - Mirrors **do nothing** when a token disappears or reappears. They only report it.
 - Every nested child object has its own token.
 - The lease is zenoh's default and is left to the deployment's zenoh config. Measured with the
@@ -317,6 +318,48 @@ Decided 2026-11-11: **Python, C++ and browser JavaScript.** Node isn't a target.
 - Previously considered (zenoh-ts over `zenoh-plugin-remote-api`): it carries no SourceInfo and
   its WebSocket protocol is crate-private. Rejected in favour of real zenoh.
 
+## Wire protocol
+
+Decided 2026-11-11, implemented in `spirisynq-core`. Every payload the core writes or decodes is
+YAML (encoding `application/yaml`); everything else passes through to the binding untouched.
+
+| Key under `<topic>` | Who | What |
+| --- | --- | --- |
+| `<field>`, `<field>/<sub-field>`… | owner and mirrors | puts of field values |
+| `<method key>` | owner's queryable | remote calls |
+| `sr_rehydrate` | owner's queryable | full state |
+| `sr_metadata`, `sr_metadata/<type>` | owner's queryable | `{topic, owner: <zid>, type: <$id>, bases: [<$id>…]}` |
+| `sr_object_schema`, `sr_type_schema/<type>` | owner's queryable | the type's schema |
+| `sr_alive/<zid>` | owner's liveliness token | the owner is alive, in that session |
+
+`<type>` is a type id without its version, as one key chunk (`pypi:<dist>:<path>`,
+`uuid:<uuid>`, `uri:<escaped URI>`), mounted for the type and each of its bases, so
+`**/sr_metadata/<type>` finds every object of a type, whatever its version.
+
+- **Fields: the owner confirms.** A mirror applies only values its owner published. A write from
+  a mirror is a put on the field's key; the owner applies it (or ignores it, with
+  `ignore_incoming`), runs its callbacks, and republishes the result, so every mirror converges
+  on the owner's value. The writing mirror shows its own value at once, until the owner's
+  arrives. The owner is the session named by the newest liveliness token, or, before one
+  arrives, the session that answered the state fetch.
+- **Sources** are zenoh `SourceInfo`: a mirror checks the session id; an owner drops its own
+  echoes by publisher. A sample without `SourceInfo` is never taken as the owner's. `SourceInfo`
+  is self-reported, so this is consistency, not security: ACLs on the field keys are.
+- **Full state** (`sr_rehydrate`): one reply per field, keyed `<topic>/<field>` and exactly as
+  the field's put would be (payload, encoding, attachment), so custom encodings and shared memory
+  work for it too. Fields with `x-skip-rehydrate` and fields never set are left out. The get
+  accepts replies on any key. A mirror subscribes before it fetches; a value that arrives live
+  during the fetch wins over the fetched one for that key.
+- **Remote calls:** a get on the method's key. Arguments not in the key template are one YAML
+  mapping in the query payload; selector parameters are left to the caller (the raw escape
+  hatch, such as an auth token). Each value is one reply. A successful answer ends with a reply of
+  encoding `x-spirisynq/done` and an empty payload, on the same key; a stream that ends without
+  it was cut short (timeout, owner gone). An error is an error reply
+  `{type: <exception type>, message: <text>}`, and ends the call. The built-in queries end
+  with the done reply too. Consolidation is always off.
+- **Wildcard queries** that happen to reach a method's queryable (`**/sr_metadata` reaches
+  `read/*/**`) aren't calls: the owner ends them without replying.
+
 ## Crate layout
 
 A Cargo workspace in `rust/`. Lower crates know nothing about the ones above them.
@@ -325,13 +368,20 @@ A Cargo workspace in `rust/`. Lower crates know nothing about the ones above the
 | --- | --- | --- |
 | `spirisynq-yaml` | The strict YAML 1.2 subset: parser and canonical writer, producing a `Value` tree that keeps tags. Built on `saphyr-parser`'s event stream; the subset rules are ours. | everywhere |
 | `spirisynq-schema` | The JSON Schema model we use, `$id`, `x-wasm` entries, and compiling a type tree into its key plan (the exact keys an object publishes and subscribes to). | everywhere |
-| `spirisynq-core` | The engine: authoritative objects and mirrors, field state, change detection, echo suppression, links, liveliness reporting, remote-call bookkeeping. Talks to the network only through a `Transport` trait and runs WASM only through a `WasmHost` trait. Runtime-agnostic async (`futures`, no Tokio, no threads), so it compiles for the browser. | everywhere |
-| `spirisynq-zenoh` | `Transport` over main zenoh. | native |
+| `spirisynq-core` | The engine: authoritative objects and mirrors, field state, change detection, echo suppression, the built-in queries, remote-call routing, liveliness and listener reports. Sans-IO: it emits `Command`s for a transport to carry out and takes the network's `Event`s back, so it has no runtime, no threads and no clock, and runs unchanged in the browser. `memory::MemoryNetwork` connects sessions in one process for tests. WASM will run through a `WasmHost` trait. | everywhere |
+| `spirisynq-zenoh` | The transport over main zenoh, with the `shared-memory` and `unstable` features (`SourceInfo` needs `unstable` anyway). | native |
 | `spirisynq-extism` | `WasmHost` over Extism (wasmtime). | native |
 | `spirisynq-python` | PyO3 extension module `SpiriSynq._core`; the Python package in `src/SpiriSynq/` builds the user API on it. | native |
 | `spirisynq-c` | The C ABI and its cbindgen header. The header-only C++ wrapper lives beside it in `rust/spirisynq-c/cpp/`. | native |
 | `spirisynq-web` | The browser build: `Transport` over zenoh-nostd's `ws/` link, `WasmHost` over the browser's own WebAssembly engine, and the JS API (wasm-bindgen). | browser |
 
+- **Shared memory** (zenoh's experimental SHM transport): with `shared-memory` compiled in,
+  zenoh moves messages of 3 KiB and up between processes on one machine through shared memory
+  by itself (`transport/shared_memory` in the zenoh config, on by default). Payloads are
+  `spirisynq_core::Payload`, a shared handle over any byte container, which the core never
+  copies: a transport's own buffer, shared memory included, passes through a custom encoding, a
+  raw method or a raw reply and comes back as the same buffer. Explicit SHM allocation, saving
+  the copy into shared memory, is the zenoh crate's choice to make later.
 - Field values inside the core are `spirisynq_yaml::Value`. Each binding converts them to and
   from native values; none of them parses YAML.
 - The core reports what happened (field changed, link re-pointed, token gone, call arrived) as
@@ -350,7 +400,10 @@ Every crate keeps 100% line and function coverage (`cargo llvm-cov --fail-under-
 is reported but not enforced: some regions are error paths that can't occur, such as a `?` on a
 call that can't fail in that context. Defensive branches that can't be reached go on a line that
 is reached, rather than behind an exclusion; unit tests inside a crate don't count towards its
-coverage, because cargo-llvm-cov measures the library and its unit-test build separately.
+coverage, because cargo-llvm-cov measures the library and its unit-test build separately. Keep
+library types non-generic where tests use them: each test binary builds its own copy of a
+generic function, and a copy one binary never calls counts as missed even when another binary
+runs it.
 
 ### Unsafe code
 
@@ -369,6 +422,12 @@ Build order: `yaml` → `schema` → `core` with an in-memory `Transport` for te
 
 ## Still open
 
+- Following links is the binding's job for now: the core carries `!Link` values like any other.
+  Moving it into the core, so every binding follows links the same way, comes with the C and
+  browser bindings.
+- A mirror's state fetch and a live value for a sub-field: a live `gps/latitude` doesn't stop a
+  fetched `gps` from replacing it with the older value. Rare (it needs the change to land
+  between the mirror's subscription and the owner's answer), and the next change fixes it.
 
 - How an object is told its parent when it's created (and so its derived topic).
 - Codecs were dropped (2026-11-11). Custom encoding is per field: `<field>_before_send(value,

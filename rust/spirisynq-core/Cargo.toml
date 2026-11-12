@@ -1,0 +1,11 @@
+[package]
+name = "spirisynq-core"
+version = "0.1.0"
+description = "The SpiriSynq engine: authoritative objects, mirrors and remote calls, independent of any transport"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+spirisynq-schema = { path = "../spirisynq-schema" }
+spirisynq-yaml = { path = "../spirisynq-yaml" }

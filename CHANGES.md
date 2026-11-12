@@ -19,13 +19,22 @@
   SpiriSynq reserves. It also checks topics, and gives each type id a versionless key chunk for
   discovery.
 
+- **`spirisynq-core`, the engine**: authoritative objects and mirrors, field publishing with
+  change detection, writes from mirrors confirmed by the owner, echo suppression, nested
+  dataclasses synced field by field, custom (raw) encodings, lazy fields and listener reports,
+  liveliness, full-state fetches, remote calls with key templates, raw methods and raw replies,
+  discovery and schema fetches. It does no I/O, so it runs the same over zenoh, in the browser
+  and in tests; payloads pass through it uncopied, ready for zenoh's shared-memory transport.
+  The v2 wire protocol is in `rust/ARCHITECTURE.md`.
+
 ### Tests
 
 - **The Rust core must keep 100% line and function coverage.** `make rust-test` and the new
   `Rust` workflow fail below it. `spirisynq-yaml` has 58 tests, including property tests that
   everything written reads back equal and that the parser never panics on arbitrary input.
   `spirisynq-schema` has 46, including property tests that every key built from a template
-  decodes back to the same arguments.
+  decodes back to the same arguments. `spirisynq-core` has 57, run over an in-memory network
+  that connects several sessions as zenoh would.
 
 ### Internal
 

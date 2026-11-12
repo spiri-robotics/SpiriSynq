@@ -406,6 +406,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "spirisynq-core"
+version = "0.1.0"
+dependencies = [
+ "spirisynq-schema",
+ "spirisynq-yaml",
+]
+
+[[package]]
 name = "spirisynq-schema"
 version = "0.1.0"
 dependencies = [
