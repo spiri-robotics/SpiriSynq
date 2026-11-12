@@ -10,11 +10,22 @@
   aliases, `---`, multiple documents, collection keys, duplicate keys, empty values and every
   tag except local ones and `!!binary` are rejected.
 
+- **`spirisynq-schema`**: reads a type's JSON Schema and works out its key plan, the exact keys
+  each field and remote method uses. That includes the per-field keys of nested dataclasses,
+  key templates with percent-encoding that has only one encoding per value, and the link
+  targets each field may hold. It also reads type ids (`urn:pypi:`, `urn:uuid:` or any URI;
+  identity ignores the version) and `x-wasm` entries, checking inline code against its hash. It
+  rejects schemas whose members answer overlapping keys, or that claim the `sr_` keys
+  SpiriSynq reserves. It also checks topics, and gives each type id a versionless key chunk for
+  discovery.
+
 ### Tests
 
 - **The Rust core must keep 100% line and function coverage.** `make rust-test` and the new
   `Rust` workflow fail below it. `spirisynq-yaml` has 58 tests, including property tests that
   everything written reads back equal and that the parser never panics on arbitrary input.
+  `spirisynq-schema` has 46, including property tests that every key built from a template
+  decodes back to the same arguments.
 
 ### Internal
 

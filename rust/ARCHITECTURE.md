@@ -1,6 +1,7 @@
 # SpiriSynq v2: Rust core architecture
 
-Status: decisions from the architecture pass of 2026-11-11. Nothing here is implemented yet.
+Status: decisions from the architecture pass of 2026-11-11. Implemented so far: `spirisynq-yaml`
+and `spirisynq-schema`.
 
 SpiriSynq v2 moves the protocol into a Rust core. Python becomes a binding on top of it (PyO3). v2
 may break both the wire protocol and the Python API.
@@ -29,6 +30,58 @@ Rust-defined types.
 
 There are no evolution rules. Keeping a type backwards compatible is up to its implementors.
 Version mismatches between nodes are out of scope: at most, the library reports them.
+
+### Schema format
+
+Implemented in `spirisynq-schema` (2026-11-11). A type schema is a JSON Schema 2020-12 object
+schema, carried as YAML. The core reads the keywords below; everything else passes through to
+the bindings, which check values against it.
+
+```yaml
+$schema: https://json-schema.org/draft/2020-12/schema
+x-spirisynq-schema: 3        # format version; v1 wrote 2
+$id: urn:pypi:spirirobot:1.2.0:spirirobot.Robot
+x-bases: [urn:pypi:spirirobot:1.2.0:spirirobot.Vehicle]   # syncable base types
+properties:                  # one per synced field (synq_skip_sync fields are left out)
+  voltage: {type: number}
+  image: {type: string, x-yaml-tag: "!!binary", x-skip-rehydrate: true}
+  gps: {anyOf: [{$ref: "#/$defs/Gps"}, {type: "null"}]}
+  camera: {type: string, x-yaml-tag: "!Link", x-link: "urn:pypi:spiricamera:0.3.4:spiricamera.camera.Camera"}
+$defs:
+  Gps: {type: object, x-sync: fields, properties: {latitude: {type: number}}}
+x-remote-methods:
+  read:
+    x-key: read/data/{path:**}
+    parameters: {type: object, properties: {path: {type: string}}}
+    returns: {type: string}  # the schema of each reply
+    x-generator: true        # any number of replies; without it, exactly one
+x-wasm: {...}                # see "Code entries and loaders"
+```
+
+- **`$id` forms:**
+  - `urn:pypi:<dist>:<version>:<import path>`;
+  - `urn:uuid:<uuid>:<version>`, written for a class that sets `synq_type_id = "<uuid>:<version>"`;
+  - any other absolute URI, which is opaque and has no version.
+
+  Type identity ignores the version. Distribution names are compared after PEP 503
+  normalization, and UUIDs ignore case.
+- **Field keys:** each property `f` is published on `<topic>/f`. A `$defs` entry marked
+  `x-sync: fields` is a `SubSyncableDataclass`. A field that refers to one, directly or in an
+  `anyOf` branch, also gets a key for each of that dataclass's fields: `<topic>/f/latitude`,
+  recursively. Such a dataclass can't contain itself, and a field can refer to at most one.
+  Other dataclasses are sent whole.
+- **Links:** `x-link` names the type a link points to. It can sit anywhere in a field's schema:
+  in lists, in dicts, in union branches, or in fields of a plain dataclass. A link's target
+  must be that type, or list it in `x-bases`.
+- **Remote method keys:**
+  - A remote method answers on its name, or on `x-key`. Placeholders must be string parameters.
+  - A `{name}` value also escapes `/`, as `%2F`.
+  - Decoding accepts only the escapes the encoder writes, so each value has exactly one key. An
+    ACL on `read/data/secret` can't be sidestepped with `read/data/%73ecret`.
+- **Reserved keys:** a member's key may not start with a chunk beginning `sr_`, or with a
+  placeholder. No two members' keys may overlap. Both are checked when the schema is loaded.
+- **Forward compatibility:** unknown `x-wasm` roles and loaders are kept, so a schema from a
+  newer peer still loads; the core just can't run that code.
 
 ## Subscriptions come from the type tree
 
@@ -177,11 +230,13 @@ Everything is built on a generic loader. Each WASM method is one entry in the sc
 x-wasm:
   cell_voltage:
     role: property        # property | method | before_call | after_call | on_change_mirror
+                          #   | before_send | after_receive
+    of: ...               # hooks only: the remote method (before/after_call) or field key
     loader: python        # python | lua | javascript | wat | wasm
     entry: cell_voltage   # function to call inside the code
-    source: |             # omitted when large; fetched by hash
+    source: |             # omitted when large; fetched by hash. `wasm` takes !!binary
       ...
-    hash: sha256:...
+    hash: sha256:...      # of the UTF-8 text or the module bytes; checked when inline
     params: {...}         # JSON Schema
     returns: {...}
 ```
@@ -313,6 +368,7 @@ Build order: `yaml` → `schema` → `core` with an in-memory `Transport` for te
 `python` → `c` → `web` → `extism`. Each is tested before the next starts.
 
 ## Still open
+
 
 - How an object is told its parent when it's created (and so its derived topic).
 - Codecs were dropped (2026-11-11). Custom encoding is per field: `<field>_before_send(value,
