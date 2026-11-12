@@ -24,7 +24,9 @@
   dataclasses synced field by field, custom (raw) encodings, lazy fields and listener reports,
   liveliness, full-state fetches, remote calls with key templates, raw methods and raw replies,
   discovery and schema fetches. A mirror opened before its owner, or while the owner is still
-  starting, fetches the owner's state again once the owner's token appears. It does no I/O, so it runs the same over zenoh, in the browser
+  starting, fetches the owner's state again once the owner's token appears. Wildcards in a query
+  stand for the topic part only: `**/set_limit` calls every object's `set_limit`, each owner
+  answering on its own key, while `**` alone reaches nothing. It does no I/O, so it runs the same over zenoh, in the browser
   and in tests; payloads pass through it uncopied, ready for zenoh's shared-memory transport.
   The v2 wire protocol is in `rust/ARCHITECTURE.md`.
 
@@ -41,7 +43,7 @@
   `Rust` workflow fail below it. `spirisynq-yaml` has 58 tests, including property tests that
   everything written reads back equal and that the parser never panics on arbitrary input.
   `spirisynq-schema` has 46, including property tests that every key built from a template
-  decodes back to the same arguments. `spirisynq-core` has 59, run over an in-memory network
+  decodes back to the same arguments. `spirisynq-core` has 60, run over an in-memory network
   that connects several sessions as zenoh would. `spirisynq-zenoh` has 21, over real zenoh
   sessions on loopback TCP, shared memory and zenoh failures included.
 

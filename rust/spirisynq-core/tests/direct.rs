@@ -104,7 +104,10 @@ fn what_an_owner_declares() {
 fn type_mounts_answer_on_their_own_keys() {
     let mut o = Owner::new();
     let key = "robot/battery/sr_type_schema/uuid:6f1c2a9e-4b7d-4e2a-9c1f-3d8b5e0a7c42";
-    let sent = o.query(&format!("queryable {key}"), "**/sr_type_schema/*");
+    let sent = o.query(
+        &format!("queryable {key}"),
+        "**/sr_type_schema/uuid:6f1c2a9e-4b7d-4e2a-9c1f-3d8b5e0a7c42",
+    );
     assert_eq!(
         sent[0],
         Command::Reply {
@@ -233,4 +236,89 @@ fn a_mirror_writes_on_its_own_publisher_once_declared() {
         2
     );
     let _: Vec<Notice> = Vec::new();
+}
+
+/// Whether a query on `queryable` is answered, and on which key: the call's key for a method,
+/// the reply's key for a built-in query.
+fn answer(o: &mut Owner, queryable: &str, query: &str) -> Option<String> {
+    let finished = Command::Finish { query: QueryId(7) };
+    let sent = o.query(&format!("queryable {queryable}"), query);
+    if sent == [finished] {
+        return None;
+    }
+    if let Some(Command::Reply { key, .. }) = sent.first() {
+        return Some(key.clone());
+    }
+    match notices(&mut o.session).pop() {
+        Some(Notice::Call(call)) => Some(format!("{} {}", call.method, call.key)),
+        other => panic!("{sent:?} {other:?}"),
+    }
+}
+
+#[test]
+fn a_query_reaches_the_member_it_ends_with() {
+    let mut o = Owner::new();
+    let calls = [
+        // Wildcards stand for the topic part; the member's own key is written out.
+        (
+            "robot/battery/set_limit",
+            "**/set_limit",
+            "set_limit robot/battery/set_limit",
+        ),
+        (
+            "robot/battery/set_limit",
+            "*/battery/set_limit",
+            "set_limit robot/battery/set_limit",
+        ),
+        (
+            "robot/battery/set_limit",
+            "r$*/b$*t$*y/set_limit",
+            "set_limit robot/battery/set_limit",
+        ),
+        (
+            "robot/battery/set_limit",
+            "ro$*/battery/set_limit",
+            "set_limit robot/battery/set_limit",
+        ),
+        (
+            "robot/battery/read/*/**",
+            "**/read/al/logs/today",
+            "read robot/battery/read/al/logs/today",
+        ),
+        (
+            "robot/battery/sr_metadata",
+            "**/sr_metadata",
+            "robot/battery/sr_metadata",
+        ),
+        (
+            "robot/battery/sr_rehydrate",
+            "**/sr_rehydrate",
+            "robot/battery/sr_rehydrate",
+        ),
+    ];
+    for (queryable, query, want) in calls {
+        let got = answer(&mut o, queryable, query);
+        assert_eq!(got.as_deref(), Some(want), "{query}");
+    }
+    let quiet = [
+        // Nothing names a member.
+        ("robot/battery/set_limit", "**"),
+        ("robot/battery/sr_metadata", "robot/**"),
+        (
+            "robot/battery/sr_type_schema/uuid:6f1c2a9e-4b7d-4e2a-9c1f-3d8b5e0a7c42",
+            "**/sr_type_schema/*",
+        ),
+        // `read`'s part of the key isn't written out: not a call to `read`.
+        ("robot/battery/read/*/**", "**/set_limit"),
+        ("robot/battery/read/*/**", "**/al/logs"),
+        // The object's own key doesn't match.
+        ("robot/battery/set_limit", "x$*/battery/set_limit"),
+        ("robot/battery/set_limit", "r$*z$*y/battery/set_limit"),
+        ("robot/battery/set_limit", "robot$*x/battery/set_limit"),
+        ("robot/battery/set_limit", "robot/battery/extra/set_limit"),
+        ("robot/battery/set_limit", "robot/set_limit"),
+    ];
+    for (queryable, query) in quiet {
+        assert_eq!(answer(&mut o, queryable, query), None, "{query}");
+    }
 }

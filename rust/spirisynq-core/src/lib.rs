@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod keyexpr;
 pub mod memory;
 mod notice;
 mod session;

@@ -8,6 +8,7 @@ use spirisynq_schema::{TypeId, TypeSchema, check_topic};
 use spirisynq_yaml::Value;
 
 use crate::Error;
+use crate::keyexpr;
 use crate::notice::{Data, IncomingCall, Notice, ObjectId, Origin, ReplyError, RequestEnd};
 use crate::store::{Store, Stored};
 use crate::transport::{Command, EntityId, Event, Qos, QueryId, RequestId, Sample, Source, Zid};
@@ -159,7 +160,7 @@ enum Route {
     Rehydrate,
     Metadata(String),
     Schema(String),
-    Method,
+    Method(String),
     Token,
     Alive,
 }
@@ -353,7 +354,7 @@ impl Session {
         }
         for method in schema.methods() {
             let key = wire::key(&topic, &method.key.key_expr());
-            self.declare(object, Route::Method, queryable(key));
+            self.declare(object, Route::Method(method.name.clone()), queryable(key));
         }
         let key = format!("{topic}/{ALIVE}/{}", self.zid);
         self.declare(object, Route::Token, |id| Command::DeclareToken { id, key });
@@ -819,6 +820,19 @@ impl Session {
             return;
         };
         let obj = &self.objects[&object];
+        let accepts = |rel: &str| match &route {
+            Route::Rehydrate => rel == REHYDRATE,
+            Route::Metadata(key) | Route::Schema(key) => wire::key(&obj.topic, rel) == *key,
+            Route::Method(name) => {
+                (obj.schema.method_for_key(rel)).is_some_and(|(m, _)| m.name == *name)
+            }
+            _ => false,
+        };
+        let Some(rel) = member(&key, &obj.topic, accepts) else {
+            // `**`, `robot/**` or a query for another member: nothing this queryable answers.
+            self.commands.push_back(Command::Finish { query });
+            return;
+        };
         match route {
             Route::Rehydrate => {
                 let topic = obj.topic.clone();
@@ -871,8 +885,10 @@ impl Session {
                 }
                 Err(e) => self.end_with_error(query, "RuntimeError", &format!("schema: {e}")),
             },
-            Route::Method => self.on_call(object, query, key, parameters, payload),
-            _ => self.commands.push_back(Command::Finish { query }),
+            _ => {
+                let rel = rel.to_owned();
+                self.on_call(object, query, &rel, parameters, payload);
+            }
         }
     }
 
@@ -880,20 +896,13 @@ impl Session {
         &mut self,
         object: ObjectId,
         query: QueryId,
-        key: String,
+        rel: &str,
         parameters: String,
         payload: Option<Sample>,
     ) {
         let obj = &self.objects[&object];
-        let routed = key
-            .strip_prefix(&format!("{}/", obj.topic))
-            .filter(|rel| !rel.contains(['*', '$']))
-            .and_then(|rel| obj.schema.method_for_key(rel));
-        let Some((method, key_args)) = routed else {
-            // A wildcard query that happens to reach this queryable isn't a call.
-            self.commands.push_back(Command::Finish { query });
-            return;
-        };
+        let key = wire::key(&obj.topic, rel);
+        let (method, key_args) = obj.schema.method_for_key(rel).expect("accepted");
         let name = method.name.clone();
         let raw = obj.raw_methods.contains(&name);
         let key_args = match key_args {
@@ -1106,6 +1115,18 @@ impl Session {
             });
         }
     }
+}
+
+/// The member key, under an object's `topic`, that a query asks for: the query must end with it
+/// written out (wildcards stand only for the topic part), `accepts` must take it, and the
+/// object's key for it must match the query. So `**/set_limit` and `fleet/*/battery/set_limit`
+/// reach `set_limit`, and `**` or `robot/**` reaches nothing. The longest such key wins.
+fn member<'a>(query: &'a str, topic: &str, accepts: impl Fn(&str) -> bool) -> Option<&'a str> {
+    let starts = iter::once(0).chain(query.match_indices('/').map(|(i, _)| i + 1));
+    starts
+        .map(|i| &query[i..])
+        .filter(|rel| !rel.contains('*'))
+        .find(|rel| accepts(rel) && keyexpr::includes(query, &wire::key(topic, rel)))
 }
 
 fn queryable(key: String) -> impl FnOnce(EntityId) -> Command {

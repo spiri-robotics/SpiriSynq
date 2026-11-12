@@ -362,8 +362,13 @@ YAML (encoding `application/yaml`); everything else passes through to the bindin
   it was cut short (timeout, owner gone). An error is an error reply
   `{type: <exception type>, message: <text>}`, and ends the call. The built-in queries end
   with the done reply too. Consolidation is always off.
-- **Wildcard queries** that happen to reach a method's queryable (`**/sr_metadata` reaches
-  `read/*/**`) aren't calls: the owner ends them without replying.
+- **Wildcards stand for the topic part only** (decided 2026-11-11). A query reaches a member
+  (a remote method or a built-in query) when it ends with that member's key written out and
+  the object's key for it matches the query: `**/set_limit` calls `set_limit` on every object
+  that has it, `fleet/*/battery/set_limit` on every battery under `fleet`, `**/sr_metadata`
+  asks every object. `**` or `robot/**` reaches nothing, and `**/set_limit` doesn't call
+  `read(path="set_limit")`, since `read`'s part isn't written out. Each owner answers on its
+  own concrete key. Gathering the answers of a fan-out call is left to a `before_call` hook.
 
 ## Crate layout
 
