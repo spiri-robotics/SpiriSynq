@@ -63,6 +63,13 @@ pub struct CallOptions {
 /// A mirror's state fetch under way, and the fields that arrived live meanwhile.
 type Fetch = Option<(RequestId, HashSet<String>)>;
 
+type MirrorMut<'a> = (
+    &'a mut Option<Zid>,
+    &'a mut Fetch,
+    &'a mut bool,
+    &'a mut bool,
+);
+
 #[derive(Debug)]
 enum Role {
     Owner {
@@ -72,16 +79,24 @@ enum Role {
         owner: Option<Zid>,
         tokens: BTreeSet<Zid>,
         rehydrating: Fetch,
+        /// A fetch was wanted and none has completed since: fetch again when a token appears.
+        stale: bool,
+        /// A token appeared during the fetch under way: fetch again if it doesn't complete.
+        again: bool,
     },
 }
 
 impl Role {
-    /// A mirror's owner and state fetch.
-    fn mirror_mut(&mut self) -> Option<(&mut Option<Zid>, &mut Fetch)> {
+    /// A mirror's owner, state fetch, and whether to fetch again (`stale`, `again`).
+    fn mirror_mut(&mut self) -> Option<MirrorMut<'_>> {
         match self {
             Role::Mirror {
-                owner, rehydrating, ..
-            } => Some((owner, rehydrating)),
+                owner,
+                rehydrating,
+                stale,
+                again,
+                ..
+            } => Some((owner, rehydrating, stale, again)),
             Role::Owner { .. } => None,
         }
     }
@@ -358,6 +373,8 @@ impl Session {
             owner: None,
             tokens: BTreeSet::new(),
             rehydrating: None,
+            stale: false,
+            again: false,
         };
         let object = self.open(topic, schema.clone(), options, role)?;
         let key = format!("{topic}/{ALIVE}/*");
@@ -385,15 +402,19 @@ impl Session {
             .objects
             .get_mut(&object)
             .expect("checked by the caller");
-        if let Role::Mirror { rehydrating, .. } = &mut obj.role
-            && let Some((old, _)) = rehydrating.replace((request, HashSet::new()))
-        {
+        let (_, rehydrating, stale, again) = obj.role.mirror_mut().expect("only mirrors fetch");
+        (*stale, *again) = (true, false);
+        if let Some((old, _)) = rehydrating.replace((request, HashSet::new())) {
             self.requests.remove(&old);
         }
     }
 
     /// Fetch a mirror's full state again. Values arrive as [`Notice::Incoming`] with
     /// [`Origin::Rehydrate`], then [`Notice::Rehydrated`]. A fetch already under way is dropped.
+    ///
+    /// Until a fetch completes, the mirror fetches again by itself whenever an owner's token
+    /// appears: a mirror opened before its owner, or while the owner's declarations are still on
+    /// their way, catches up once the owner is reachable.
     pub fn rehydrate(&mut self, object: ObjectId) -> Result<(), Error> {
         match self.object(object)?.role {
             Role::Mirror { .. } => {
@@ -986,19 +1007,22 @@ impl Session {
             .get_mut(&object)
             .expect("closing drops its requests");
         let path = key.strip_prefix(&format!("{}/", obj.topic));
-        let live = obj.role.mirror_mut().is_some_and(|(owner, rehydrating)| {
-            if owner.is_none() {
-                *owner = match replier {
-                    Source::Remote(z) => Some(z),
-                    Source::Local(_) => Some(local),
-                    Source::Unknown => None,
-                };
-            }
-            rehydrating
-                .as_ref()
-                .zip(path)
-                .is_some_and(|((_, seen), path)| seen.contains(path))
-        });
+        let live = obj
+            .role
+            .mirror_mut()
+            .is_some_and(|(owner, rehydrating, _, _)| {
+                if owner.is_none() {
+                    *owner = match replier {
+                        Source::Remote(z) => Some(z),
+                        Source::Local(_) => Some(local),
+                        Source::Unknown => None,
+                    };
+                }
+                rehydrating
+                    .as_ref()
+                    .zip(path)
+                    .is_some_and(|((_, seen), path)| seen.contains(path))
+            });
         let path = path?;
         if obj.schema.field(path).is_none() || live {
             return None;
@@ -1019,13 +1043,18 @@ impl Session {
                     .objects
                     .get_mut(&object)
                     .expect("closing drops its requests");
-                if let Role::Mirror { rehydrating, .. } = &mut obj.role {
-                    *rehydrating = None;
+                let complete = end == RequestEnd::Done;
+                let (_, rehydrating, stale, again) =
+                    obj.role.mirror_mut().expect("only mirrors fetch");
+                *rehydrating = None;
+                *stale = !complete;
+                let retry = !complete && *again;
+                self.notices
+                    .push_back(Notice::Rehydrated { object, complete });
+                if retry {
+                    self.start_rehydrate(object);
                 }
-                Notice::Rehydrated {
-                    object,
-                    complete: end == RequestEnd::Done,
-                }
+                return;
             }
             _ => Notice::RequestEnded { request, end },
         };
@@ -1052,6 +1081,13 @@ impl Session {
         let now = !tokens.is_empty();
         if was != now {
             self.notices.push_back(Notice::Alive { object, alive: now });
+        }
+        // A mirror still without the owner's state fetches it now that an owner is reachable.
+        let (_, rehydrating, stale, again) = obj.role.mirror_mut().expect("matched above");
+        let fetch = alive && *stale && rehydrating.is_none();
+        *again |= alive && *stale && rehydrating.is_some();
+        if fetch {
+            self.start_rehydrate(object);
         }
     }
 

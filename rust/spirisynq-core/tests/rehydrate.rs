@@ -367,3 +367,98 @@ fn a_local_owner_named_by_the_fetch() {
     );
     let _ = owner;
 }
+
+#[test]
+fn a_mirror_opened_before_its_owner_catches_up() {
+    let mut net = Net::new();
+    net.add_session();
+    net.add_session();
+    let mirror = net
+        .session(0)
+        .create_mirror("robot/battery", battery(), ObjectOptions::default())
+        .unwrap();
+    net.run();
+    let rehydrated = |complete| Notice::Rehydrated {
+        object: mirror,
+        complete,
+    };
+    assert_eq!(notices(net.session(0)), [rehydrated(false)]);
+    // The owner's token makes the mirror fetch again.
+    let owner = net
+        .session(1)
+        .create_owner("robot/battery", battery(), ObjectOptions::default())
+        .unwrap();
+    net.session(1)
+        .set_field(owner, "voltage", v("12.5"))
+        .unwrap();
+    net.clear_trace();
+    net.run();
+    // The mirror already subscribed, so the value also arrives live, and wins over the fetched one.
+    assert_eq!(
+        notices(net.session(0)),
+        [
+            Notice::Alive {
+                object: mirror,
+                alive: true
+            },
+            incoming(mirror, "voltage", "12.5", Origin::Owner),
+            rehydrated(true),
+        ]
+    );
+    assert!(net.trace().iter().any(|l| l.contains("sr_rehydrate")));
+    // Once it has the state, an owner coming back is only reported.
+    net.session(1).close(owner).unwrap();
+    net.session(1)
+        .create_owner("robot/battery", battery(), ObjectOptions::default())
+        .unwrap();
+    net.clear_trace();
+    net.run();
+    assert!(!net.trace().iter().any(|l| l.contains("sr_rehydrate")));
+}
+
+#[test]
+fn a_token_during_a_fetch_that_fails_fetches_again() {
+    let (mut session, mirror, request, subscribers) = lone_mirror();
+    let token = Event::Liveliness {
+        subscriber: id_of(&subscribers, "robot/battery/sr_alive/*"),
+        key: "robot/battery/sr_alive/owner".into(),
+        alive: true,
+    };
+    let fetches = |session: &mut Session| {
+        commands(session)
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Get { id, key, .. } if key == "robot/battery/sr_rehydrate" => Some(id),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // The token arrives during the fetch: nothing yet.
+    session.handle(token.clone());
+    assert_eq!(fetches(&mut session), []);
+    // The fetch ends without its answer: fetch again.
+    session.handle(Event::RequestDone { request });
+    let again = fetches(&mut session);
+    assert_eq!(again.len(), 1);
+    // This time a token arrives and the fetch completes: that's the end of it.
+    session.handle(token.clone());
+    let done = Sample::new(Vec::new(), "x-spirisynq/done");
+    session.handle(reply(
+        again[0],
+        "robot/battery/sr_rehydrate",
+        Ok(done),
+        Source::Unknown,
+    ));
+    session.handle(Event::RequestDone { request: again[0] });
+    session.handle(token);
+    assert_eq!(fetches(&mut session), []);
+    let ended: Vec<_> = notices(&mut session)
+        .into_iter()
+        .filter(|n| matches!(n, Notice::Rehydrated { .. }))
+        .collect();
+    let rehydrated = |complete| Notice::Rehydrated {
+        object: mirror,
+        complete,
+    };
+    assert_eq!(ended, [rehydrated(false), rehydrated(true)]);
+}

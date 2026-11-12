@@ -117,7 +117,12 @@ x-wasm: {...}                # see "Code entries and loaders"
 - Each authoritative object declares a zenoh liveliness token,
   `<topic>/sr_alive/<zid of the owner's session>`. The token says whether the object is alive,
   and which session owns it. It replaces the v1 tombstone.
-- Mirrors **do nothing** when a token disappears or reappears. They only report it.
+- Mirrors **do nothing** when a token disappears or reappears. They only report it. One
+  exception (decided 2026-11-11): until a state fetch completes, a mirror fetches again,
+  in the core, whenever an owner's token appears, including one that appears during a fetch
+  that then ends incomplete. A mirror opened before its owner, or while the owner's
+  declarations are still on their way (both starting together), catches up once the owner is
+  reachable. Each fetch still ends with `Rehydrated`, so an incomplete one is reported.
 - Every nested child object has its own token.
 - The lease is zenoh's default and is left to the deployment's zenoh config. Measured with the
   default config: a killed process's token disappears immediately (its TCP connection closes); a
@@ -450,12 +455,6 @@ Build order: `yaml` → `schema` → `core` with an in-memory `Transport` for te
 `python` → `c` → `web` → `extism`. Each is tested before the next starts.
 
 ## Still open
-
-- A mirror opened while its owner's declarations are still on their way, as when both start
-  together, can fetch before the owner's queryable reaches it and get nothing (`Rehydrated`
-  not complete), or get the owner's first value live. The binding should fetch again when the
-  owner's token appears after an incomplete fetch. Not decided whether the core should do that
-  itself.
 
 
 - Following links is the binding's job for now: the core carries `!Link` values like any other.
