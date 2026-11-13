@@ -3,7 +3,9 @@
  * Values cross as JSON: null is nil, numbers are integers or floats as written, arrays are
  * tables indexed from 1, objects are tables. A table goes out as an array when its keys are
  * exactly 1..n (an empty table is an empty array), else as an object, whose keys must be
- * strings or integers.
+ * strings or integers. Strings are bytes: bytes arrive as strings, and a string that isn't
+ * UTF-8 goes out as base64, marked as bytes (see ../spirisynq.h). One that is UTF-8 goes out as
+ * text, and the engine takes its bytes where the schema says bytes.
  *
  * Only Lua's base, coroutine, table, string, math and utf8 libraries are open: no files, OS or
  * packages, and `load` takes text only, since Lua's bytecode loader trusts its input.
@@ -190,38 +192,157 @@ static void decode(lua_State *L, const char *text, size_t len) {
     if (r.p != r.end) bad(&r, "text after the value");
 }
 
-/* ---- Lua values to JSON text ---- */
-
-/* One buffer, reused by every call; a failed encoding leaves nothing to free. */
-static struct { char *data; size_t len, cap; } out;
-
-static void put(lua_State *L, const char *s, size_t n) {
-    if (out.len + n > out.cap) {
-        size_t cap = out.cap ? out.cap : 256;
-        while (cap < out.len + n) cap *= 2;
-        char *data = realloc(out.data, cap);
-        if (data == NULL) luaL_error(L, "out of memory");
-        out.data = data;
-        out.cap = cap;
+/* Replace the base64 string at the top of the stack with the bytes it holds. */
+static void unbase64(lua_State *L) {
+    size_t n;
+    const char *text = lua_tolstring(L, -1, &n);
+    if (text == NULL) luaL_error(L, "bytes that aren't a base64 string");
+    unsigned char *raw = malloc(n / 4 * 3 + 1);
+    if (raw == NULL) luaL_error(L, "out of memory");
+    long len = synq_base64_decode(text, n, raw);
+    if (len < 0) {
+        free(raw);
+        luaL_error(L, "bytes that aren't base64");
     }
-    memcpy(out.data + out.len, s, n);
-    out.len += n;
+    lua_pushlstring(L, (const char *)raw, (size_t)len);
+    free(raw);
+    lua_replace(L, -2);
 }
 
-static void put_string(lua_State *L, const unsigned char *s, size_t n) {
-    put(L, "\"", 1);
-    for (size_t i = 0; i < n;) {
-        unsigned char c = s[i];
-        size_t width = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 0;
-        if (width == 0 || i + width > n) luaL_error(L, "a string that isn't UTF-8 has no JSON form");
-        for (size_t k = 1; k < width; k++)
-            if ((s[i + k] & 0xC0) != 0x80) luaL_error(L, "a string that isn't UTF-8 has no JSON form");
-        if (c == '"' || c == '\\') { put(L, "\\", 1); put(L, (const char *)&s[i], 1); }
-        else if (c < 0x20) { char esc[7]; snprintf(esc, sizeof esc, "\\u%04x", c); put(L, esc, 6); }
-        else put(L, (const char *)&s[i], width);
-        i += width;
+/* Push key `k` of the path at `path`, as a table key: a JSON index counts from 0, Lua's from 1. */
+static void push_key(lua_State *L, int path, lua_Integer k) {
+    if (lua_rawgeti(L, path, k) == LUA_TNUMBER) {
+        lua_Integer i = lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_pushinteger(L, i + 1);
     }
-    put(L, "\"", 1);
+}
+
+/* Make the base64 strings in the value at `idx` bytes, where the paths at the top of the stack
+ * say (popped). A path that's empty is the value itself. */
+static void unpack(lua_State *L, int idx) {
+    idx = lua_absindex(L, idx);
+    int paths = lua_gettop(L);
+    lua_Integer n = (lua_Integer)lua_rawlen(L, paths);
+    luaL_checkstack(L, 6, "too many paths");
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, paths, i);
+        int path = lua_gettop(L);
+        lua_Integer len = (lua_Integer)lua_rawlen(L, path);
+        lua_pushvalue(L, idx);
+        if (len == 0) {
+            unbase64(L);
+            lua_replace(L, idx);
+            lua_pop(L, 1);
+            continue;
+        }
+        for (lua_Integer k = 1; k < len; k++) {
+            push_key(L, path, k);
+            lua_gettable(L, -2);
+            lua_remove(L, -2);
+        }
+        push_key(L, path, len);
+        lua_pushvalue(L, -1);
+        lua_gettable(L, -3);
+        unbase64(L);
+        lua_settable(L, -3);
+        lua_pop(L, 2);
+    }
+    lua_pop(L, 1);
+}
+
+/* Make the bytes in the value at the top of the stack strings, where the host function that
+ * returned it says they are. */
+static void unpack_given(lua_State *L) {
+    size_t len;
+    char *json = synq_binary_paths(&len);
+    if (json == NULL) luaL_error(L, "out of memory");
+    if (len == 0) {
+        free(json);
+        return;
+    }
+    lua_pushlstring(L, json, len); /* so the text is freed even if decoding fails */
+    free(json);
+    const char *text = lua_tolstring(L, -1, &len);
+    decode(L, text, len);
+    lua_remove(L, -2);
+    unpack(L, -2);
+}
+
+/* ---- Lua values to JSON text ---- */
+
+/* Buffers reused by every call; a failed encoding leaves nothing to free. `out` is the JSON,
+ * `path` where in it the encoder is (keys and indexes, comma-separated), and `marks` the paths
+ * of the bytes in it. */
+typedef struct { char *data; size_t len, cap; } Buffer;
+static Buffer out, path, marks;
+
+/* Make room for `n` more bytes. */
+static void reserve(lua_State *L, Buffer *b, size_t n) {
+    if (b->len + n > b->cap) {
+        size_t cap = b->cap ? b->cap : 256;
+        while (cap < b->len + n) cap *= 2;
+        char *data = realloc(b->data, cap);
+        if (data == NULL) luaL_error(L, "out of memory");
+        b->data = data;
+        b->cap = cap;
+    }
+}
+
+static void add(lua_State *L, Buffer *b, const char *s, size_t n) {
+    reserve(L, b, n);
+    memcpy(b->data + b->len, s, n);
+    b->len += n;
+}
+
+static void put(lua_State *L, const char *s, size_t n) { add(L, &out, s, n); }
+
+/* How many bytes the UTF-8 character at `s` takes; 0 if there isn't one. */
+static size_t utf8_width(const unsigned char *s, size_t n) {
+    unsigned char c = s[0];
+    size_t width = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 0;
+    if (width == 0 || width > n) return 0;
+    for (size_t k = 1; k < width; k++)
+        if ((s[k] & 0xC0) != 0x80) return 0;
+    return width;
+}
+
+static int is_utf8(const unsigned char *s, size_t n) {
+    for (size_t i = 0, w; i < n; i += w)
+        if ((w = utf8_width(s + i, n - i)) == 0) return 0;
+    return 1;
+}
+
+static void put_string(lua_State *L, Buffer *b, const unsigned char *s, size_t n) {
+    if (!is_utf8(s, n)) luaL_error(L, "a table key that isn't UTF-8 has no JSON form");
+    add(L, b, "\"", 1);
+    for (size_t i = 0, width; i < n; i += width) {
+        unsigned char c = s[i];
+        width = utf8_width(s + i, n - i);
+        if (c == '"' || c == '\\') { add(L, b, "\\", 1); add(L, b, (const char *)&s[i], 1); }
+        else if (c < 0x20) { char esc[7]; snprintf(esc, sizeof esc, "\\u%04x", c); add(L, b, esc, 6); }
+        else add(L, b, (const char *)&s[i], width);
+    }
+    add(L, b, "\"", 1);
+}
+
+/* Bytes that aren't text: base64, marked where they are. */
+static void put_bytes(lua_State *L, const unsigned char *s, size_t n) {
+    size_t len = 4 * ((n + 2) / 3);
+    reserve(L, &out, len + 2);
+    out.data[out.len++] = '"';
+    out.len += synq_base64_encode(s, n, out.data + out.len);
+    out.data[out.len++] = '"';
+    add(L, &marks, marks.len ? ",[" : "[[", 2);
+    add(L, &marks, path.data, path.len);
+    add(L, &marks, "]", 1);
+}
+
+/* Go into an index or a key, at the end of `path`; returns where to come back to. */
+static size_t enter(lua_State *L) {
+    size_t back = path.len;
+    if (path.len) add(L, &path, ",", 1);
+    return back;
 }
 
 static void put_float(lua_State *L, double d) {
@@ -263,8 +384,9 @@ static void encode(lua_State *L, int idx, int depth) {
         return;
     case LUA_TSTRING: {
         size_t n;
-        const char *s = lua_tolstring(L, idx, &n);
-        put_string(L, (const unsigned char *)s, n);
+        const unsigned char *s = (const unsigned char *)lua_tolstring(L, idx, &n);
+        if (is_utf8(s, n)) put_string(L, &out, s, n);
+        else put_bytes(L, s, n);
         return;
     }
     case LUA_TTABLE:
@@ -275,9 +397,13 @@ static void encode(lua_State *L, int idx, int depth) {
             put(L, "[", 1);
             for (lua_Integer i = 1; i <= n; i++) {
                 if (i > 1) put(L, ",", 1);
+                size_t back = enter(L);
+                char text[24];
+                add(L, &path, text, snprintf(text, sizeof text, "%lld", (long long)(i - 1)));
                 lua_rawgeti(L, idx, i);
                 encode(L, -1, depth + 1);
                 lua_pop(L, 1);
+                path.len = back;
             }
             put(L, "]", 1);
         } else {
@@ -287,21 +413,41 @@ static void encode(lua_State *L, int idx, int depth) {
             while (lua_next(L, idx)) {
                 if (!first) put(L, ",", 1);
                 first = 0;
-                if (lua_type(L, -2) == LUA_TSTRING) encode(L, -2, depth + 1);
-                else if (lua_isinteger(L, -2)) {
+                size_t back = enter(L);
+                if (lua_type(L, -2) == LUA_TSTRING) {
+                    size_t n;
+                    const unsigned char *key = (const unsigned char *)lua_tolstring(L, -2, &n);
+                    put_string(L, &out, key, n);
+                    put_string(L, &path, key, n);
+                } else if (lua_isinteger(L, -2)) {
                     char text[26];
                     int n = snprintf(text, sizeof text, "\"%lld\"", (long long)lua_tointeger(L, -2));
                     put(L, text, n);
+                    add(L, &path, text, n);
                 } else luaL_error(L, "a table key must be a string or an integer");
                 put(L, ":", 1);
                 encode(L, -1, depth + 1);
                 lua_pop(L, 1);
+                path.len = back;
             }
             put(L, "}", 1);
         }
         return;
     default: luaL_error(L, "a %s has no JSON form", luaL_typename(L, idx));
     }
+}
+
+/* Encode the value at `idx` into `out`, marking where it has bytes. */
+static void encode_value(lua_State *L, int idx) {
+    out.len = path.len = marks.len = 0;
+    encode(L, idx, 0);
+}
+
+/* Mark where the bytes are in `out`, if anywhere: just before handing it over. */
+static void send_marks(lua_State *L) {
+    if (marks.len == 0) return;
+    add(L, &marks, "]", 1);
+    synq_binary_mark(marks.data, marks.len);
 }
 
 /* ---- self ---- */
@@ -315,14 +461,15 @@ static int self_index(lua_State *L) {
     free(json);
     const char *text = lua_tolstring(L, -1, &len);
     decode(L, text, len);
+    unpack_given(L);
     return 1;
 }
 
 static int self_newindex(lua_State *L) {
     size_t n;
     const char *name = luaL_checklstring(L, 2, &n);
-    out.len = 0;
-    encode(L, 3, 0);
+    encode_value(L, 3);
+    send_marks(L);
     synq_field_set(name, n, out.data, out.len);
     return 0;
 }
@@ -347,6 +494,7 @@ static int received_decode(lua_State *L) {
     size_t len;
     const char *text = lua_tolstring(L, -1, &len);
     decode(L, text, len);
+    unpack_given(L);
     return 1;
 }
 
@@ -384,8 +532,8 @@ static int sample_send(lua_State *L) {
  * call:send_args. */
 static int hand(lua_State *L) {
     lua_settop(L, 2);
-    out.len = 0;
-    encode(L, 2, 0);
+    encode_value(L, 2);
+    send_marks(L);
     void (*host)(synq_block_t) = (void (*)(synq_block_t))lua_touserdata(L, lua_upvalueindex(1));
     synq_send_json(host, out.data, out.len);
     return 0;
@@ -516,9 +664,9 @@ static void run_after_call(lua_State *L) {
         if (status == LUA_YIELD) {
             luaL_checkstack(L, nres + 4, "too many results");
             lua_xmove(co, L, nres);
-            out.len = 0;
-            if (nres > 0) encode(L, -nres, 0);
-            else put(L, "null", 4);
+            if (nres > 0) encode_value(L, -nres);
+            else out.len = marks.len = 0, put(L, "null", 4);
+            send_marks(L);
             lua_pop(L, nres);
             synq_send_json(synq_host_call_yield, out.data, out.len);
             continue;
@@ -540,6 +688,8 @@ static int call(lua_State *L) {
     const char *input = lua_tolstring(L, 1, &len);
     decode(L, input, len);
     int request = lua_gettop(L);
+    if (lua_getfield(L, request, "binary") == LUA_TTABLE) unpack(L, request);
+    else lua_pop(L, 1);
     if (!loaded) {
         lua_getfield(L, request, "source");
         size_t n;
@@ -569,8 +719,8 @@ static int call(lua_State *L) {
     for (lua_Integer i = 1; i <= n; i++) lua_rawgeti(L, args, i);
     if (sample) push_sample(L, sample);
     lua_call(L, 1 + (int)n + (sample != NULL) + (call != NULL), 1);
-    out.len = 0;
-    encode(L, -1, 0);
+    encode_value(L, -1);
+    send_marks(L);
     return 0;
 }
 

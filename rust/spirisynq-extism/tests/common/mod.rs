@@ -26,6 +26,9 @@ properties:
   blob_c: {type: string, x-yaml-tag: "!!binary"}
   blob_d: {type: string, x-yaml-tag: "!!binary"}
   blob_e: {type: string, x-yaml-tag: "!!binary"}
+  frames: {type: array, items: {type: string, x-yaml-tag: "!!binary"}}
+  either: {anyOf: [{type: string, x-yaml-tag: "!!binary"}, {type: string}, {type: integer}]}
+  anything: {}
 x-remote-methods:
   history:
     parameters: {type: object, properties: {minutes: {type: integer}}}

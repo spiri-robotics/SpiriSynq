@@ -8,11 +8,19 @@
 //! the code runs.
 //!
 //! Code sees values as JSON: tags are dropped and bytes are base64 strings, as the schema
-//! describes them. What comes back is read the other way, guided by the schema: a string whose
+//! describes them. Where the bytes are goes with the JSON, as paths of keys and indexes
+//! ([`Frame::given`], and `"binary"` in [`Frame::input`]), so a runner can make them its
+//! language's bytes. What comes back is read the other way, guided by the schema: a string whose
 //! schema says `x-yaml-tag: "!!binary"` becomes bytes, and a string or collection whose schema
 //! has a local tag such as `!Link` becomes that tagged value, and a whole number whose schema
 //! says `number` but not `integer` becomes a float. In an `anyOf`, the first branch whose `type`
 //! fits the value guides it.
+//!
+//! Code can mark the strings in what it hands back that are bytes, base64-encoded
+//! ([`Frame::mark`]): those are bytes whatever the schema says, or text where the schema says a
+//! string that isn't bytes. In an `anyOf`, a marked string prefers a bytes branch, and a string
+//! that isn't marked one that isn't. Lua's strings are bytes already, so from Lua code a string
+//! that isn't marked, where the schema says bytes, is the string's own bytes, not base64.
 //!
 //! The field hooks run the same way. An `after_receive` reads the [`Sample`] that arrived
 //! ([`Frame::sample`], [`Frame::decode_sample`]) and returns the field's value; a `before_send`
@@ -30,7 +38,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{Map, Number, Value as Json};
-use spirisynq_schema::{Role, TypeSchema, WasmEntry};
+use spirisynq_schema::{Loader, Role, TypeSchema, WasmEntry};
 use spirisynq_yaml::Value;
 
 use crate::session::CallOptions;
@@ -64,11 +72,18 @@ pub trait Replies: Send {
 /// sends, are applied when it finishes successfully, and not at all if it fails.
 #[derive(Debug, Default)]
 pub struct Frame {
-    fields: Map<String, Json>,
+    fields: Named,
     /// Every field key, and whether it has its own encoding (code can't use those).
     paths: Vec<(String, bool)>,
-    args: Map<String, Json>,
-    writes: Vec<(String, Json)>,
+    args: Named,
+    /// The fields the code set, and where it marked bytes in each.
+    writes: Vec<(String, Json, Vec<Path>)>,
+    /// Where the bytes are in the JSON the code was last given.
+    given: Vec<Path>,
+    /// Where the code marked bytes in the JSON it hands over next.
+    marks: Vec<Path>,
+    /// Whether the code's strings are bytes (Lua).
+    byte_strings: bool,
     /// The role, if it can't set fields.
     read_only: Option<String>,
     /// An `after_receive`'s sample.
@@ -84,9 +99,59 @@ pub struct Frame {
 #[derive(Debug, Clone, PartialEq)]
 enum Sent {
     Raw(Sample),
-    Value(Json),
-    Args(Map<String, Json>),
+    Value(Json, Vec<Path>),
+    Args(Map<String, Json>, Vec<Path>),
     Call { sample: Sample, parameters: String },
+}
+
+/// A place in a JSON value: keys and indexes from its root.
+pub(crate) type Path = Vec<Json>;
+
+/// Values by name as code sees them, and where their bytes are: paths starting with a name.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Named {
+    map: Map<String, Json>,
+    binary: Vec<Path>,
+}
+
+impl Named {
+    /// Add a value, as JSON.
+    pub fn insert(&mut self, name: &str, value: &Value) -> Result<(), String> {
+        let mut at = vec![Json::from(name)];
+        let json = marked(value, &mut at, &mut self.binary)?;
+        self.map.insert(name.to_owned(), json);
+        Ok(())
+    }
+
+    /// The value at `path`, a name and keys below it, and where its bytes are.
+    fn get(&self, path: &[Json]) -> Option<(Json, Vec<Path>)> {
+        let (first, rest) = path.split_first()?;
+        let mut node = self.map.get(first.as_str()?)?;
+        for key in rest {
+            node = node.as_object()?.get(key.as_str()?)?;
+        }
+        Some((node.clone(), below(&self.binary, path)))
+    }
+
+    /// The JSON of them all, with the paths of its bytes under `name`.
+    fn json(&self, name: &str, binary: &mut Vec<Path>) -> Json {
+        let at = |p: &Path| [vec![Json::from(name)], p.clone()].concat();
+        binary.extend(self.binary.iter().map(at));
+        Json::Object(self.map.clone())
+    }
+}
+
+/// The paths among `paths` that are under `prefix`, from there.
+fn below(paths: &[Path], prefix: &[Json]) -> Vec<Path> {
+    paths
+        .iter()
+        .filter_map(|p| p.strip_prefix(prefix).map(<[Json]>::to_vec))
+        .collect()
+}
+
+/// A field key as a path.
+fn key_path(path: &str) -> Path {
+    path.split('/').map(Json::from).collect()
 }
 
 /// An `after_call`'s replies, and what it yields.
@@ -137,13 +202,46 @@ fn article(role: &str) -> &'static str {
 }
 
 impl Frame {
-    /// The entry function's input: `{"self": <fields>, "args": <arguments>}`. Fields without a
-    /// value, and fields with their own encoding, are left out of `self`.
+    /// The entry function's input: `{"self": <fields>, "args": <arguments>}`, and `"binary"`:
+    /// where the bytes are in it, if anywhere. Fields without a value, and fields with their own
+    /// encoding, are left out of `self`.
     pub fn input(&self) -> Vec<u8> {
+        let mut binary = Vec::new();
         let mut input = Map::new();
-        input.insert("self".into(), Json::Object(self.fields.clone()));
-        input.insert("args".into(), Json::Object(self.args.clone()));
+        input.insert("self".into(), self.fields.json("self", &mut binary));
+        input.insert("args".into(), self.args.json("args", &mut binary));
+        if !binary.is_empty() {
+            input.insert("binary".into(), Json::from(binary));
+        }
         Json::Object(input).to_string().into_bytes()
+    }
+
+    /// Where the bytes are in the JSON the code was last given, by [`Frame::field`],
+    /// [`Frame::arg`], [`Frame::decode_sample`] or [`Frame::decode_reply`]: a list of paths,
+    /// each a list of keys and indexes from the value's root. `None` if nowhere.
+    pub fn given(&self) -> Option<Json> {
+        (!self.given.is_empty()).then(|| Json::from(self.given.clone()))
+    }
+
+    /// Mark where the code put bytes, as base64 strings, in the JSON it hands over next: to
+    /// [`Frame::set_field`], [`Frame::send_value`], [`Frame::send_args`] or [`Frame::give`], or
+    /// as its result if it hands over nothing else first. `paths` as for [`Frame::given`].
+    pub fn mark(&mut self, paths: Json) -> Result<(), String> {
+        let bad = || "marks must be a list of paths, each a list of keys and indexes".to_owned();
+        let Json::Array(paths) = paths else {
+            return Err(bad());
+        };
+        let mut marks = Vec::new();
+        for path in paths {
+            match path {
+                Json::Array(keys) if keys.iter().all(|k| k.is_string() || k.is_u64()) => {
+                    marks.push(keys);
+                }
+                _ => return Err(bad()),
+            }
+        }
+        self.marks = marks;
+        Ok(())
     }
 
     fn check(&self, path: &str) -> Result<(), String> {
@@ -155,24 +253,22 @@ impl Frame {
     }
 
     /// A field's value, as the code last set it: `null` if it has none.
-    pub fn field(&self, path: &str) -> Result<Json, String> {
+    pub fn field(&mut self, path: &str) -> Result<Json, String> {
         self.check(path)?;
-        let mut parts = path.split('/');
-        let mut node = parts.next().and_then(|top| self.fields.get(top));
-        for name in parts {
-            node = node.and_then(Json::as_object).and_then(|m| m.get(name));
-        }
-        Ok(node.cloned().unwrap_or(Json::Null))
+        let (json, given) = self.fields.get(&key_path(path)).unwrap_or_default();
+        self.given = given;
+        Ok(json)
     }
 
     /// Set a field. Only a method and an `on_change_mirror` can.
     pub fn set_field(&mut self, path: &str, value: Json) -> Result<(), String> {
+        let marks = std::mem::take(&mut self.marks);
         if let Some(role) = &self.read_only {
             let a = article(role);
             return Err(format!("{a} {role} can't set fields (`{path}`)"));
         }
         self.check(path)?;
-        let mut map = &mut self.fields;
+        let mut map = &mut self.fields.map;
         let mut names: Vec<&str> = path.split('/').collect();
         let last = names.pop().expect("split yields a chunk");
         for (i, name) in names.iter().enumerate() {
@@ -185,22 +281,28 @@ impl Frame {
             };
         }
         map.insert(last.to_owned(), value.clone());
-        self.writes.retain(|(p, _)| p != path);
-        self.writes.push((path.to_owned(), value));
+        let at = key_path(path);
+        let binary = &mut self.fields.binary;
+        binary.retain(|p| !p.starts_with(&at));
+        binary.extend(marks.iter().map(|m| [at.as_slice(), m].concat()));
+        self.writes.retain(|(p, ..)| p != path);
+        self.writes.push((path.to_owned(), value, marks));
         Ok(())
     }
 
     /// The arguments, by name.
     pub fn args(&self) -> &Map<String, Json> {
-        &self.args
+        &self.args.map
     }
 
     /// An argument's value.
-    pub fn arg(&self, name: &str) -> Result<Json, String> {
-        self.args
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("no argument `{name}`"))
+    pub fn arg(&mut self, name: &str) -> Result<Json, String> {
+        let (json, given) = self
+            .args
+            .get(&[Json::from(name)])
+            .ok_or_else(|| format!("no argument `{name}`"))?;
+        self.given = given;
+        Ok(json)
     }
 
     /// The sample that arrived, for an `after_receive`.
@@ -211,8 +313,10 @@ impl Frame {
     }
 
     /// The sample decoded the usual way, from YAML, as JSON.
-    pub fn decode_sample(&self) -> Result<Json, String> {
-        decode(self.sample()?)
+    pub fn decode_sample(&mut self) -> Result<Json, String> {
+        let (json, given) = decode(self.sample()?)?;
+        self.given = given;
+        Ok(json)
     }
 
     fn sending(&mut self, role: Role, sent: Sent) -> Result<(), String> {
@@ -237,15 +341,17 @@ impl Frame {
 
     /// Send a value the usual way, as YAML, for a `before_send`.
     pub fn send_value(&mut self, value: Json) -> Result<(), String> {
-        self.sending(Role::BeforeSend, Sent::Value(value))
+        let marks = std::mem::take(&mut self.marks);
+        self.sending(Role::BeforeSend, Sent::Value(value, marks))
     }
 
     /// Send the call with these arguments, by name, the usual way, for a `before_call`.
     pub fn send_args(&mut self, args: Json) -> Result<(), String> {
+        let marks = std::mem::take(&mut self.marks);
         let Json::Object(args) = args else {
             return Err("the arguments sent must be a mapping".into());
         };
-        self.sending(Role::BeforeCall, Sent::Args(args))
+        self.sending(Role::BeforeCall, Sent::Args(args, marks))
     }
 
     /// Send the call as it is, for a `before_call`: this payload, and these selector
@@ -300,7 +406,9 @@ impl Frame {
 
     /// A reply decoded the usual way, from YAML, as JSON.
     pub fn decode_reply(&mut self, index: usize) -> Result<Json, String> {
-        decode(self.reply(index)?)
+        let (json, given) = decode(self.reply(index)?)?;
+        self.given = given;
+        Ok(json)
     }
 
     /// Say the code failed because it let the last error reply through, uncaught: the caller
@@ -316,11 +424,13 @@ impl Frame {
 
     /// A result the `after_call` yields, for the caller.
     pub fn give(&mut self, json: Json) -> Result<(), String> {
+        let marks = std::mem::take(&mut self.marks);
         let stream = self
             .stream
             .as_mut()
             .ok_or("only an after_call yields results")?;
-        let value = Shape::new(&stream.schema).value(json, &stream.returns, BUDGET)?;
+        let shape = Shape::new(&stream.schema, self.byte_strings);
+        let value = shape.value(json, &stream.returns, BUDGET, &marks)?;
         if stream.generator {
             stream.replies.give(value);
         } else {
@@ -330,10 +440,12 @@ impl Frame {
     }
 }
 
-/// A sample decoded the usual way, from YAML, as JSON.
-fn decode(sample: &Sample) -> Result<Json, String> {
+/// A sample decoded the usual way, from YAML, as JSON, and where its bytes are.
+fn decode(sample: &Sample) -> Result<(Json, Vec<Path>), String> {
     let value = wire::decode(sample)?;
-    to_json(&value)
+    let mut binary = Vec::new();
+    let json = marked(&value, &mut Vec::new(), &mut binary)?;
+    Ok((json, binary))
 }
 
 /// Code about to run: see [`Session::wasm_job`](crate::Session::wasm_job).
@@ -407,9 +519,9 @@ impl WasmJob {
         object: ObjectId,
         code: WasmEntry,
         schema: Arc<TypeSchema>,
-        fields: Map<String, Json>,
+        fields: Named,
         paths: Vec<(String, bool)>,
-        args: Map<String, Json>,
+        args: Named,
     ) -> Self {
         let read_only = match code.role {
             Role::Method | Role::OnChangeMirror => None,
@@ -425,6 +537,7 @@ impl WasmJob {
             args,
             read_only,
             sender,
+            byte_strings: code.loader == Loader::Lua,
             ..Frame::default()
         };
         WasmJob {
@@ -483,8 +596,10 @@ impl WasmJob {
             }
             (output, None) => output.map_err(Error::Wasm)?,
         };
-        let shape = Shape::new(&self.schema);
+        let shape = Shape::new(&self.schema, self.frame.byte_strings);
         let field_schema = |path: &str| &self.schema.field(path).expect("checked").schema;
+        // Marks nothing else took are the result's.
+        let marks = self.frame.marks;
         let result = if output.iter().all(u8::is_ascii_whitespace) {
             Value::Null
         } else {
@@ -496,13 +611,13 @@ impl WasmJob {
                 _ => self.code.returns.as_ref().unwrap_or(&Value::Null),
             };
             shape
-                .value(json, returns, BUDGET)
+                .value(json, returns, BUDGET, &marks)
                 .map_err(|e| Error::Wasm(format!("the result: {e}")))?
         };
         let mut writes = Vec::new();
-        for (path, json) in self.frame.writes {
+        for (path, json, marks) in self.frame.writes {
             let value = shape
-                .value(json, field_schema(&path), BUDGET)
+                .value(json, field_schema(&path), BUDGET, &marks)
                 .map_err(|e| Error::Wasm(format!("field `{path}`: {e}")))?;
             writes.push((path, value));
         }
@@ -514,16 +629,16 @@ impl WasmJob {
         let (mut sent, mut call) = (None, None);
         match (self.frame.sent, &self.of) {
             (Some(Sent::Raw(sample)), _) => sent = Some(sample),
-            (Some(Sent::Value(json)), Some(path)) => {
+            (Some(Sent::Value(json, marks)), Some(path)) => {
                 let value = shape
-                    .value(json, field_schema(path), BUDGET)
+                    .value(json, field_schema(path), BUDGET, &marks)
                     .map_err(|e| Error::Wasm(format!("the value sent: {e}")))?;
                 sent = Some(wire::yaml_sample(&value)?);
             }
-            (Some(Sent::Args(args)), Some(method)) => {
+            (Some(Sent::Args(args, marks)), Some(method)) => {
                 let params = &self.schema.method(method).expect("checked").parameters;
                 let args = shape
-                    .entries(args, params)
+                    .entries(args, params, &marks)
                     .map_err(|e| Error::Wasm(format!("the arguments sent: {e}")))?;
                 call = Some(CallSent::Args(args));
             }
@@ -531,7 +646,7 @@ impl WasmJob {
                 let m = self.schema.method(method).expect("checked");
                 let mut key_args = Vec::new();
                 for name in m.key.placeholders() {
-                    match self.frame.args.get(name) {
+                    match self.frame.args.map.get(name) {
                         Some(Json::String(s)) => key_args.push((name.to_owned(), s.clone())),
                         Some(_) => return Err(Error::NotAString(name.to_owned())),
                         None => {}
@@ -581,8 +696,8 @@ fn after_call(object: ObjectId, of: Option<String>, stream: Stream) -> Result<Ou
     })
 }
 
-/// A value as code sees it.
-pub(crate) fn to_json(value: &Value) -> Result<Json, String> {
+/// A value as code sees it, at `at`; the paths of its bytes go in `binary`.
+fn marked(value: &Value, at: &mut Path, binary: &mut Vec<Path>) -> Result<Json, String> {
     Ok(match value {
         Value::Null => Json::Null,
         Value::Bool(b) => Json::Bool(*b),
@@ -592,32 +707,45 @@ pub(crate) fn to_json(value: &Value) -> Result<Json, String> {
             None => return Err(format!("{f} has no JSON form")),
         },
         Value::String(s) => Json::String(s.clone()),
-        Value::Binary(bytes) => Json::String(BASE64.encode(bytes)),
-        Value::Seq(items) => Json::Array(items.iter().map(to_json).collect::<Result<_, _>>()?),
-        Value::Map(entries) => Json::Object(to_json_map(entries)?),
-        Value::Tagged(t) => to_json(&t.value)?,
+        Value::Binary(bytes) => {
+            binary.push(at.clone());
+            Json::String(BASE64.encode(bytes))
+        }
+        Value::Seq(items) => {
+            let mut array = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                at.push(Json::from(i));
+                array.push(marked(item, at, binary)?);
+                at.pop();
+            }
+            Json::Array(array)
+        }
+        Value::Map(entries) => {
+            let mut map = Map::new();
+            for (k, v) in entries {
+                let Value::String(k) = k else {
+                    return Err("a mapping key that isn't a string has no JSON form".into());
+                };
+                at.push(Json::from(k.as_str()));
+                map.insert(k.clone(), marked(v, at, binary)?);
+                at.pop();
+            }
+            Json::Object(map)
+        }
+        Value::Tagged(t) => marked(&t.value, at, binary)?,
     })
-}
-
-/// A mapping as code sees it.
-pub(crate) fn to_json_map(entries: &[(Value, Value)]) -> Result<Map<String, Json>, String> {
-    let mut map = Map::new();
-    for (k, v) in entries {
-        let Value::String(k) = k else {
-            return Err("a mapping key that isn't a string has no JSON form".into());
-        };
-        map.insert(k.clone(), to_json(v)?);
-    }
-    Ok(map)
 }
 
 /// How many `$ref`s and `anyOf`s reading one value may follow without going deeper into the
 /// value: a schema that refers to itself stops guiding instead of looping.
 const BUDGET: usize = 64;
 
-/// Reads JSON as values, guided by schemas that may refer to the type's `$defs`.
+/// Reads JSON as values, guided by schemas that may refer to the type's `$defs`, and by the
+/// code's marks.
 struct Shape<'a> {
     defs: Option<&'a Value>,
+    /// Whether the code's strings are bytes (Lua).
+    byte_strings: bool,
 }
 
 /// A schema's keyword.
@@ -655,21 +783,31 @@ fn fits(json: &Json, schema: &Value) -> bool {
     }
 }
 
-/// Whether a schema's `type` says a number but not an integer: `3` is then `3.0`, as code in a
-/// language without integers (JavaScript) writes it.
-fn wants_float(schema: &Value) -> bool {
-    let named = |t: &str| match get(schema, "type") {
+/// Whether a schema's `type` names `t`.
+fn names(schema: &Value, t: &str) -> bool {
+    match get(schema, "type") {
         Some(Value::Seq(types)) => types.iter().any(|x| text(x) == Some(t)),
         Some(other) => text(other) == Some(t),
         None => false,
-    };
-    named("number") && !named("integer")
+    }
+}
+
+/// Whether a schema's `type` says a number but not an integer: `3` is then `3.0`, as code in a
+/// language without integers (JavaScript) writes it.
+fn wants_float(schema: &Value) -> bool {
+    names(schema, "number") && !names(schema, "integer")
+}
+
+/// Whether a schema says bytes.
+fn says_bytes(schema: &Value) -> bool {
+    get(schema, "x-yaml-tag").and_then(text) == Some("!!binary")
 }
 
 impl<'a> Shape<'a> {
-    fn new(schema: &'a TypeSchema) -> Self {
+    fn new(schema: &'a TypeSchema, byte_strings: bool) -> Self {
         Shape {
             defs: get(schema.raw(), "$defs"),
+            byte_strings,
         }
     }
 
@@ -693,13 +831,14 @@ impl<'a> Shape<'a> {
         map: Map<String, Json>,
         schema: &'a Value,
         budget: usize,
+        marks: &[Path],
     ) -> Result<Vec<(String, Value)>, String> {
         let props = get(schema, "properties");
         let other = get(schema, "additionalProperties").unwrap_or(&Value::Null);
         let mut entries = Vec::new();
         for (k, j) in map {
             let sub = props.and_then(|p| get(p, &k)).unwrap_or(other);
-            let v = self.value(j, sub, budget)?;
+            let v = self.value(j, sub, budget, &below(marks, &[Json::from(k.as_str())]))?;
             entries.push((k, v));
         }
         Ok(entries)
@@ -710,24 +849,59 @@ impl<'a> Shape<'a> {
         &self,
         map: Map<String, Json>,
         schema: &'a Value,
+        marks: &[Path],
     ) -> Result<Vec<(String, Value)>, String> {
         let mut budget = BUDGET;
         let schema = self.resolve(schema, &mut budget);
-        self.properties(map, schema, budget)
+        self.properties(map, schema, budget, marks)
     }
 
-    fn value(&self, json: Json, schema: &'a Value, mut budget: usize) -> Result<Value, String> {
+    /// `json` as a value, guided by `schema`; `marks` are where the code marked bytes in it.
+    fn value(
+        &self,
+        json: Json,
+        schema: &'a Value,
+        mut budget: usize,
+        marks: &[Path],
+    ) -> Result<Value, String> {
+        let bytes = marks.iter().any(Vec::is_empty);
         let mut schema = self.resolve(schema, &mut budget);
         while budget > 0
             && let Some(Value::Seq(branches)) = get(schema, "anyOf")
         {
             budget -= 1;
-            let mut fitting = branches.iter().map(|b| self.resolve(b, &mut budget));
-            schema = fitting.find(|b| fits(&json, b)).unwrap_or(&Value::Null);
+            // The first branch that fits; for a string, the first of those that says bytes if
+            // it's marked, or doesn't if it isn't.
+            let (mut first, mut chosen) = (None, None);
+            for branch in branches {
+                let branch = self.resolve(branch, &mut budget);
+                if !fits(&json, branch) {
+                    continue;
+                }
+                first = first.or(Some(branch));
+                if !json.is_string() || says_bytes(branch) == bytes {
+                    chosen = Some(branch);
+                    break;
+                }
+            }
+            schema = chosen.or(first).unwrap_or(&Value::Null);
         }
         let tag = get(schema, "x-yaml-tag").and_then(text);
         let inner = match json {
-            Json::String(s) if tag == Some("!!binary") => {
+            Json::String(s) if bytes => {
+                let raw = BASE64
+                    .decode(&s)
+                    .map_err(|e| format!("marked as bytes, and not base64: {e}"))?;
+                if says_bytes(schema) || !names(schema, "string") {
+                    return Ok(Value::Binary(raw));
+                }
+                let text = String::from_utf8(raw);
+                Value::String(text.map_err(|_| "bytes where text goes, and not UTF-8")?)
+            }
+            Json::String(s) if says_bytes(schema) && self.byte_strings => {
+                return Ok(Value::Binary(s.into_bytes()));
+            }
+            Json::String(s) if says_bytes(schema) => {
                 return BASE64
                     .decode(&s)
                     .map(Value::Binary)
@@ -742,11 +916,15 @@ impl<'a> Shape<'a> {
             Json::String(s) => Value::String(s),
             Json::Array(items) => {
                 let item = get(schema, "items").unwrap_or(&Value::Null);
-                let items = items.into_iter().map(|j| self.value(j, item, budget));
-                Value::Seq(items.collect::<Result<_, _>>()?)
+                let mut seq = Vec::with_capacity(items.len());
+                for (i, j) in items.into_iter().enumerate() {
+                    let marks = below(marks, &[Json::from(i)]);
+                    seq.push(self.value(j, item, budget, &marks)?);
+                }
+                Value::Seq(seq)
             }
             Json::Object(map) => {
-                let entries = self.properties(map, schema, budget)?;
+                let entries = self.properties(map, schema, budget, marks)?;
                 Value::Map(
                     entries
                         .into_iter()

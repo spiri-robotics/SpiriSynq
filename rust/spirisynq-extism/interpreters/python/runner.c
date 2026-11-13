@@ -1,9 +1,9 @@
 /* The `python` loader: MicroPython as an Extism plug-in. See ../spirisynq.h for the protocol.
  *
  * The source is a function definition, run as a module named `code`; the entry is called with
- * `self` first. Values cross as JSON: integers of any size, floats, and bytes going out as
- * base64 strings (the engine turns them back into bytes where the schema says so). A float that
- * isn't finite, or anything else that has no JSON form, is an error.
+ * `self` first. Values cross as JSON: integers of any size, floats, and bytes as base64
+ * strings, marked where they are (see ../spirisynq.h). A float that isn't finite, or anything
+ * else that has no JSON form, is an error.
  */
 
 #include <stdio.h>
@@ -25,8 +25,28 @@
 static const char PRELUDE[] =
     "import binascii, json\n"
     "def _run(text, natives):\n"
-    "    field_get, field_set, _part, _send, _call_send, _hand, _next, _escaped = natives\n"
-    "    def dumps(value, depth=0):\n"
+    "    field_get, field_set, _part, _send, _call_send, _hand, _next, _escaped, _paths, _mark = natives\n"
+    "    def unpack(value, paths):\n"
+    "        for path in paths:\n"
+    "            if not path:\n"
+    "                value = binascii.a2b_base64(value)\n"
+    "                continue\n"
+    "            node = value\n"
+    "            for key in path[:-1]:\n"
+    "                node = node[key]\n"
+    "            node[path[-1]] = binascii.a2b_base64(node[path[-1]])\n"
+    "        return value\n"
+    "    def loads(text):\n"
+    "        value = json.loads(text)\n"
+    "        paths = _paths()\n"
+    "        return unpack(value, json.loads(paths)) if paths else value\n"
+    "    def out(value):\n"
+    "        marks = []\n"
+    "        text = dumps(value, marks, [])\n"
+    "        if marks:\n"
+    "            _mark(json.dumps(marks))\n"
+    "        return text\n"
+    "    def dumps(value, marks, path, depth=0):\n"
     "        if depth > 128:\n"
     "            raise ValueError('nested more than 128 deep')\n"
     "        kind = type(value)\n"
@@ -48,9 +68,11 @@ static const char PRELUDE[] =
     "        if kind is str:\n"
     "            return json.dumps(value)\n"
     "        if kind is bytes or kind is bytearray:\n"
+    "            marks.append(path)\n"
     "            return json.dumps(binascii.b2a_base64(value)[:-1].decode())\n"
     "        if kind is list or kind is tuple:\n"
-    "            return '[' + ','.join(dumps(v, depth + 1) for v in value) + ']'\n"
+    "            items = [dumps(v, marks, path + [i], depth + 1) for i, v in enumerate(value)]\n"
+    "            return '[' + ','.join(items) + ']'\n"
     "        if kind is dict:\n"
     "            items = []\n"
     "            for k, v in value.items():\n"
@@ -58,14 +80,14 @@ static const char PRELUDE[] =
     "                    k = str(k)\n"
     "                elif type(k) is not str:\n"
     "                    raise TypeError('a dict key must be a string or an integer')\n"
-    "                items.append(json.dumps(k) + ':' + dumps(v, depth + 1))\n"
+    "                items.append(json.dumps(k) + ':' + dumps(v, marks, path + [k], depth + 1))\n"
     "            return '{' + ','.join(items) + '}'\n"
     "        raise TypeError('a %s has no JSON form' % kind.__name__)\n"
     "    class Self:\n"
     "        def __getattr__(self, name):\n"
-    "            return json.loads(field_get(name))\n"
+    "            return loads(field_get(name))\n"
     "        def __setattr__(self, name, value):\n"
-    "            field_set(name, dumps(value))\n"
+    "            field_set(name, out(value))\n"
     "    def raw(value, what):\n"
     "        if type(value) is not bytes and type(value) is not bytearray:\n"
     "            raise TypeError('%s must be bytes' % what)\n"
@@ -79,12 +101,12 @@ static const char PRELUDE[] =
     "            self.encoding = _part(index, 1)\n"
     "            self.attachment = _part(index, 2)\n"
     "        def decode(self):\n"
-    "            return json.loads(_part(self._index, 3))\n"
+    "            return loads(_part(self._index, 3))\n"
     "    class Outgoing:\n"
     "        def send(self, payload, encoding='zenoh/bytes', attachment=None):\n"
     "            _send(raw(payload, 'the payload'), str(encoding), attached(attachment))\n"
     "        def send_value(self, value):\n"
-    "            _hand(0, dumps(value))\n"
+    "            _hand(0, out(value))\n"
     "    class RpcException(Exception):\n"
     "        def __init__(self, kind, message):\n"
     "            super().__init__('%s: %s' % (kind, message))\n"
@@ -92,7 +114,7 @@ static const char PRELUDE[] =
     "            self.message = message\n"
     "    class Call:\n"
     "        def send_args(self, args):\n"
-    "            _hand(1, dumps(args))\n"
+    "            _hand(1, out(args))\n"
     "        def send(self, payload, parameters='', encoding='zenoh/bytes', attachment=None):\n"
     "            payload = raw(payload, 'the payload')\n"
     "            _call_send(payload, str(parameters), str(encoding), attached(attachment))\n"
@@ -109,6 +131,7 @@ static const char PRELUDE[] =
     "                raise self.error\n"
     "            return Received(got['reply'])\n"
     "    request = json.loads(text)\n"
+    "    request = unpack(request, request.get('binary', []))\n"
     "    scope = {'__name__': 'code', 'RpcException': RpcException}\n"
     "    exec(compile(request['source'], 'code', 'exec'), scope)\n"
     "    entry = scope.get(request['entry'])\n"
@@ -127,13 +150,13 @@ static const char PRELUDE[] =
     "        replies = Replies()\n"
     "        try:\n"
     "            for value in entry(Self(), replies):\n"
-    "                _hand(2, dumps(value))\n"
+    "                _hand(2, out(value))\n"
     "        except RpcException as e:\n"
     "            if e is replies.error:\n"
     "                _escaped()\n"
     "            raise\n"
     "        return 'null'\n"
-    "    return dumps(entry(Self(), *args))\n";
+    "    return out(entry(Self(), *args))\n";
 
 static mp_obj_t field_get(mp_obj_t name) {
     size_t n, len;
@@ -226,6 +249,25 @@ static mp_obj_t reply_escaped(void) {
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(reply_escaped_obj, reply_escaped);
+
+/* Where the bytes are in the JSON a host function last returned: '' if nowhere. */
+static mp_obj_t binary_paths(void) {
+    size_t len;
+    char *json = synq_binary_paths(&len);
+    if (json == NULL) mp_raise_msg(&mp_type_MemoryError, NULL);
+    mp_obj_t text = mp_obj_new_str(json, len);
+    free(json);
+    return text;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(binary_paths_obj, binary_paths);
+
+static mp_obj_t binary_mark(mp_obj_t json) {
+    size_t len;
+    const char *text = mp_obj_str_get_data(json, &len);
+    synq_binary_mark(text, len);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(binary_mark_obj, binary_mark);
 
 /* ---- What the port provides MicroPython ---- */
 
@@ -320,13 +362,14 @@ SYNQ_EXPORT(run) int run(void) {
     mp_lexer_t *lex = mp_lexer_new_from_str_len(name, PRELUDE, strlen(PRELUDE), 0);
     mp_parse_tree_t tree = mp_parse(lex, MP_PARSE_FILE_INPUT);
     mp_call_function_0(mp_compile(&tree, name, false));
-    mp_obj_t natives[8] = {
+    mp_obj_t natives[10] = {
         MP_OBJ_FROM_PTR(&field_get_obj),     MP_OBJ_FROM_PTR(&field_set_obj),
         MP_OBJ_FROM_PTR(&sample_part_obj),   MP_OBJ_FROM_PTR(&sample_send_obj),
         MP_OBJ_FROM_PTR(&call_send_obj),     MP_OBJ_FROM_PTR(&hand_obj),
         MP_OBJ_FROM_PTR(&reply_next_obj),    MP_OBJ_FROM_PTR(&reply_escaped_obj),
+        MP_OBJ_FROM_PTR(&binary_paths_obj),  MP_OBJ_FROM_PTR(&binary_mark_obj),
     };
-    mp_obj_t args[2] = {mp_obj_new_str(input, len), mp_obj_new_tuple(8, natives)};
+    mp_obj_t args[2] = {mp_obj_new_str(input, len), mp_obj_new_tuple(10, natives)};
     free(input);
     mp_obj_t result = mp_call_function_n_kw(mp_load_global(qstr_from_str("_run")), 2, 0, args);
     size_t n;

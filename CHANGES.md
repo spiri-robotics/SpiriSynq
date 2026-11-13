@@ -52,7 +52,7 @@
 
 - **Python, Lua and JavaScript code in WASM**: the `python`, `lua` and `javascript` loaders run
   source in bundled interpreters, MicroPython 1.29, Lua 5.4.9 and QuickJS-ng 0.18, compiled to
-  WebAssembly (570 KiB gzipped together). The entry function is called with `self` first; `self`
+  WebAssembly (572 KiB gzipped together). The entry function is called with `self` first; `self`
   reads and sets fields. Every call starts from a fresh instance, in about half a millisecond.
   The interpreters are built from pinned sources with Nix (`make interpreters`), reproducibly,
   and committed; CI checks a rebuild matches.
@@ -63,8 +63,7 @@
   (`payload`, `encoding`, `attachment`, `decode()`) and returns the field's value; a
   `before_send` gets the value and sends it exactly once, raw with `send` or the usual way with
   `send_value`. A field with either has its own encoding in every process. A field or remote
-  method can have only one hook of each other kind. In JavaScript, a `Uint8Array` now goes out
-  as base64, as `bytes` do in Python.
+  method can have only one hook of each other kind.
 
 - **Caller hooks in WASM**: `before_call` and `after_call` run from a type's `x-wasm` in every
   loader. A `before_call` gets the caller's arguments and sends the call exactly once, with
@@ -79,17 +78,25 @@
   notices. `Node(config, wasm_timeout=…, wasm_memory_mib=…)` sets the time and memory limits on
   code.
 
+- **Bytes are bytes in code**: a `bytes` value reaches Python code as `bytes`, JavaScript as a
+  `Uint8Array` and Lua as a string, in a field, an argument, a decoded sample or reply, typed or
+  not, and the language's bytes go back out as bytes. A string from Lua is its own bytes where
+  the schema says bytes; one that isn't UTF-8 is bytes anywhere. Text where an `anyOf` allows
+  bytes or text stays text. Code compiled to WebAssembly learns where the bytes are with the new
+  `binary_paths` host function and the input's `"binary"`, and marks its own with
+  `binary_mark`.
+
 ### Tests
 
 - **The Rust core must keep 100% line and function coverage.** `make rust-test` and the new
   `Rust` workflow fail below it. `spirisynq-yaml` has 58 tests, including property tests that
   everything written reads back equal and that the parser never panics on arbitrary input.
   `spirisynq-schema` has 47, including property tests that every key built from a template
-  decodes back to the same arguments. `spirisynq-core` has 87, run over an in-memory network
+  decodes back to the same arguments. `spirisynq-core` has 88, run over an in-memory network
   that connects several sessions as zenoh would. `spirisynq-zenoh` has 21, over real zenoh
-  sessions on loopback TCP, shared memory and zenoh failures included. `spirisynq-extism` has 32:
+  sessions on loopback TCP, shared memory and zenoh failures included. `spirisynq-extism` has 33:
   a WebAssembly plug-in that uses every host function, past its time and memory limits
-  included, and each interpreter's values, errors, sandbox, field hooks and caller hooks, the docs'
+  included, and each interpreter's values, bytes, errors, sandbox, field hooks and caller hooks, the docs'
   MicroPython examples among them. `SpiriSynq._core` has 52 Python tests in `tests/core`, which also measure the
   extension module's Rust coverage.
 

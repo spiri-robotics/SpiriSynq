@@ -7,13 +7,10 @@ use common::*;
 use spirisynq_extism::Host;
 use spirisynq_yaml::Value;
 
-/// The same hooks in one language, and what its `dec` returns for the payload `AAEC`.
+/// The same hooks in one language.
 struct Language {
     loader: &'static str,
     code: [Code; 10],
-    /// Python and JavaScript return bytes, which go out as base64; Lua returns the payload
-    /// as a string, which is read as base64.
-    dec: &'static str,
     /// What sending something that isn't bytes fails with.
     not_bytes: &'static str,
 }
@@ -89,7 +86,6 @@ const LUA: Language = Language {
             "function enc_bad(self, value, sample) sample:send({}) end",
         ),
     ],
-    dec: "!!binary AAEC",
     not_bytes: "string expected",
 };
 
@@ -130,13 +126,13 @@ const PYTHON: Language = Language {
             "enc",
             "before_send:blob_a",
             "",
-            "def enc(self, value, sample):\n    sample.send(value.encode(), encoding='text/x-base64', attachment=bytearray(b'meta'))\n",
+            "def enc(self, value, sample):\n    sample.send(value, encoding='text/x-base64', attachment=bytearray(b'meta'))\n",
         ),
         (
             "enc_plain",
             "before_send:blob_b",
             "",
-            "def enc_plain(self, value, sample):\n    sample.send(bytearray(value.encode()))\n",
+            "def enc_plain(self, value, sample):\n    sample.send(bytearray(value))\n",
         ),
         (
             "enc_usual",
@@ -154,10 +150,9 @@ const PYTHON: Language = Language {
             "enc_bad",
             "before_send:blob_e",
             "",
-            "def enc_bad(self, value, sample):\n    sample.send(value.encode(), attachment='meta')\n",
+            "def enc_bad(self, value, sample):\n    sample.send(value, attachment='meta')\n",
         ),
     ],
-    dec: "!!binary QUFFQw==",
     not_bytes: "TypeError: the attachment must be bytes",
 };
 
@@ -184,11 +179,11 @@ const JAVASCRIPT: Language = Language {
         ("enc", "before_send:blob_a", "",
          "const bytes = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
           function enc(self, value, sample) {
-            sample.send(bytes(value), {encoding: 'text/x-base64', attachment: bytes('meta').buffer});
+            sample.send(value, {encoding: 'text/x-base64', attachment: bytes('meta').buffer});
           }"),
         ("enc_plain", "before_send:blob_b", "",
          "function enc_plain(self, value, sample) {
-            sample.send(new DataView(Uint8Array.from(value, (c) => c.charCodeAt(0)).buffer));
+            sample.send(new DataView(value.buffer));
           }"),
         ("enc_usual", "before_send:blob_c", "",
          "function enc_usual(self, value, sample) { sample.sendValue(value); }"),
@@ -197,7 +192,6 @@ const JAVASCRIPT: Language = Language {
         ("enc_bad", "before_send:blob_e", "",
          "function enc_bad(self, value, sample) { sample.send('text'); }"),
     ],
-    dec: "!!binary QUFFQw==",
     not_bytes: "TypeError: the payload must be bytes",
 };
 
@@ -229,9 +223,13 @@ fn after_receive_reads_the_sample() {
         let mut dec = |field: &str, sample: spirisynq_core::Sample| {
             s.run_after_receive(&mut host, owner, field, sample)
         };
+        // The payload, as bytes: Lua's string is its bytes too.
         let got = dec("blob_a", sample(b"AAEC", "text/x-base64", Some(b"meta")));
-        assert_eq!(got, Ok(Some(v(lang.dec))), "{loader}");
-        let got = dec("blob_b", sample(b"{x: AAEC}", "application/yaml", None));
+        assert_eq!(got, Ok(Some(v("!!binary QUFFQw=="))), "{loader}");
+        let got = dec(
+            "blob_b",
+            sample(b"{x: !!binary AAEC}", "application/yaml", None),
+        );
         assert_eq!(got, Ok(Some(v("!!binary AAEC"))), "{loader}");
         let got = dec("blob_c", sample(b"", "", None));
         assert_eq!(got, Ok(Some(Value::Null)), "{loader}");
@@ -249,6 +247,7 @@ fn before_send_sends_exactly_once() {
         let (mut net, owner, _) = pair(lang.loader, &lang.code);
         let mut host = Host::default();
         let loader = lang.loader;
+        // Bytes, which every hook gets as the language's bytes, and sends as they are.
         let value = v("!!binary AAEC");
         let mut send = |net: &mut spirisynq_core::memory::MemoryNetwork, field: &str| {
             net.session(0)
@@ -257,13 +256,13 @@ fn before_send_sends_exactly_once() {
         assert_eq!(send(&mut net, "blob_a"), Ok(true), "{loader}");
         assert_eq!(
             arrived(&mut net, "blob_a"),
-            [sample(b"AAEC", "text/x-base64", Some(b"meta"))],
+            [sample(&[0, 1, 2], "text/x-base64", Some(b"meta"))],
             "{loader}"
         );
         assert_eq!(send(&mut net, "blob_b"), Ok(true), "{loader}");
         assert_eq!(
             arrived(&mut net, "blob_b"),
-            [sample(b"AAEC", "zenoh/bytes", None)],
+            [sample(&[0, 1, 2], "zenoh/bytes", None)],
             "{loader}"
         );
         assert_eq!(send(&mut net, "blob_c"), Ok(true), "{loader}");

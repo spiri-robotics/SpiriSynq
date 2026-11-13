@@ -1,7 +1,8 @@
 /* The `javascript` loader: QuickJS-ng as an Extism plug-in. See ../spirisynq.h for the protocol.
  *
  * Values cross as JSON. An integer too large for a number to hold exactly arrives as a BigInt,
- * and a BigInt goes out as the integer it is. A Uint8Array goes out as a base64 string. A number that isn't finite, a function or a
+ * and a BigInt goes out as the integer it is. Bytes are Uint8Arrays, crossing as base64 strings
+ * marked where they are (see ../spirisynq.h). A number that isn't finite, a function or a
  * symbol has no JSON form, and is an error rather than quietly becoming null.
  *
  * QuickJS without its libc has no I/O at all: the code sees the language and its built-in
@@ -17,14 +18,29 @@
 
 /* Builds `self` and the conversions, and gives back the function each call goes through. */
 static const char PRELUDE[] =
-    "(function (fieldGet, fieldSet, evaluate, part, send, hand, callSend, replyNext, escaped) {\n"
+    "(function (fieldGet, fieldSet, evaluate, part, send, hand, callSend, replyNext, escaped,\n"
+    "           binaryPaths, mark) {\n"
     "  'use strict';\n"
     "  const { parse: jsonParse, stringify: jsonStringify, rawJSON } = JSON;\n"
     "  const parse = (text) => jsonParse(text, (key, value, context) =>\n"
     "    typeof value === 'number' && !Number.isSafeInteger(value) && Number.isInteger(value)\n"
     "      && /^-?[0-9]+$/.test(context.source) ? BigInt(context.source) : value);\n"
+    "  const unpack = (value, paths) => {\n"
+    "    for (const path of paths) {\n"
+    "      if (path.length === 0) { value = Uint8Array.fromBase64(value); continue; }\n"
+    "      let node = value;\n"
+    "      for (const key of path.slice(0, -1)) node = node[key];\n"
+    "      const last = path[path.length - 1];\n"
+    "      node[last] = Uint8Array.fromBase64(node[last]);\n"
+    "    }\n"
+    "    return value;\n"
+    "  };\n"
+    "  const load = (text) => {\n"
+    "    const value = parse(text);\n"
+    "    const paths = binaryPaths();\n"
+    "    return paths ? unpack(value, jsonParse(paths)) : value;\n"
+    "  };\n"
     "  const replace = (key, value) => {\n"
-    "    if (value instanceof Uint8Array) return value.toBase64();\n"
     "    switch (typeof value) {\n"
     "      case 'number':\n"
     "        if (!Number.isFinite(value)) throw new TypeError(`${value} has no JSON form`);\n"
@@ -36,9 +52,21 @@ static const char PRELUDE[] =
     "    }\n"
     "    return value;\n"
     "  };\n"
-    "  const stringify = (value) => jsonStringify(value, replace) ?? 'null';\n"
+    "  const stringify = (value) => {\n"
+    "    const at = new Map(), marks = [];\n"
+    "    const text = jsonStringify(value, function (key, v) {\n"
+    "      const base = at.get(this);\n"
+    "      const path = base === undefined ? [] : [...base, Array.isArray(this) ? Number(key) : key];\n"
+    "      if (v instanceof Uint8Array) { marks.push(path); return v.toBase64(); }\n"
+    "      v = replace(key, v);\n"
+    "      if (v !== null && typeof v === 'object') at.set(v, path);\n"
+    "      return v;\n"
+    "    }) ?? 'null';\n"
+    "    if (marks.length) mark(jsonStringify(marks));\n"
+    "    return text;\n"
+    "  };\n"
     "  const self = new Proxy({}, {\n"
-    "    get: (_, key) => typeof key === 'string' ? parse(fieldGet(key)) : undefined,\n"
+    "    get: (_, key) => typeof key === 'string' ? load(fieldGet(key)) : undefined,\n"
     "    set: (_, key, value) => { fieldSet(String(key), stringify(value)); return true; },\n"
     "  });\n"
     "  const bytes = (value, what) => {\n"
@@ -51,7 +79,7 @@ static const char PRELUDE[] =
     "  const attached = (value) => value === null ? null : bytes(value, 'the attachment');\n"
     "  const received = (index) => ({\n"
     "    payload: part(index, 0), encoding: part(index, 1), attachment: part(index, 2),\n"
-    "    decode: () => parse(part(index, 3)),\n"
+    "    decode: () => load(part(index, 3)),\n"
     "  });\n"
     "  class RpcException extends Error {\n"
     "    constructor(kind, message) {\n"
@@ -91,6 +119,7 @@ static const char PRELUDE[] =
     "  let loaded = false;\n"
     "  return (text) => {\n"
     "    const input = parse(text);\n"
+    "    if (input.binary) unpack(input, input.binary);\n"
     "    if (!loaded) { evaluate(input.source); loaded = true; }\n"
     "    const entry = globalThis[input.entry];\n"
     "    if (typeof entry !== 'function') throw new Error(`no function \\`${input.entry}\\``);\n"
@@ -227,6 +256,25 @@ static JSValue reply_escaped(JSContext *ctx, JSValueConst this_val, int argc, JS
     return JS_UNDEFINED;
 }
 
+/* Where the bytes are in the JSON a host function last returned: '' if nowhere. */
+static JSValue binary_paths(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    size_t len;
+    char *json = synq_binary_paths(&len);
+    if (json == NULL) return JS_ThrowOutOfMemory(ctx);
+    JSValue text = JS_NewStringLen(ctx, json, len);
+    free(json);
+    return text;
+}
+
+static JSValue binary_mark(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    size_t len;
+    const char *json = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (json == NULL) return JS_EXCEPTION;
+    synq_binary_mark(json, len);
+    JS_FreeCString(ctx, json);
+    return JS_UNDEFINED;
+}
+
 /* Run the code's source as a script, in the global scope. */
 static JSValue evaluate(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     size_t n;
@@ -248,7 +296,7 @@ static int start(void) {
     context = JS_NewContext(runtime);
     if (context == NULL) return 0;
     JSValue make = JS_Eval(context, PRELUDE, strlen(PRELUDE), "prelude", JS_EVAL_TYPE_GLOBAL);
-    JSValue args[9] = {
+    JSValue args[11] = {
         JS_NewCFunction(context, field_get, "fieldGet", 1),
         JS_NewCFunction(context, field_set, "fieldSet", 2),
         JS_NewCFunction(context, evaluate, "evaluate", 1),
@@ -258,9 +306,11 @@ static int start(void) {
         JS_NewCFunction(context, call_send, "callSend", 4),
         JS_NewCFunction(context, reply_next, "replyNext", 0),
         JS_NewCFunction(context, reply_escaped, "escaped", 0),
+        JS_NewCFunction(context, binary_paths, "binaryPaths", 0),
+        JS_NewCFunction(context, binary_mark, "mark", 1),
     };
-    call = JS_Call(context, make, JS_UNDEFINED, 9, args);
-    for (int i = 0; i < 9; i++) JS_FreeValue(context, args[i]);
+    call = JS_Call(context, make, JS_UNDEFINED, 11, args);
+    for (int i = 0; i < 11; i++) JS_FreeValue(context, args[i]);
     JS_FreeValue(context, make);
     return !JS_IsException(call);
 }

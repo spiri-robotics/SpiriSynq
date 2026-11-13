@@ -20,6 +20,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+WORKSPACE = str(Path(__file__).resolve().parent) + "/"
+
 
 def generated_line(text: str) -> bool:
     return text.strip().startswith(("#[pymethods]", "#[pyclass"))
@@ -47,7 +49,8 @@ def missed_functions(export: str) -> tuple[int, list[str]]:
             continue
         line, column, *_, file = function["regions"][0][:6]
         path = function["filenames"][file]
-        if "/src/" in path:  # Not the tests' own helpers.
+        # The workspace's own code: not the tests' helpers, nor dependencies.
+        if path.startswith(WORKSPACE) and "/src/" in path:
             counts[path, line, column] += function["count"]
     missed = [f"{p}:{line}:{col}: function never called" for (p, line, col), c in counts.items()]
     return len(counts), sorted(m for m, c in zip(missed, counts.values(), strict=True) if not c)

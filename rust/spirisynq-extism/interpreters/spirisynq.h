@@ -21,6 +21,12 @@
  * an error reply is raised as an `RpcException` (`kind`, `message`). The runner hands every
  * result the entry yields to `call_yield`; if an `RpcException` it raised gets out of the
  * entry, it calls `reply_escaped` before failing.
+ *
+ * Bytes arrive as base64 strings, and the runner makes them the language's bytes: the input's
+ * `"binary"` says where they are in it (paths from its root, such as `["args", 0]`), and
+ * `binary_paths` where they are in the JSON a host function last returned. Going out, the
+ * runner writes the language's bytes as base64 strings and marks where with `binary_mark`, just
+ * before it hands the JSON over.
  */
 #ifndef SPIRISYNQ_H
 #define SPIRISYNQ_H
@@ -70,6 +76,8 @@ SYNQ_HOST(reply_attachment) synq_block_t synq_host_reply_attachment(int64_t inde
 SYNQ_HOST(reply_decode) synq_block_t synq_host_reply_decode(int64_t index);
 SYNQ_HOST(reply_escaped) void synq_host_reply_escaped(void);
 SYNQ_HOST(call_yield) void synq_host_call_yield(synq_block_t json);
+SYNQ_HOST(binary_paths) synq_block_t synq_host_binary_paths(void);
+SYNQ_HOST(binary_mark) void synq_host_binary_mark(synq_block_t json);
 
 /* A part of a sample, or of a reply, when the runner asks for it. */
 typedef enum { SYNQ_PAYLOAD, SYNQ_ENCODING, SYNQ_ATTACHMENT, SYNQ_DECODED } synq_part_t;
@@ -216,6 +224,60 @@ static inline char *synq_reply_next(size_t *len) {
     char *text = synq_read(block, len);
     extism_free(block);
     return text;
+}
+
+/* Where the bytes are in the JSON a host function last returned: JSON text, NUL-terminated, in
+ * memory the caller frees, empty if nowhere. NULL if out of memory. */
+static inline char *synq_binary_paths(size_t *len) {
+    synq_block_t block = synq_host_binary_paths();
+    char *text = synq_read(block, len);
+    if (block) extism_free(block);
+    return text;
+}
+
+/* Mark where the bytes are in the JSON handed over next. */
+static inline void synq_binary_mark(const char *json, size_t len) {
+    synq_send_json(synq_host_binary_mark, json, len);
+}
+
+static const char SYNQ_BASE64[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/* `n` bytes as base64, padded, into `out`, which holds at least 4 * ((n + 2) / 3) bytes. */
+static inline size_t synq_base64_encode(const unsigned char *in, size_t n, char *out) {
+    size_t o = 0;
+    for (size_t i = 0; i < n; i += 3) {
+        uint32_t v = (uint32_t)in[i] << 16;
+        if (i + 1 < n) v |= (uint32_t)in[i + 1] << 8;
+        if (i + 2 < n) v |= in[i + 2];
+        out[o++] = SYNQ_BASE64[v >> 18 & 63];
+        out[o++] = SYNQ_BASE64[v >> 12 & 63];
+        out[o++] = i + 1 < n ? SYNQ_BASE64[v >> 6 & 63] : '=';
+        out[o++] = i + 2 < n ? SYNQ_BASE64[v & 63] : '=';
+    }
+    return o;
+}
+
+/* Padded base64 back into bytes, into `out`, which holds at least 3 * (n / 4) bytes. Returns
+ * how many, or -1 if `in` isn't base64. */
+static inline long synq_base64_decode(const char *in, size_t n, unsigned char *out) {
+    if (n % 4) return -1;
+    size_t o = 0;
+    for (size_t i = 0; i < n; i += 4) {
+        uint32_t v = 0;
+        int pad = 0;
+        for (int k = 0; k < 4; k++) {
+            char c = in[i + k];
+            const char *at = c ? strchr(SYNQ_BASE64, c) : NULL;
+            if (c == '=' && i + 4 == n && k >= 2) { pad++; v <<= 6; continue; }
+            if (at == NULL || pad) return -1;
+            v = v << 6 | (uint32_t)(at - SYNQ_BASE64);
+        }
+        out[o++] = (unsigned char)(v >> 16);
+        if (pad < 2) out[o++] = (unsigned char)(v >> 8);
+        if (pad < 1) out[o++] = (unsigned char)v;
+    }
+    return (long)o;
 }
 
 #endif

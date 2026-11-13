@@ -14,7 +14,7 @@ use crate::keyexpr;
 use crate::notice::{Data, IncomingCall, Notice, ObjectId, Origin, ReplyError, RequestEnd};
 use crate::store::{Store, Stored};
 use crate::transport::{Command, EntityId, Event, Qos, QueryId, RequestId, Sample, Source, Zid};
-use crate::wasm::{CallJob, CallSent, Replies, WasmHost, WasmJob, to_json, to_json_map};
+use crate::wasm::{CallJob, CallSent, Named, Replies, WasmHost, WasmJob};
 use crate::wire::{self, ALIVE, DONE, METADATA, OBJECT_SCHEMA, REHYDRATE, TYPE_SCHEMA};
 
 /// How this process handles one field: the Python `<field>_<setting>` class attributes.
@@ -160,21 +160,16 @@ impl Object {
     }
 
     /// A job for `code`, with a snapshot of the fields.
-    fn job(
-        &self,
-        object: ObjectId,
-        code: &WasmEntry,
-        args: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<WasmJob, Error> {
-        let mut fields = serde_json::Map::new();
+    fn job(&self, object: ObjectId, code: &WasmEntry, args: Named) -> Result<WasmJob, Error> {
+        let mut fields = Named::default();
         let mut paths = Vec::new();
         for field in self.schema.fields() {
             let path = &field.path;
             paths.push((path.clone(), self.options(path).raw));
             if let Some(Stored::Value(value)) = self.store.top(path) {
-                let json =
-                    to_json(value).map_err(|e| Error::Wasm(format!("field `{path}`: {e}")))?;
-                fields.insert(path.clone(), json);
+                fields
+                    .insert(path, value)
+                    .map_err(|e| Error::Wasm(format!("field `{path}`: {e}")))?;
             }
         }
         Ok(WasmJob::new(
@@ -619,13 +614,23 @@ impl Session {
         if !matches!(code.role, CodeRole::Property | CodeRole::Method) {
             return Err(Error::NotRunnable(name.to_owned()));
         }
-        let args = match args {
-            Value::Null => Default::default(),
+        let mut named = Named::default();
+        match args {
+            Value::Null => {}
             Value::Map(entries) => {
-                to_json_map(entries).map_err(|e| Error::Wasm(format!("the arguments: {e}")))?
+                for (k, v) in entries {
+                    let Value::String(k) = k else {
+                        let why = "a mapping key that isn't a string has no JSON form";
+                        return Err(Error::Wasm(format!("the arguments: {why}")));
+                    };
+                    named
+                        .insert(k, v)
+                        .map_err(|e| Error::Wasm(format!("the arguments: {e}")))?;
+                }
             }
             _ => return Err(Error::Wasm("the arguments must be a mapping".into())),
-        };
+        }
+        let args = named;
         obj.job(object, code, args)
     }
 
@@ -657,11 +662,12 @@ impl Session {
         if code.role != CodeRole::OnChangeMirror || !code.of.iter().any(|f| f == field) {
             return Err(Error::Wasm(format!("`{name}` doesn't watch `{field}`")));
         }
-        let mut args = serde_json::Map::new();
-        let json = to_json(value).map_err(|e| Error::Wasm(format!("the value: {e}")))?;
-        args.insert("value".into(), json);
+        let mut args = Named::default();
+        args.insert("value", value)
+            .map_err(|e| Error::Wasm(format!("the value: {e}")))?;
         if code.of.len() > 1 {
-            args.insert("field".into(), field.into());
+            args.insert("field", &Value::String(field.to_owned()))
+                .expect("a string has a JSON form");
         }
         Ok(obj.job(object, code, args)?.of(field))
     }
@@ -696,9 +702,9 @@ impl Session {
         let Some(code) = obj.hooks(&CodeRole::BeforeSend, field).next() else {
             return Ok(None);
         };
-        let mut args = serde_json::Map::new();
-        let json = to_json(value).map_err(|e| Error::Wasm(format!("the value: {e}")))?;
-        args.insert("value".into(), json);
+        let mut args = Named::default();
+        args.insert("value", value)
+            .map_err(|e| Error::Wasm(format!("the value: {e}")))?;
         Ok(Some(obj.job(object, code, args)?.of(field)))
     }
 
@@ -809,10 +815,10 @@ impl Session {
         let Some(code) = obj.hooks(&CodeRole::BeforeCall, method).next() else {
             return Ok(None);
         };
-        let mut map = serde_json::Map::new();
+        let mut map = Named::default();
         for (name, value) in args {
-            let json = to_json(value).map_err(|e| Error::Wasm(format!("`{name}`: {e}")))?;
-            map.insert(name.clone(), json);
+            map.insert(name, value)
+                .map_err(|e| Error::Wasm(format!("`{name}`: {e}")))?;
         }
         let job = obj.job(object, code, map)?.of(method);
         Ok(Some(CallJob { job, options }))

@@ -271,9 +271,9 @@ fn values_cross_as_json() {
         ("yes", "true"),
         ("no", "false"),
         ("none", "null"),
-        // Bytes go out as base64, for the schema to read as bytes.
-        ("raw", "AAEC"),
-        ("buffer", "Aw=="),
+        // Bytes go out marked as bytes: still bytes where the schema doesn't say.
+        ("raw", "!!binary AAEC"),
+        ("buffer", "!!binary Aw=="),
         ("keyed", "{'3': c}"),
     ] {
         assert_eq!(get(&got, key), &v(want), "{key}");

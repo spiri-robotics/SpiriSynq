@@ -293,12 +293,22 @@ Built for properties and methods, with every loader (2026-11-12).
   result as JSON, empty for `null`. Code sees values as the schema describes them: tags are
   dropped and bytes are base64 strings. Fields without a value, and fields with their own
   encoding, are left out of `self`; code can't read or set the latter.
-- The result and the fields code sets are read back guided by their schemas: a string under
-  `x-yaml-tag: "!!binary"` becomes bytes; a string or collection under a local tag such as
-  `!Link` becomes that tagged value (a `null` stays `null`); a whole number under `type: number`
-  (not `integer`) becomes a float, since JavaScript can't write `3.0`. In an `anyOf`, the first branch
-  whose `type` fits guides the value. `$ref`s into `$defs` are followed; a schema that refers to
-  itself stops guiding after 64 steps instead of looping.
+- Where the bytes are goes with the JSON (2026-11-13), as paths of keys and indexes from its
+  root: the input's `"binary"` (`[["self", "photo"], ["args", "tag"]]`, left out if there are
+  none), and `binary_paths()` for the JSON a host function last returned. The engine knows
+  exactly where they are, from the values themselves, so a runner can hand code its language's
+  bytes, typed field or not. Going the other way, code marks where it wrote bytes as base64
+  with `binary_mark(paths)`, just before it hands the JSON over.
+- The result and the fields code sets are read back guided by their schemas and the code's
+  marks. A marked string is bytes, or text where the schema says a string that isn't bytes
+  (an error if it isn't UTF-8). A string that isn't marked, under `x-yaml-tag: "!!binary"`, is
+  base64, or from Lua its own bytes: Lua's strings are bytes, and the Lua runner marks only the
+  ones that aren't UTF-8, so text-like bytes arrive unmarked. A string or collection under a
+  local tag such as `!Link` becomes that tagged value (a `null` stays `null`); a whole number
+  under `type: number` (not `integer`) becomes a float, since JavaScript can't write `3.0`. In an
+  `anyOf`, the first branch whose `type` fits guides the value; for a string, the first of
+  those that says bytes if it's marked, or doesn't if it isn't. `$ref`s into `$defs` are
+  followed; a schema that refers to itself stops guiding after 64 steps instead of looping.
 - Host functions, imported from `extism:host/user`. Names and JSON text are Extism memory
   blocks (an `i64` offset), as Extism passes strings:
 
@@ -318,6 +328,8 @@ Built for properties and methods, with every loader (2026-11-12).
   | `reply_payload(i64) -> bytes`, `reply_encoding`, `reply_attachment`, `reply_decode` | In an `after_call`: a reply it has had, by index, as for a sample. |
   | `reply_escaped()` | In an `after_call`, about to fail: the error reply it was handed is why. |
   | `call_yield(json)` | In an `after_call`: yield a result. |
+  | `binary_paths() -> json` | Where the bytes are in the JSON `field_get`, `arg_get`, `sample_decode` or `reply_decode` last returned: a list of paths. Block 0 if nowhere. |
+  | `binary_mark(json)` | Where the code put bytes, as base64, in the JSON it hands over next (to `field_set`, `sample_send_value`, `call_send_args`, `call_yield`, or as its output), as paths. |
 
   Block 0 is empty bytes (Extism gives an empty block offset 0), so an empty attachment is no
   attachment.
@@ -395,7 +407,7 @@ Built for properties and methods, with every loader (2026-11-12).
   `for reply in replies do` in Lua, `for (const reply of replies)` in JavaScript. An error
   reply raises `RpcException` (`kind`, `message`; a global in Python and JavaScript), or in Lua
   a table with `kind` and `message`.
-- Sizes: MicroPython 289 KiB (122 KiB gzipped), Lua 244 KiB (99), QuickJS 963 KiB (348): 570
+- Sizes: MicroPython 291 KiB (122 KiB gzipped), Lua 248 KiB (100), QuickJS 964 KiB (349): 572
   KiB gzipped together, under the 1 MiB the docs promise. Measured in release builds: the first
   call compiles the interpreter (90 ms Lua, 155 ms MicroPython, 350 ms QuickJS, once per host);
   after that a call takes 0.3 to 0.6 ms, fresh instance included.
@@ -410,8 +422,10 @@ Built for properties and methods, with every loader (2026-11-12).
 - Values: JSON, with these rules. Lua: integers and floats as written; a table is an array when
   its keys are exactly 1..n, and an empty table is an empty array. JavaScript: an integer a
   number can't hold exactly arrives as a `BigInt`, and a `BigInt` goes out exactly. Python:
-  integers of any size, and `bytes` going out as base64; a `Uint8Array` too, in JavaScript. Everywhere, a non-finite float or a
-  function is an error, not `null`, and an integer key goes out as a string.
+  integers of any size. Bytes arrive as `bytes`, `Uint8Array`s and Lua strings, wherever they
+  are, and go out marked: `bytes` and `bytearray`s, `Uint8Array`s, and Lua strings that aren't
+  UTF-8 (a table key must be). Everywhere, a non-finite float or a function is an error, not
+  `null`, and an integer key goes out as a string.
 - Errors carry the language's own type and message, and the line in `code` where they can:
   `ValueError: too high (line 2)`, `code:1: too high`, `RangeError: too high (code:2:9)`.
 - Built by `interpreters/default.nix` from pinned sources and pinned tools (nixpkgs' wasm32-wasi
@@ -423,8 +437,6 @@ Built for properties and methods, with every loader (2026-11-12).
 
 Not yet:
 - Code fetched by hash.
-- In the interpreters, `bytes` fields arrive as base64 strings: the docs promise Lua strings,
-  `Uint8Array`s and `bytes`. The runners need the field's schema to decode them.
 - Integer dict keys come back as strings (`{3: 3.52}` returns `{"3": 3.52}`), until results are
   read against their `returns` schema's key types.
 

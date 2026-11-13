@@ -23,6 +23,11 @@
 //! | `reply_payload(index) -> bytes`, `reply_encoding(index) -> text`, `reply_attachment(index) -> bytes`, `reply_decode(index) -> json` | In an `after_call`: a reply, as for a sample. `index` is an `i64`. |
 //! | `reply_escaped()` | In an `after_call`, about to fail: the error reply it was handed is why, so the caller gets that error as it is. |
 //! | `call_yield(json)` | In an `after_call`: yield a result to the caller. |
+//! | `binary_paths() -> json` | Where the bytes are, as base64 strings, in the JSON `field_get`, `arg_get`, `sample_decode` or `reply_decode` last returned: a list of paths, each a list of keys and indexes. Block 0 if nowhere. |
+//! | `binary_mark(json)` | Mark where the code put bytes, as base64 strings, in the JSON it hands over next (to `field_set`, `sample_send_value`, `call_send_args` or `call_yield`, or as its output if nothing else first), as paths. |
+//!
+//! The input says where its bytes are too, as `"binary"`: paths from the input's root, such as
+//! `["self", "image"]`, left out if there are none.
 //!
 //! Block 0 is empty bytes (Extism gives an empty block offset 0), so an empty attachment is no
 //! attachment. A host function that can't do what it's asked (no such field, not an integer, a
@@ -40,7 +45,9 @@
 //! `"sample": "in"` or `"out"` in the input. A `before_call`'s arguments go in the order of its
 //! `params` too, after a call object, marked by `"call": "send"`; an `after_call` gets the
 //! call's replies as its one argument, marked by `"call": "replies"`, and each result it yields
-//! goes to the caller.
+//! goes to the caller. Its `"binary"` says where the bytes are in it, as for any input
+//! (`["args", 0]`), so the runner hands them to the code as the language's bytes; the runner
+//! marks the bytes in what it hands back with `binary_mark`.
 //!
 //! Code is sandboxed: it gets WASI with no files, no environment and no output (its stdout and
 //! stderr go nowhere), and no network. Each call is limited in time and memory ([`Limits`]),
@@ -235,7 +242,7 @@ impl WasmHost for Host {
     fn run(&mut self, code: &WasmEntry, frame: &mut Frame) -> Result<Vec<u8>, String> {
         // An interpreter's export is `run`; it calls the entry itself.
         let (export, input) = match interpreter(&code.loader) {
-            Some(_) => ("run", interpreter_input(code, frame)?),
+            Some(_) => ("run", interpreter_input(code, &mut *frame)?),
             None => (code.entry.as_str(), frame.input()),
         };
         let slot = self.slot.get().expect("a Rust value");
@@ -297,7 +304,7 @@ fn source(code: &WasmEntry) -> Result<&Source, String> {
 }
 
 /// An interpreter's input: the source, the function to call, and the arguments in order.
-fn interpreter_input(code: &WasmEntry, frame: &Frame) -> Result<Vec<u8>, String> {
+fn interpreter_input(code: &WasmEntry, frame: &mut Frame) -> Result<Vec<u8>, String> {
     // The schema checks that a text loader has text.
     let text = String::from_utf8_lossy(source(code)?.as_bytes());
     let declared = match code.role {
@@ -307,14 +314,26 @@ fn interpreter_input(code: &WasmEntry, frame: &Frame) -> Result<Vec<u8>, String>
         _ => None,
     };
     let names = declared.unwrap_or_else(|| frame.args().keys().cloned().collect());
-    let args = names
-        .iter()
-        .map(|name| frame.arg(name))
-        .collect::<Result<Vec<_>, _>>()?;
+    let (mut args, mut binary) = (Vec::new(), Vec::new());
+    for (i, name) in names.iter().enumerate() {
+        args.push(frame.arg(name)?);
+        let paths = match frame.given() {
+            Some(Json::Array(paths)) => paths,
+            _ => Vec::new(),
+        };
+        for path in paths {
+            let mut at = vec![json!("args"), json!(i)];
+            at.extend(path.as_array().into_iter().flatten().cloned());
+            binary.push(Json::Array(at));
+        }
+    }
     let mut input = serde_json::Map::new();
     input.insert("source".into(), Json::String(text.into_owned()));
     input.insert("entry".into(), Json::String(code.entry.clone()));
     input.insert("args".into(), Json::Array(args));
+    if !binary.is_empty() {
+        input.insert("binary".into(), Json::Array(binary));
+    }
     let sample = match code.role {
         Role::AfterReceive => Some("in"),
         Role::BeforeSend => Some("out"),
@@ -434,6 +453,8 @@ fn functions(slot: &Slot, clock: &Arc<Clock>) -> Vec<Function> {
         define(slot, "reply_decode", &[I64], &[PTR], reply_decode),
         define(slot, "reply_escaped", &[], &[], reply_escaped),
         define(slot, "call_yield", &[PTR], &[], call_yield),
+        define(slot, "binary_paths", &[], &[PTR], binary_paths),
+        define(slot, "binary_mark", &[PTR], &[], binary_mark),
     ]
 }
 
@@ -743,4 +764,26 @@ fn call_yield(
     let json = text(p, &i[0])?;
     let value = parse(&json)?;
     f.give(value)
+}
+
+fn binary_paths(
+    p: &mut CurrentPlugin,
+    _: &[Val],
+    o: &mut [Val],
+    f: &mut Frame,
+) -> Result<(), String> {
+    match f.given() {
+        Some(paths) => give(p, &paths, &mut o[0]),
+        None => hand(p, &[], &mut o[0]),
+    }
+}
+
+fn binary_mark(
+    p: &mut CurrentPlugin,
+    i: &[Val],
+    _: &mut [Val],
+    f: &mut Frame,
+) -> Result<(), String> {
+    let json = text(p, &i[0])?;
+    f.mark(parse(&json)?)
 }

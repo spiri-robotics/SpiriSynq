@@ -147,9 +147,16 @@ fn code_sees_the_fields_and_arguments_as_json() {
                     "gps": {"latitude": 45.5, "fix": {"quality": 3}},
                 },
                 "args": {"cells": 4, "tag": "AAE=", "none": null, "flag": true, "list": [1]},
+                "binary": [["self", "photo"], ["args", "tag"]],
             })
         );
+        // Where the bytes are goes with each value the code is given.
+        assert_eq!(frame.field("photo"), Ok(json!("AAEC")));
+        assert_eq!(frame.given(), Some(json!([[]])));
+        assert_eq!(frame.arg("tag"), Ok(json!("AAE=")));
+        assert_eq!(frame.given(), Some(json!([[]])));
         assert_eq!(frame.field("gps/fix/quality"), Ok(json!(3)));
+        assert_eq!(frame.given(), None);
         assert_eq!(frame.field("charging"), Ok(Json::Null));
         assert_eq!(frame.field("nope"), Err("no field `nope`".into()));
         assert_eq!(
@@ -332,6 +339,35 @@ fn the_result_is_read_as_its_schema_says() {
 }
 
 #[test]
+fn code_marks_where_it_put_bytes() {
+    let (mut net, owner, _) = batteries();
+    let s = net.session(0);
+    let mut code = host(|_, frame| {
+        let bad = "marks must be a list of paths, each a list of keys and indexes";
+        for marks in [json!({}), json!([5]), json!([["a", -1]])] {
+            assert_eq!(frame.mark(marks), Err(bad.into()));
+        }
+        // A field the code set, and where it marked its bytes, is what the code reads back.
+        frame.mark(json!([["fix", "quality"]]))?;
+        frame.set_field("gps", json!({"latitude": 1.5, "fix": {"quality": "AAE="}}))?;
+        assert_eq!(frame.field("gps/fix"), Ok(json!({"quality": "AAE="})));
+        assert_eq!(frame.given(), Some(json!([["quality"]])));
+        frame.set_field("gps/fix", json!({"quality": 2}))?;
+        frame.field("gps")?;
+        assert_eq!(frame.given(), None);
+        // Marks nothing else took are the result's.
+        frame.mark(json!([[]]))?;
+        Ok(br#""!!""#.to_vec())
+    });
+    let got = s.run_wasm(&mut code, owner, "charge", &Value::Null);
+    let Err(Error::Wasm(why)) = got else { panic!("{got:?}") };
+    assert!(
+        why.starts_with("the result: marked as bytes, and not base64"),
+        "{why}"
+    );
+}
+
+#[test]
 fn what_cant_run_is_refused() {
     let (mut net, owner, _) = batteries();
     let s = net.session(0);
@@ -353,6 +389,10 @@ fn what_cant_run_is_refused() {
     assert_eq!(
         refused(s, "charge", "{1: 2}"),
         Error::Wasm("the arguments: a mapping key that isn't a string has no JSON form".into())
+    );
+    assert_eq!(
+        refused(s, "charge", "{x: .nan}"),
+        Error::Wasm("the arguments: NaN has no JSON form".into())
     );
     s.set_field(owner, "voltage", v(".nan")).unwrap();
     assert_eq!(
