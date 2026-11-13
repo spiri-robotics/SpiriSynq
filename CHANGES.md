@@ -37,17 +37,67 @@
   to write into for zero-copy, working around a zenoh 1.10 bug that freed such buffers in
   flight.
 
+- **`SpiriSynq._core`, the engine in Python** (`spirisynq-python`): a PyO3 extension module
+  with a `Node` per zenoh session, the engine's methods, and its notices as Python classes.
+  Field values convert straight to Python values, with no YAML on the Python side. The
+  package is now built with maturin instead of hatchling. Building it from source needs a
+  Rust toolchain. The Python API isn't rebuilt on it yet. v2 replaces v1 in place.
+
+- **WASM properties and methods** (`spirisynq-extism`): a type's `x-wasm` code runs on Extism,
+  sandboxed and limited to 1 s and 64 MiB per call, with WebAssembly text (`wat`) or compiled
+  modules (`wasm`). Code gets the object's fields and its arguments as JSON, and reads and sets
+  single fields through host functions. What a method sets is published as `set_field` would,
+  and only once it succeeds; a property can't set fields. In Python, `_core.Node.run_wasm`.
+  Building the Rust core now needs Rust 1.96 or newer.
+
+- **Python, Lua and JavaScript code in WASM**: the `python`, `lua` and `javascript` loaders run
+  source in bundled interpreters, MicroPython 1.29, Lua 5.4.9 and QuickJS-ng 0.18, compiled to
+  WebAssembly (570 KiB gzipped together). The entry function is called with `self` first; `self`
+  reads and sets fields. Every call starts from a fresh instance, in about half a millisecond.
+  The interpreters are built from pinned sources with Nix (`make interpreters`), reproducibly,
+  and committed; CI checks a rebuild matches.
+
+- **Field hooks in WASM**: `on_change_mirror`, `after_receive` and `before_send` run from a
+  type's `x-wasm` in every loader. An `on_change_mirror` changes only that mirror's copy, and
+  may watch several fields, given the one that changed. An `after_receive` gets the sample
+  (`payload`, `encoding`, `attachment`, `decode()`) and returns the field's value; a
+  `before_send` gets the value and sends it exactly once, raw with `send` or the usual way with
+  `send_value`. A field with either has its own encoding in every process. A field or remote
+  method can have only one hook of each other kind. In JavaScript, a `Uint8Array` now goes out
+  as base64, as `bytes` do in Python.
+
+- **Caller hooks in WASM**: `before_call` and `after_call` run from a type's `x-wasm` in every
+  loader. A `before_call` gets the caller's arguments and sends the call exactly once, with
+  `send_args` or raw with `send`; raising sends nothing. An `after_call` is a generator over the
+  call's replies, which reach it as they arrive, and yields what the caller gets; an error reply
+  is raised in the code as `RpcException`, and reaches the caller as it is if the code doesn't
+  catch it. A method with an `after_call` always has its replies raw. The time limit on code no
+  longer counts time spent waiting for a reply.
+
+- **`SpiriSynq._core` runs the WASM hooks by itself**: field and caller hooks run as values and
+  calls pass through the `Node`, and an `after_call`'s results arrive as the call's `Reply`
+  notices. `Node(config, wasm_timeout=…, wasm_memory_mib=…)` sets the time and memory limits on
+  code.
+
 ### Tests
 
 - **The Rust core must keep 100% line and function coverage.** `make rust-test` and the new
   `Rust` workflow fail below it. `spirisynq-yaml` has 58 tests, including property tests that
   everything written reads back equal and that the parser never panics on arbitrary input.
-  `spirisynq-schema` has 46, including property tests that every key built from a template
-  decodes back to the same arguments. `spirisynq-core` has 60, run over an in-memory network
+  `spirisynq-schema` has 47, including property tests that every key built from a template
+  decodes back to the same arguments. `spirisynq-core` has 87, run over an in-memory network
   that connects several sessions as zenoh would. `spirisynq-zenoh` has 21, over real zenoh
-  sessions on loopback TCP, shared memory and zenoh failures included.
+  sessions on loopback TCP, shared memory and zenoh failures included. `spirisynq-extism` has 32:
+  a WebAssembly plug-in that uses every host function, past its time and memory limits
+  included, and each interpreter's values, errors, sandbox, field hooks and caller hooks, the docs'
+  MicroPython examples among them. `SpiriSynq._core` has 52 Python tests in `tests/core`, which also measure the
+  extension module's Rust coverage.
 
 ### Internal
+
+- **The flake builds the Rust side too**: `packages.<system>.interpreters` builds the bundled
+  interpreters, and `nix develop .#rust` gives the toolchain `make rust-test` needs (Rust 1.99,
+  cargo-llvm-cov, LLVM 23). Its nixpkgs pin moves to nixos-unstable of 2026-11-11.
 
 - **The docs specify SpiriSynq v2**, a Rust core with Python as a binding over it, written ahead of
   the code as the specification it has to meet. They cover objects and field settings, links,

@@ -11,6 +11,8 @@
 //! the commands out over zenoh; [`memory::MemoryNetwork`] carries them between sessions in one
 //! process, for tests.
 //!
+//! WASM code from a type's `x-wasm` runs through a [`WasmHost`]; see [`Session::wasm_job`].
+//!
 //! The wire protocol is in `rust/ARCHITECTURE.md`; [`wire`] has its constants.
 
 #![forbid(unsafe_code)]
@@ -22,6 +24,7 @@ mod notice;
 mod session;
 mod store;
 mod transport;
+mod wasm;
 pub mod wire;
 
 pub use error::Error;
@@ -31,3 +34,4 @@ pub use transport::{
     Bytes, Command, EntityId, Event, Payload, Priority, Qos, QueryId, RequestId, Sample, Source,
     Zid,
 };
+pub use wasm::{CallJob, Frame, NextReply, Replies, WasmHost, WasmJob};

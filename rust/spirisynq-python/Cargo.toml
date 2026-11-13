@@ -1,0 +1,21 @@
+[package]
+name = "spirisynq-python"
+version = "0.1.0"
+description = "SpiriSynq._core, the Python extension module over the SpiriSynq engine"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+flume = "0.11"
+pyo3 = { version = "0.30", features = ["abi3-py313"] }
+spirisynq-core = { path = "../spirisynq-core" }
+spirisynq-extism = { path = "../spirisynq-extism" }
+spirisynq-schema = { path = "../spirisynq-schema" }
+spirisynq-yaml = { path = "../spirisynq-yaml" }
+spirisynq-zenoh = { path = "../spirisynq-zenoh" }

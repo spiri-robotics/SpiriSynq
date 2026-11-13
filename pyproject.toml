@@ -22,16 +22,22 @@ synq = "SpiriSynq.cli:app"
 spirisynq = "SpiriSynq.cli:app"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.16,<2"]
+build-backend = "maturin"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/SpiriSynq"]
+# The Rust engine is built into the package as SpiriSynq._core.
+[tool.maturin]
+python-source = "src"
+module-name = "SpiriSynq._core"
+manifest-path = "rust/spirisynq-python/Cargo.toml"
+features = ["pyo3/extension-module"]
 
 [tool.uv]
 # Without this, `uv run sphinx-build` in a fresh clone fails to find Sphinx: uv
 # installs only the `dev` group unless told otherwise.
 default-groups = ["dev", "docs"]
+# Rebuild the extension when the Rust sources change.
+cache-keys = [{file = "pyproject.toml"}, {file = "rust/Cargo.lock"}, {file = "rust/*/src/**/*.rs"}, {file = "rust/*/Cargo.toml"}, {file = "rust/Cargo.toml"}]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,8 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["spirisynq-core", "spirisynq-schema", "spirisynq-yaml", "spirisynq-zenoh"]
+members = ["spirisynq-core", "spirisynq-extism", "spirisynq-python", "spirisynq-schema", "spirisynq-yaml", "spirisynq-zenoh"]
 
 [workspace.package]
 edition = "2024"
+rust-version = "1.96"
 license = "MIT"
 repository = "https://github.com/spiri-robotics/SpiriSynq"

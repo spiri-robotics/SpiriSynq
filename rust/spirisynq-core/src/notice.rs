@@ -19,6 +19,19 @@ pub enum Data {
     Raw(Sample),
 }
 
+impl Data {
+    /// As a sample: a value is written as YAML, as it went over the wire. A value YAML can't
+    /// hold is [`ReplyError::Undecodable`].
+    pub fn into_sample(self) -> Result<Sample, ReplyError> {
+        match self {
+            Data::Value(value) => {
+                crate::wire::yaml_sample(&value).map_err(|e| ReplyError::Undecodable(e.to_string()))
+            }
+            Data::Raw(sample) => Ok(sample),
+        }
+    }
+}
+
 /// Where a field value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
@@ -38,6 +51,17 @@ pub enum ReplyError {
     Remote { kind: String, message: String },
     /// A reply that should have been YAML and wasn't; says why.
     Undecodable(String),
+}
+
+impl ReplyError {
+    /// The exception's type and message, as the caller raises it: an undecodable reply is
+    /// kind `Undecodable`.
+    pub fn parts(&self) -> (&str, &str) {
+        match self {
+            ReplyError::Remote { kind, message } => (kind, message),
+            ReplyError::Undecodable(why) => ("Undecodable", why),
+        }
+    }
 }
 
 /// How a request ended.

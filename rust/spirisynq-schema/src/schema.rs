@@ -119,7 +119,20 @@ impl TypeSchema {
             let is_method = |name: &str| methods.iter().any(|m| m.name == name);
             for (name, entry) in entries(v, "/x-wasm")? {
                 let at = child("/x-wasm", name);
-                wasm.push(WasmEntry::read(name, entry, &at, is_field, is_method)?);
+                let read = WasmEntry::read(name, entry, &at, is_field, is_method)?;
+                let taken = wasm.iter().find(|w: &&WasmEntry| {
+                    read.role.single() && w.role == read.role && w.of == read.of
+                });
+                if let Some(other) = taken {
+                    let reason = format!(
+                        "`{}` already has a {}: `{}`",
+                        read.of[0],
+                        read.role.as_str(),
+                        other.name
+                    );
+                    return Err(Error::new(child(&at, "of"), ErrorKind::Hook(reason)));
+                }
+                wasm.push(read);
             }
         }
 

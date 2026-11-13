@@ -4,7 +4,9 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::iter;
 use std::sync::Arc;
 
-use spirisynq_schema::{TypeId, TypeSchema, check_topic};
+use spirisynq_schema::{
+    RemoteMethod, Role as CodeRole, TypeId, TypeSchema, WasmEntry, check_topic,
+};
 use spirisynq_yaml::Value;
 
 use crate::Error;
@@ -12,6 +14,7 @@ use crate::keyexpr;
 use crate::notice::{Data, IncomingCall, Notice, ObjectId, Origin, ReplyError, RequestEnd};
 use crate::store::{Store, Stored};
 use crate::transport::{Command, EntityId, Event, Qos, QueryId, RequestId, Sample, Source, Zid};
+use crate::wasm::{CallJob, CallSent, Replies, WasmHost, WasmJob, to_json, to_json_map};
 use crate::wire::{self, ALIVE, DONE, METADATA, OBJECT_SCHEMA, REHYDRATE, TYPE_SCHEMA};
 
 /// How this process handles one field: the Python `<field>_<setting>` class attributes.
@@ -54,7 +57,8 @@ impl Default for ObjectOptions {
 /// How to make a remote call.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CallOptions {
-    /// Pass replies on as [`Data::Raw`], for an `after_call` hook to decode.
+    /// Pass replies on as [`Data::Raw`], for an `after_call` hook to decode. Always so when the
+    /// method has a WASM `after_call`.
     pub raw_replies: bool,
     /// Selector parameters, sent as they are.
     pub parameters: String,
@@ -124,6 +128,63 @@ impl Object {
 
     fn options(&self, path: &str) -> FieldOptions {
         self.options.get(path).copied().unwrap_or_default()
+    }
+
+    /// The type's WASM code `name`.
+    fn code(&self, name: &str) -> Result<&WasmEntry, Error> {
+        self.schema
+            .wasm()
+            .iter()
+            .find(|c| c.name == name)
+            .ok_or_else(|| Error::UnknownCode(name.to_owned()))
+    }
+
+    fn method(&self, name: &str) -> Result<&RemoteMethod, Error> {
+        self.schema
+            .method(name)
+            .ok_or_else(|| Error::UnknownMethod(name.to_owned()))
+    }
+
+    /// A call's options: its replies are raw for a WASM `after_call`.
+    fn call_options(&self, method: &str, mut options: CallOptions) -> CallOptions {
+        options.raw_replies |= self.hooks(&CodeRole::AfterCall, method).next().is_some();
+        options
+    }
+
+    /// The type's WASM hooks of `role` on `of`.
+    fn hooks<'a>(&'a self, role: &'a CodeRole, of: &'a str) -> impl Iterator<Item = &'a WasmEntry> {
+        self.schema
+            .wasm()
+            .iter()
+            .filter(move |c| c.role == *role && c.of.iter().any(|o| o == of))
+    }
+
+    /// A job for `code`, with a snapshot of the fields.
+    fn job(
+        &self,
+        object: ObjectId,
+        code: &WasmEntry,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<WasmJob, Error> {
+        let mut fields = serde_json::Map::new();
+        let mut paths = Vec::new();
+        for field in self.schema.fields() {
+            let path = &field.path;
+            paths.push((path.clone(), self.options(path).raw));
+            if let Some(Stored::Value(value)) = self.store.top(path) {
+                let json =
+                    to_json(value).map_err(|e| Error::Wasm(format!("field `{path}`: {e}")))?;
+                fields.insert(path.clone(), json);
+            }
+        }
+        Ok(WasmJob::new(
+            object,
+            code.clone(),
+            self.schema.clone(),
+            fields,
+            paths,
+            args,
+        ))
     }
 
     /// An incoming sample as the binding gets it.
@@ -267,6 +328,13 @@ impl Session {
                 return Err(Error::UnknownField(path));
             }
             fields.insert(path, field);
+        }
+        // A field with a WASM `before_send` or `after_receive` has its own encoding.
+        for code in schema.wasm() {
+            if matches!(code.role, CodeRole::BeforeSend | CodeRole::AfterReceive) {
+                let path = code.of[0].clone();
+                fields.entry(path).or_default().raw = true;
+            }
         }
         let mut raw_methods = HashSet::new();
         for name in options.raw_methods {
@@ -528,12 +596,296 @@ impl Session {
         self.commands.push_back(Command::Put { publisher, sample });
     }
 
+    /// The object's type schema.
+    pub fn schema(&self, object: ObjectId) -> Result<&Arc<TypeSchema>, Error> {
+        Ok(&self.object(object)?.schema)
+    }
+
     /// A field's value, if it holds one: `None` before it's set, while a parent dataclass is
     /// null, or when it has its own encoding (the binding keeps those values).
     pub fn field(&self, object: ObjectId, path: &str) -> Result<Option<&Value>, Error> {
         let obj = self.object(object)?;
         obj.check_field(path)?;
         Ok(obj.store.get(path))
+    }
+
+    /// Get ready to run the object's WASM property or method `name`, from its type's `x-wasm`,
+    /// with `args`: a mapping by name, or null for none. The job holds a snapshot of the
+    /// object's fields; run it with [`WasmJob::run`], anywhere, then hand the output to
+    /// [`Session::finish_wasm`]. [`Session::run_wasm`] does all three.
+    pub fn wasm_job(&self, object: ObjectId, name: &str, args: &Value) -> Result<WasmJob, Error> {
+        let obj = self.object(object)?;
+        let code = obj.code(name)?;
+        if !matches!(code.role, CodeRole::Property | CodeRole::Method) {
+            return Err(Error::NotRunnable(name.to_owned()));
+        }
+        let args = match args {
+            Value::Null => Default::default(),
+            Value::Map(entries) => {
+                to_json_map(entries).map_err(|e| Error::Wasm(format!("the arguments: {e}")))?
+            }
+            _ => return Err(Error::Wasm("the arguments must be a mapping".into())),
+        };
+        obj.job(object, code, args)
+    }
+
+    /// The names of the object's WASM hooks of `role` on `of` (a field's key, or a remote
+    /// method's name), in the schema's order.
+    pub fn hooks(&self, object: ObjectId, role: &CodeRole, of: &str) -> Result<Vec<String>, Error> {
+        Ok(self
+            .object(object)?
+            .hooks(role, of)
+            .map(|code| code.name.clone())
+            .collect())
+    }
+
+    /// Get ready to run a mirror's `on_change_mirror` hook `name`, for a new `value` of `field`.
+    /// It's called with the value, and also the field's key if it watches several. Fields it
+    /// sets change only this mirror's copy.
+    pub fn on_change_job(
+        &self,
+        object: ObjectId,
+        name: &str,
+        field: &str,
+        value: &Value,
+    ) -> Result<WasmJob, Error> {
+        let obj = self.object(object)?;
+        if let Role::Owner { .. } = obj.role {
+            return Err(Error::NotMirror);
+        }
+        let code = obj.code(name)?;
+        if code.role != CodeRole::OnChangeMirror || !code.of.iter().any(|f| f == field) {
+            return Err(Error::Wasm(format!("`{name}` doesn't watch `{field}`")));
+        }
+        let mut args = serde_json::Map::new();
+        let json = to_json(value).map_err(|e| Error::Wasm(format!("the value: {e}")))?;
+        args.insert("value".into(), json);
+        if code.of.len() > 1 {
+            args.insert("field".into(), field.into());
+        }
+        Ok(obj.job(object, code, args)?.of(field))
+    }
+
+    /// Get ready to decode a sample that arrived for `field`, with its WASM `after_receive`;
+    /// `None` if it has none. Finishing the job gives the field's value.
+    pub fn after_receive_job(
+        &self,
+        object: ObjectId,
+        field: &str,
+        sample: Sample,
+    ) -> Result<Option<WasmJob>, Error> {
+        let obj = self.object(object)?;
+        obj.check_field(field)?;
+        let Some(code) = obj.hooks(&CodeRole::AfterReceive, field).next() else {
+            return Ok(None);
+        };
+        let job = obj.job(object, code, Default::default())?;
+        Ok(Some(job.of(field).with_sample(sample)))
+    }
+
+    /// Get ready to send a new `value` of `field` with its WASM `before_send`; `None` if it has
+    /// none. Finishing the job publishes what the code sent, as [`Session::send_raw`] does.
+    pub fn before_send_job(
+        &self,
+        object: ObjectId,
+        field: &str,
+        value: &Value,
+    ) -> Result<Option<WasmJob>, Error> {
+        let obj = self.object(object)?;
+        obj.check_field(field)?;
+        let Some(code) = obj.hooks(&CodeRole::BeforeSend, field).next() else {
+            return Ok(None);
+        };
+        let mut args = serde_json::Map::new();
+        let json = to_json(value).map_err(|e| Error::Wasm(format!("the value: {e}")))?;
+        args.insert("value".into(), json);
+        Ok(Some(obj.job(object, code, args)?.of(field)))
+    }
+
+    /// Finish a job, and give its result. If the code failed, or its result or a field it set
+    /// can't be read, nothing is done. Otherwise, by its role:
+    ///
+    /// - a property or method sets the fields its code set, as [`Session::set_field`] does;
+    /// - an `on_change_mirror` sets them on the mirror only, as [`Session::set_field_local`]
+    ///   does;
+    /// - an `after_receive`'s result is the field's value, for the binding to apply;
+    /// - a `before_send` publishes what its code sent, as [`Session::send_raw`] does.
+    pub fn finish_wasm(
+        &mut self,
+        job: WasmJob,
+        output: Result<Vec<u8>, String>,
+    ) -> Result<Value, Error> {
+        let done = job.outcome(output)?;
+        let object = done.object;
+        for (path, value) in done.writes {
+            if done.role == CodeRole::OnChangeMirror {
+                self.set_field_local(object, &path, value)?;
+            } else {
+                self.set_field(object, &path, value)?;
+            }
+        }
+        if let (Some(sample), Some(field)) = (done.sent, done.of) {
+            self.send_raw(object, &field, sample)?;
+        }
+        Ok(done.result)
+    }
+
+    /// Run the object's WASM property or method `name` on `host`, and finish it: see
+    /// [`Session::wasm_job`].
+    pub fn run_wasm(
+        &mut self,
+        host: &mut dyn WasmHost,
+        object: ObjectId,
+        name: &str,
+        args: &Value,
+    ) -> Result<Value, Error> {
+        let job = self.wasm_job(object, name, args)?;
+        self.run_job(host, job)
+    }
+
+    fn run_job(&mut self, host: &mut dyn WasmHost, mut job: WasmJob) -> Result<Value, Error> {
+        let output = job.run(host);
+        self.finish_wasm(job, output)
+    }
+
+    /// Run every WASM `on_change_mirror` watching `field` on a mirror, in the schema's order,
+    /// for its new `value`. Each sees what the ones before it set. Stops at the first that
+    /// fails.
+    pub fn run_on_change(
+        &mut self,
+        host: &mut dyn WasmHost,
+        object: ObjectId,
+        field: &str,
+        value: &Value,
+    ) -> Result<(), Error> {
+        for name in self.hooks(object, &CodeRole::OnChangeMirror, field)? {
+            let job = self.on_change_job(object, &name, field, value)?;
+            self.run_job(host, job)?;
+        }
+        Ok(())
+    }
+
+    /// Decode a sample that arrived for `field` with its WASM `after_receive`: the field's
+    /// value, or `None` if it has none.
+    pub fn run_after_receive(
+        &mut self,
+        host: &mut dyn WasmHost,
+        object: ObjectId,
+        field: &str,
+        sample: Sample,
+    ) -> Result<Option<Value>, Error> {
+        match self.after_receive_job(object, field, sample)? {
+            Some(job) => self.run_job(host, job).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Send a new `value` of `field` with its WASM `before_send`. Whether it has one: if not,
+    /// nothing is sent.
+    pub fn run_before_send(
+        &mut self,
+        host: &mut dyn WasmHost,
+        object: ObjectId,
+        field: &str,
+        value: &Value,
+    ) -> Result<bool, Error> {
+        match self.before_send_job(object, field, value)? {
+            Some(job) => self.run_job(host, job).map(|_| true),
+            None => Ok(false),
+        }
+    }
+
+    /// Get ready to make a call to `method` with its WASM `before_call`, which gets `args` and
+    /// sends the call; `None` if it has none. Finish it with [`Session::finish_call`].
+    pub fn before_call_job(
+        &self,
+        object: ObjectId,
+        method: &str,
+        args: &[(String, Value)],
+        options: CallOptions,
+    ) -> Result<Option<CallJob>, Error> {
+        let obj = self.object(object)?;
+        obj.method(method)?;
+        let Some(code) = obj.hooks(&CodeRole::BeforeCall, method).next() else {
+            return Ok(None);
+        };
+        let mut map = serde_json::Map::new();
+        for (name, value) in args {
+            let json = to_json(value).map_err(|e| Error::Wasm(format!("`{name}`: {e}")))?;
+            map.insert(name.clone(), json);
+        }
+        let job = obj.job(object, code, map)?.of(method);
+        Ok(Some(CallJob { job, options }))
+    }
+
+    /// Finish a `before_call`: make the call it sent, as [`Session::call`] does, or
+    /// [`Session::call_raw`] for a raw send. If the code failed, or didn't send, nothing is
+    /// sent.
+    pub fn finish_call(
+        &mut self,
+        job: CallJob,
+        output: Result<Vec<u8>, String>,
+    ) -> Result<RequestId, Error> {
+        let CallJob { job, mut options } = job;
+        let done = job.outcome(output)?;
+        let method = done.of.expect("set for a before_call");
+        match done.call.expect("a before_call that finishes has sent") {
+            CallSent::Args(args) => self.call(done.object, &method, args, options),
+            CallSent::Raw {
+                sample,
+                parameters,
+                key_args,
+            } => {
+                if !parameters.is_empty() {
+                    options.parameters = parameters;
+                }
+                let key_args: Vec<_> = key_args
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect();
+                self.call_raw(done.object, &method, &key_args, Some(sample), options)
+            }
+        }
+    }
+
+    /// Call a remote method, with its WASM `before_call` if it has one, run on `host`; else as
+    /// [`Session::call`] does.
+    pub fn run_call(
+        &mut self,
+        host: &mut dyn WasmHost,
+        object: ObjectId,
+        method: &str,
+        args: Vec<(String, Value)>,
+        options: CallOptions,
+    ) -> Result<RequestId, Error> {
+        match self.before_call_job(object, method, &args, options.clone())? {
+            Some(mut job) => {
+                let output = job.run(host);
+                self.finish_call(job, output)
+            }
+            None => self.call(object, method, args, options),
+        }
+    }
+
+    /// Get ready to read a call's replies to `method` with its WASM `after_call`; `None` if it
+    /// has none. The code reads them from `replies` as they arrive, so run it on a thread of its
+    /// own while the binding feeds them in, then finish it with [`Session::finish_wasm`]: its
+    /// result is the call's, for a method that replies with one value. A generator method's
+    /// results go to `replies` as they're yielded. If the code let an error reply through,
+    /// finishing gives [`Error::Reply`].
+    pub fn after_call_job(
+        &self,
+        object: ObjectId,
+        method: &str,
+        replies: Box<dyn Replies>,
+    ) -> Result<Option<WasmJob>, Error> {
+        let obj = self.object(object)?;
+        obj.method(method)?;
+        let Some(code) = obj.hooks(&CodeRole::AfterCall, method).next() else {
+            return Ok(None);
+        };
+        let job = obj.job(object, code, Default::default())?.of(method);
+        Ok(Some(job.with_replies(replies)))
     }
 
     /// Whether a mirror's owner is alive.
@@ -597,10 +949,7 @@ impl Session {
         options: CallOptions,
     ) -> Result<RequestId, Error> {
         let obj = self.object(object)?;
-        let m = obj
-            .schema
-            .method(method)
-            .ok_or_else(|| Error::UnknownMethod(method.to_owned()))?;
+        let m = obj.method(method)?;
         let names: Vec<&str> = m.key.placeholders().collect();
         let mut key_args = Vec::new();
         let mut rest = Vec::new();
@@ -613,6 +962,7 @@ impl Session {
         }
         let key = wire::key(&obj.topic, &m.key.fill(&key_args)?);
         let payload = wire::yaml_sample(&Value::Map(rest))?;
+        let options = obj.call_options(method, options);
         Ok(self.call_key(key, Some(payload), options))
     }
 
@@ -627,11 +977,9 @@ impl Session {
         options: CallOptions,
     ) -> Result<RequestId, Error> {
         let obj = self.object(object)?;
-        let m = obj
-            .schema
-            .method(method)
-            .ok_or_else(|| Error::UnknownMethod(method.to_owned()))?;
+        let m = obj.method(method)?;
         let key = wire::key(&obj.topic, &m.key.fill(key_args)?);
+        let options = obj.call_options(method, options);
         Ok(self.call_key(key, payload, options))
     }
 

@@ -3,6 +3,7 @@ name = "spirisynq-yaml"
 version = "0.1.0"
 description = "The strict YAML 1.2 subset SpiriSynq puts on the wire"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

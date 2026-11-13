@@ -1,0 +1,17 @@
+[package]
+name = "spirisynq-extism"
+version = "0.1.0"
+description = "Runs SpiriSynq's WASM code natively, with Extism"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+extism = { version = "1.41", default-features = false, features = ["wasmtime-default-features", "wasmtime-exceptions"] }
+serde_json = "1"
+spirisynq-core = { path = "../spirisynq-core" }
+spirisynq-schema = { path = "../spirisynq-schema" }
+spirisynq-yaml = { path = "../spirisynq-yaml" }
+wat = "1"
+

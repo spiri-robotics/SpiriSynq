@@ -21,13 +21,28 @@
       };
     in
     {
-      devShells.${system}.default = nixpkgs.legacyPackages.${system}.mkShell {
-        buildInputs = [
-          nixpkgs.legacyPackages.${system}.python3
-          nixpkgs.legacyPackages.${system}.python3Packages.sphinx
-          nixpkgs.legacyPackages.${system}.python3Packages.sphinx-rtd-theme
-          tex
-        ];
+      # The interpreters spirisynq-extism bundles: `make interpreters`.
+      packages.${system}.interpreters = import ./rust/spirisynq-extism/interpreters {
+        pkgs = nixpkgs.legacyPackages.${system};
+      };
+
+      devShells.${system} = {
+        # The Rust core: toolchain, coverage and LLVM tools matching rustc's LLVM. `make
+        # rust-test` runs in it: `nix develop .#rust -c make rust-test`.
+        rust = nixpkgs.legacyPackages.${system}.mkShell {
+          buildInputs = with nixpkgs.legacyPackages.${system}; [
+            cargo rustc clippy rustfmt cargo-llvm-cov llvmPackages_23.llvm gnumake uv
+          ];
+        };
+
+        default = nixpkgs.legacyPackages.${system}.mkShell {
+          buildInputs = [
+            nixpkgs.legacyPackages.${system}.python3
+            nixpkgs.legacyPackages.${system}.python3Packages.sphinx
+            nixpkgs.legacyPackages.${system}.python3Packages.sphinx-rtd-theme
+            tex
+          ];
+        };
       };
     };
   }

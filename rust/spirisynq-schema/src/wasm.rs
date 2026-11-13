@@ -59,8 +59,9 @@ pub struct WasmEntry {
     pub name: String,
     pub role: Role,
     /// What a hook hooks: a remote method's name for `before_call` and `after_call`, a field's
-    /// key for the field hooks. `None` for properties and methods.
-    pub of: Option<String>,
+    /// key for the field hooks. Empty for properties and methods. Only an `on_change_mirror` (or
+    /// a role this version doesn't know) may watch more than one.
+    pub of: Vec<String>,
     pub loader: Loader,
     /// The function to call inside the code.
     pub entry: String,
@@ -83,6 +84,14 @@ enum Target {
 }
 
 impl Role {
+    /// Whether a field or remote method can have only one hook of this role.
+    pub(crate) fn single(&self) -> bool {
+        matches!(
+            self,
+            Role::BeforeCall | Role::AfterCall | Role::BeforeSend | Role::AfterReceive
+        )
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             Role::Property => "property",
@@ -153,13 +162,17 @@ impl Loader {
 }
 
 impl Source {
-    /// `sha256:` and the hex digest of the code, as an entry's `hash` holds it.
-    pub fn hash(&self) -> String {
-        let bytes = match self {
+    /// The code's bytes: the text as UTF-8, or the module.
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
             Source::Text(text) => text.as_bytes(),
             Source::Binary(bytes) => bytes,
-        };
-        let digest = Sha256::digest(bytes);
+        }
+    }
+
+    /// `sha256:` and the hex digest of the code, as an entry's `hash` holds it.
+    pub fn hash(&self) -> String {
+        let digest = Sha256::digest(self.as_bytes());
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         format!("sha256:{hex}")
     }
@@ -204,22 +217,32 @@ impl WasmEntry {
             }
         }
         let of_at = child(at, "of");
-        let of = get(m, "of")
-            .map(|v| string(v, &of_at).map(str::to_owned))
-            .transpose()?;
+        let several = matches!(role, Role::OnChangeMirror | Role::Other(_));
+        let of = match get(m, "of") {
+            None => Vec::new(),
+            Some(Value::Seq(items)) if several => items
+                .iter()
+                .map(|v| string(v, &of_at).map(str::to_owned))
+                .collect::<Result<_, _>>()?,
+            Some(v) => vec![string(v, &of_at)?.to_owned()],
+        };
         let hook = |reason: String| Err(Error::new(&of_at, ErrorKind::Hook(reason)));
-        match (role.target(), &of) {
-            (Target::Nothing, Some(_)) => {
+        match role.target() {
+            Target::Nothing if !of.is_empty() => {
                 return hook(format!("a {} hooks nothing", role.as_str()));
             }
-            (Target::Method | Target::Field, None) => {
+            Target::Method | Target::Field if of.is_empty() => {
                 return Err(Error::new(&of_at, ErrorKind::Missing));
             }
-            (Target::Method, Some(target)) if !is_method(target) => {
-                return hook(format!("no remote method `{target}`"));
+            Target::Method => {
+                if let Some(target) = of.iter().find(|t| !is_method(t)) {
+                    return hook(format!("no remote method `{target}`"));
+                }
             }
-            (Target::Field, Some(target)) if !is_field(target) => {
-                return hook(format!("no field `{target}`"));
+            Target::Field => {
+                if let Some(target) = of.iter().find(|t| !is_field(t)) {
+                    return hook(format!("no field `{target}`"));
+                }
             }
             _ => {}
         }

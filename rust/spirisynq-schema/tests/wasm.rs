@@ -119,7 +119,7 @@ fn every_role_and_loader() {
             (
                 w.name.as_str(),
                 w.role.as_str(),
-                w.of.as_deref(),
+                w.of.first().map(String::as_str),
                 w.loader.as_str(),
             )
         })
@@ -310,11 +310,60 @@ fn hook_errors() {
         "/x-wasm/w/of",
         ErrorKind::Hook("no field `gps/longitude`".into()),
     );
+    // Only `on_change_mirror` watches several.
     assert_rejects(
-        &hook("on_change_mirror", Some("[voltage]")),
+        &hook("before_send", Some("[voltage]")),
         "/x-wasm/w/of",
         ErrorKind::Expected("a string"),
     );
+    assert_rejects(
+        &hook("on_change_mirror", Some("[voltage, 3]")),
+        "/x-wasm/w/of",
+        ErrorKind::Expected("a string"),
+    );
+    assert_rejects(
+        &hook("on_change_mirror", Some("[voltage, gps/longitude]")),
+        "/x-wasm/w/of",
+        ErrorKind::Hook("no field `gps/longitude`".into()),
+    );
+    assert_rejects(
+        &hook("on_change_mirror", Some("[]")),
+        "/x-wasm/w/of",
+        ErrorKind::Missing,
+    );
+}
+
+#[test]
+fn a_field_or_method_has_one_hook_of_each_kind() {
+    let h = text_hash("x");
+    let two = |role: &str, of: &str| {
+        with_members(&format!(
+            "  a:\n    role: {role}\n    of: {of}\n    loader: python\n    entry: f\n    hash: {h}\n  b:\n    role: {role}\n    of: {of}\n    loader: python\n    entry: f\n    hash: {h}\n"
+        ))
+    };
+    for (role, of) in [
+        ("before_call", "move"),
+        ("after_call", "move"),
+        ("before_send", "voltage"),
+        ("after_receive", "voltage"),
+    ] {
+        assert_rejects(
+            &two(role, of),
+            "/x-wasm/b/of",
+            ErrorKind::Hook(format!("`{of}` already has a {role}: `a`")),
+        );
+    }
+    // Several callbacks may watch one field; one may watch several.
+    let s = ok(&two("on_change_mirror", "voltage"));
+    assert_eq!(s.wasm().len(), 2);
+    let s = ok(&with_members(&format!(
+        "  c:\n    role: on_change_mirror\n    of: [voltage, gps/latitude]\n    loader: python\n    entry: f\n    hash: {h}\n"
+    )));
+    assert_eq!(s.wasm()[0].of, ["voltage", "gps/latitude"]);
+    // Different hooks on one field don't clash.
+    ok(&with_members(&format!(
+        "  a:\n    role: before_send\n    of: voltage\n    loader: python\n    entry: f\n    hash: {h}\n  b:\n    role: after_receive\n    of: voltage\n    loader: python\n    entry: f\n    hash: {h}\n"
+    )));
 }
 
 #[test]

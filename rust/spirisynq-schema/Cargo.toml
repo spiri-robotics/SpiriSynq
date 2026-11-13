@@ -3,6 +3,7 @@ name = "spirisynq-schema"
 version = "0.1.0"
 description = "SpiriSynq type schemas: type identity, key plans and WASM entries"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

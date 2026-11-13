@@ -1,7 +1,10 @@
 # SpiriSynq v2: Rust core architecture
 
 Status: decisions from the architecture pass of 2026-11-11. Implemented so far: `spirisynq-yaml`,
-`spirisynq-schema`, `spirisynq-core` and `spirisynq-zenoh`.
+`spirisynq-schema`, `spirisynq-core`, `spirisynq-zenoh`, the extension module of
+`spirisynq-python` (the Python API isn't rebuilt on it yet), and `spirisynq-extism` with every
+loader: `wat`, `wasm`, and the bundled MicroPython, Lua and QuickJS (WASM properties, methods,
+field hooks and caller hooks).
 
 SpiriSynq v2 moves the protocol into a Rust core. Python becomes a binding on top of it (PyO3). v2
 may break both the wire protocol and the Python API.
@@ -142,8 +145,8 @@ inline the child's state and address. v2 only removes that duplication:
 - An object, a mirror and a link are interchangeable in a field. `foo.bar = Bar()` and
   `foo.bar = Link("some/topic")` are treated the same way, and both go on the wire as a link.
 - A link can point anywhere. A child's default topic is derived from its parent
-  (`<parent>/<field>`). How a child learns its parent when it's created isn't solved yet; it may be
-  done by hand at first.
+  (`<parent>/<field>`). Assigning the child to the parent's field sets its parent, as in v1
+  (decided 2026-11-11).
 - Children outlive their parents: closing a parent leaves its children open.
 - Reassigning `foo.bar` drops the old object. Python garbage-collects it, which closes it, and the
   new object takes its place.
@@ -237,7 +240,8 @@ x-wasm:
   cell_voltage:
     role: property        # property | method | before_call | after_call | on_change_mirror
                           #   | before_send | after_receive
-    of: ...               # hooks only: the remote method (before/after_call) or field key
+    of: ...               # hooks only: the remote method (before/after_call) or field key;
+                          #   an on_change_mirror may list several
     loader: python        # python | lua | javascript | wat | wasm
     entry: cell_voltage   # function to call inside the code
     source: |             # omitted when large; fetched by hash. `wasm` takes !!binary
@@ -274,7 +278,155 @@ x-wasm:
 or adapts.
 - Input is Extism's: `self` and the arguments as JSON matching the schema. SpiriSynq also provides
   host functions (`field_get_*`, `field_set_*`, `arg_get_*`) to every loader, so a module can read
-  or set one field or argument by name without decoding the whole input.
+  or set one field or argument by name without decoding the whole input. See "Running code".
+
+### Running code
+
+Built for properties and methods, with every loader (2026-11-12).
+
+- The engine doesn't run WASM: a `WasmHost` does (`spirisynq-extism` natively, the browser's own
+  engine later). `Session::wasm_job` takes a snapshot of the object's fields into a `Frame`; the
+  host runs the code against the frame, holding no lock on the engine; `Session::finish_wasm`
+  sets the fields the code set, as `set_field` does (an owner publishes, a mirror writes to the
+  owner), and reads the result. If the code fails, nothing is set.
+- The entry function's input is `{"self": {...fields}, "args": {...}}`; its output is its
+  result as JSON, empty for `null`. Code sees values as the schema describes them: tags are
+  dropped and bytes are base64 strings. Fields without a value, and fields with their own
+  encoding, are left out of `self`; code can't read or set the latter.
+- The result and the fields code sets are read back guided by their schemas: a string under
+  `x-yaml-tag: "!!binary"` becomes bytes; a string or collection under a local tag such as
+  `!Link` becomes that tagged value (a `null` stays `null`); a whole number under `type: number`
+  (not `integer`) becomes a float, since JavaScript can't write `3.0`. In an `anyOf`, the first branch
+  whose `type` fits guides the value. `$ref`s into `$defs` are followed; a schema that refers to
+  itself stops guiding after 64 steps instead of looping.
+- Host functions, imported from `extism:host/user`. Names and JSON text are Extism memory
+  blocks (an `i64` offset), as Extism passes strings:
+
+  | Function | Does |
+  | --- | --- |
+  | `field_get(name) -> json` | A field's value, `null` if it has none. `name` is its key: `voltage`, `gps/latitude`. |
+  | `field_get_i64(name) -> i64`, `field_get_f64(name) -> f64` | The same, for an integer or a number. |
+  | `field_set(name, json)`, `field_set_i64(name, i64)`, `field_set_f64(name, f64)` | Set a field; later reads see it. A property can't. |
+  | `arg_get(name) -> json`, `arg_get_i64`, `arg_get_f64` | An argument's value. |
+  | `sample_payload() -> bytes`, `sample_encoding() -> text`, `sample_attachment() -> bytes` | In an `after_receive`: the sample that arrived. No attachment is block 0. |
+  | `sample_decode() -> json` | In an `after_receive`: the sample decoded the usual way, from YAML. |
+  | `sample_send(payload, encoding, attachment)` | In a `before_send`: send the value as these bytes (`attachment` 0 for none). |
+  | `sample_send_value(json)` | In a `before_send`: send a value the usual way, as YAML. |
+  | `call_send_args(json)` | In a `before_call`: send the call with these arguments, a mapping by name, the usual way. |
+  | `call_send(payload, parameters, encoding, attachment)` | In a `before_call`: send the call as these bytes, with these selector parameters (0 for the caller's). |
+  | `reply_next() -> json` | In an `after_call`: wait for the next reply. `{"reply": <index>}`, `{"error": {"kind", "message"}}`, or `null` once the call has ended. |
+  | `reply_payload(i64) -> bytes`, `reply_encoding`, `reply_attachment`, `reply_decode` | In an `after_call`: a reply it has had, by index, as for a sample. |
+  | `reply_escaped()` | In an `after_call`, about to fail: the error reply it was handed is why. |
+  | `call_yield(json)` | In an `after_call`: yield a result. |
+
+  Block 0 is empty bytes (Extism gives an empty block offset 0), so an empty attachment is no
+  attachment.
+
+  A host function that can't do what it's asked (no such field, not an integer, a property
+  setting a field, a `before_send` sending twice) stops the code with an error saying why.
+- Field hooks (2026-11-12) run the same way, through `Session::on_change_job`,
+  `after_receive_job` and `before_send_job`, and the same `finish_wasm`; `run_on_change`,
+  `run_after_receive` and `run_before_send` do all three. The binding calls them when their
+  moment comes, as it applies values: the engine doesn't run code by itself.
+  - `on_change_mirror(self, value)` runs on a mirror only, and gets `field` too when it watches
+    several. Its writes are applied with `set_field_local`, never published. Several may watch
+    one field; `run_on_change` runs them in the schema's order, each seeing what the ones
+    before it set, and stops at the first that fails.
+  - `after_receive(self, sample)` returns the field's value, read against the field's schema;
+    the binding applies it. It can't set fields.
+  - `before_send(self, value, sample)` must send exactly once; finishing publishes what it sent,
+    as `send_raw` does. It can't set fields.
+  - A field with a WASM `before_send` or `after_receive` has its own encoding (`raw`), whatever
+    the binding's options say, so every binding hands its samples to the hook. A field or
+    remote method has at most one hook of each other kind; the schema rejects a second.
+- Caller hooks (2026-11-12) run on the caller, around a call to a remote method.
+  - `before_call(self, call, *args)` gets the caller's arguments, in the order of its `params`,
+    and sends the call exactly once: `send_args` the usual way, or `send` as it is (`payload`,
+    `parameters`, `encoding`, `attachment`). The before_call's arguments named by the key
+    template still fill the key; parameters of its own replace the caller's. Raising, or not
+    sending, sends nothing. `Session::before_call_job` gives a `CallJob`, `finish_call` makes
+    the call and gives its `RequestId`; `run_call` does it all, or makes a plain `call` for a
+    method without one. It can't set fields.
+  - `after_call(self, replies)` is a generator over the call's replies. The binding gives the
+    job a `Replies` (`Session::after_call_job`): the code waits in `Replies::next` for each
+    reply, so it runs on a thread of its own while the binding feeds the call's
+    `Notice::Reply`s in. A reply reads like an incoming sample; an error reply is raised in the
+    code as `RpcException` (`kind`, `message`), and if it gets out uncaught, finishing gives
+    `Error::Reply` with it, for the caller to raise as it is. A generator method's results go
+    to `Replies::give` as they're yielded; for a method that replies with one value,
+    `finish_wasm` gives the one result, and yielding none or several is an error. It can't set
+    fields.
+  - A method with a WASM `after_call` always has its replies raw (`CallOptions::raw_replies`).
+  - Extism's time limit counts the wall clock, so `spirisynq-extism` keeps its own: a watcher
+    thread per host cancels the plug-in when its time is up, and the clock stops while an
+    `after_call` waits for a reply. The wait itself is bounded by the call's timeout. In the
+    browser, a host function can't wait on the main thread: its binding will need a worker, or
+    JavaScript Promise Integration.
+- Sandbox: WASI with no files, no environment and no network; the code's stdout and stderr go
+  nowhere. Each call gets 1 s and 64 MiB by default (`spirisynq_extism::Limits`). Modules are
+  compiled once per host (an interpreter once for all the code it runs), and **every call gets a
+  fresh instance**: nothing code keeps in globals survives to the next call, and a trap leaves
+  nothing behind. wasmtime's on-disk compile cache is off. WebAssembly exceptions are on
+  (Extism's `wasmtime-exceptions`), for the interpreters' setjmp/longjmp.
+
+### The bundled interpreters
+
+- `python` is MicroPython 1.29.0, `lua` is Lua 5.4.9, `javascript` is QuickJS-ng 0.18.0. Each is
+  an Extism plug-in exporting `run`, with a small C runner of ours
+  (`rust/spirisynq-extism/interpreters/`). Its input is `{"source", "entry", "args": [...]}`,
+  the arguments in the order of the entry's `params` (as given, without `params`). It runs the
+  source as a module (named `code`), calls `entry(self, *args)`, and outputs the result as JSON.
+  `self` reads and sets fields through `field_get` and `field_set` as it's used. A hook's
+  arguments go in the order the engine gives them (`params` is ignored), and an `after_receive`
+  or `before_send` gets a sample object last (`"sample": "in"` or `"out"` in the input). Coming
+  in it has `payload` (bytes), `encoding`, `attachment` (bytes or none) and `decode()`; going
+  out, `send(payload, encoding, attachment)` (encoding `zenoh/bytes` by default) and
+  `send_value(value)`, written the language's way: `sample.send(p, encoding=…, attachment=…)`
+  in Python, `sample:send(p, encoding, attachment)` in Lua, `sample.send(p, {encoding,
+  attachment})` and `sample.sendValue(v)` in JavaScript. Payloads are `bytes` in Python, strings
+  in Lua and `Uint8Array`s in JavaScript (an `ArrayBuffer` or other view is taken too).
+- A `before_call` gets a call object first, before its arguments (`"call": "send"`):
+  `call.send_args(args)`, and `call.send(p, parameters=…, encoding=…, attachment=…)` in Python,
+  `call:send(p, parameters, encoding, attachment)` in Lua, `call.sendArgs(args)` and
+  `call.send(p, {parameters, encoding, attachment})` in JavaScript. An `after_call` gets the
+  replies as its one argument (`"call": "replies"`), each reply read like an incoming sample,
+  and is driven as the language's generator: a generator function in Python, a coroutine
+  (`coroutine.yield`) in Lua, a `function*` in JavaScript. `for reply in replies` in Python,
+  `for reply in replies do` in Lua, `for (const reply of replies)` in JavaScript. An error
+  reply raises `RpcException` (`kind`, `message`; a global in Python and JavaScript), or in Lua
+  a table with `kind` and `message`.
+- Sizes: MicroPython 289 KiB (122 KiB gzipped), Lua 244 KiB (99), QuickJS 963 KiB (348): 570
+  KiB gzipped together, under the 1 MiB the docs promise. Measured in release builds: the first
+  call compiles the interpreter (90 ms Lua, 155 ms MicroPython, 350 ms QuickJS, once per host);
+  after that a call takes 0.3 to 0.6 ms, fresh instance included.
+- What each has: Lua opens base, coroutine, table, string, math and utf8, and `load` takes text
+  only (Lua's bytecode loader trusts its input). QuickJS has no libc, so no I/O at all.
+  MicroPython has the modules the docs list plus `io` (in-memory streams; `json` needs it), no
+  files and no external imports. It is stackless, so deep recursion raises `RuntimeError`.
+- MicroPython never collects garbage during a call: pointers held in WebAssembly locals can't
+  be scanned. Its heap grows instead (split heap), as in the upstream webassembly port. So
+  everything one call allocates must fit in the call's memory limit; a fresh instance per call
+  frees it all.
+- Values: JSON, with these rules. Lua: integers and floats as written; a table is an array when
+  its keys are exactly 1..n, and an empty table is an empty array. JavaScript: an integer a
+  number can't hold exactly arrives as a `BigInt`, and a `BigInt` goes out exactly. Python:
+  integers of any size, and `bytes` going out as base64; a `Uint8Array` too, in JavaScript. Everywhere, a non-finite float or a
+  function is an error, not `null`, and an integer key goes out as a string.
+- Errors carry the language's own type and message, and the line in `code` where they can:
+  `ValueError: too high (line 2)`, `code:1: too high`, `RangeError: too high (code:2:9)`.
+- Built by `interpreters/default.nix` from pinned sources and pinned tools (nixpkgs' wasm32-wasi
+  clang and wasi-libc, binaryen's `wasm-opt -Oz`), and committed. `make interpreters` rebuilds
+  them; the build is reproducible, and the `Rust` workflow fails if a rebuild differs from what
+  is committed. The C is ours or upstream's, not Rust: it isn't in the coverage report, and runs
+  only inside the WebAssembly sandbox, where a bug can give wrong results but can't reach the
+  host. The interpreter tests (`spirisynq-extism/tests/`) exercise it.
+
+Not yet:
+- Code fetched by hash.
+- In the interpreters, `bytes` fields arrive as base64 strings: the docs promise Lua strings,
+  `Uint8Array`s and `bytes`. The runners need the field's schema to decode them.
+- Integer dict keys come back as strings (`{3: 3.52}` returns `{"3": 3.52}`), until results are
+  read against their `returns` schema's key types.
 
 ## Language targets
 
@@ -378,10 +530,10 @@ A Cargo workspace in `rust/`. Lower crates know nothing about the ones above the
 | --- | --- | --- |
 | `spirisynq-yaml` | The strict YAML 1.2 subset: parser and canonical writer, producing a `Value` tree that keeps tags. Built on `saphyr-parser`'s event stream; the subset rules are ours. | everywhere |
 | `spirisynq-schema` | The JSON Schema model we use, `$id`, `x-wasm` entries, and compiling a type tree into its key plan (the exact keys an object publishes and subscribes to). | everywhere |
-| `spirisynq-core` | The engine: authoritative objects and mirrors, field state, change detection, echo suppression, the built-in queries, remote-call routing, liveliness and listener reports. Sans-IO: it emits `Command`s for a transport to carry out and takes the network's `Event`s back, so it has no runtime, no threads and no clock, and runs unchanged in the browser. `memory::MemoryNetwork` connects sessions in one process for tests. WASM will run through a `WasmHost` trait. | everywhere |
+| `spirisynq-core` | The engine: authoritative objects and mirrors, field state, change detection, echo suppression, the built-in queries, remote-call routing, liveliness and listener reports. Sans-IO: it emits `Command`s for a transport to carry out and takes the network's `Event`s back, so it has no runtime, no threads and no clock, and runs unchanged in the browser. `memory::MemoryNetwork` connects sessions in one process for tests. WASM runs through a `WasmHost` trait (see "Running code"). | everywhere |
 | `spirisynq-zenoh` | The transport over main zenoh (1.10), with the `shared-memory` and `unstable` features (`SourceInfo` needs `unstable` anyway). A `Node` owns a zenoh session and an engine; see "The zenoh transport" below. | native |
-| `spirisynq-extism` | `WasmHost` over Extism (wasmtime). | native |
-| `spirisynq-python` | PyO3 extension module `SpiriSynq._core`; the Python package in `src/SpiriSynq/` builds the user API on it. | native |
+| `spirisynq-extism` | `WasmHost` over Extism 1.41 (wasmtime 49), with the bundled interpreters (see "The bundled interpreters"). Needs Rust 1.96 or newer, so the whole workspace does. | native |
+| `spirisynq-python` | PyO3 extension module `SpiriSynq._core`; the Python package in `src/SpiriSynq/` builds the user API on it. See "The Python extension module" below. | native |
 | `spirisynq-c` | The C ABI and its cbindgen header. The header-only C++ wrapper lives beside it in `rust/spirisynq-c/cpp/`. | native |
 | `spirisynq-web` | The browser build: `Transport` over zenoh-nostd's `ws/` link, `WasmHost` over the browser's own WebAssembly engine, and the JS API (wasm-bindgen). | browser |
 
@@ -412,8 +564,44 @@ A Cargo workspace in `rust/`. Lower crates know nothing about the ones above the
   its own runtime; no Tokio of ours); the browser runs it on the page's event loop
   (`wasm-bindgen-futures`).
 - Python packaging moves from hatchling to maturin (mixed Rust/Python project:
-  `python-source = "src"`, manifest `rust/spirisynq-python/Cargo.toml`). The project template
-  currently assumes hatchling, so the template needs a maturin variant or a local override.
+  `python-source = "src"`, manifest `rust/spirisynq-python/Cargo.toml`). Decided 2026-11-11:
+  changed here in the project itself, no template variant; `uvx copier update` carries the local
+  change through template updates.
+- **v2 replaces v1** (decided 2026-11-11): `src/SpiriSynq/` is rebuilt on the core in place, not
+  kept beside it. v1 and v2 peers can't talk to each other.
+
+### The Python extension module
+
+- `SpiriSynq._core` is thin and private: a `Node` per zenoh session, whose methods are the
+  engine's (`create_owner`, `set_field`, `call`, `reply`…). `run_wasm(object, name, args)`
+  runs a WASM property or method on the node's Extism host, without the GIL. Objects and requests are opaque
+  `ObjectId`s and `RequestId`s. The user API in `src/SpiriSynq/` is built on it in Python.
+- A type's WASM hooks run inside `_core` (2026-11-13), so the Python layer never drives
+  them: `next_notice` decodes with an `after_receive`, `set_field` sends with a `before_send`
+  (every time: the engine can't compare a raw field's values), `set_field_local` runs the
+  `on_change_mirror`s when the value changed, and `call` makes the call with a `before_call`
+  (`call_raw` skips it). A call with an `after_call` gets a thread of its own: `next_notice`
+  feeds it the call's replies and hands out what it yields instead, as `Reply`s, then the
+  call's end. An error reply it lets through is a `Reply` with that error; code that fails is a
+  `Reply` with error kind `SynqError`. Closing the node ends the `after_call`s still waiting.
+- Code runs on a pool of Extism hosts, one per piece of code running at once, each compiling
+  what it runs on first use. `Node(config, wasm_timeout=1.0, wasm_memory_mib=64)` sets the
+  limits.
+- Notices come from `Node.next_notice(timeout)`, one class per kind (`Incoming`, `Call`,
+  `Reply`…, and `SchemaFetched` for a schema fetch). It waits without the GIL and wakes every
+  100 ms so Ctrl-C works. The engine never calls into Python, so the driver thread never needs
+  the GIL. The Python layer decides how to dispatch notices (asyncio, a thread).
+- Field values convert directly between `Value` and Python: `None`, `bool`, `int` (64-bit),
+  `float`, `str`, `bytes`, lists (tuples go out as lists), dicts, and `_core.Tagged(tag,
+  value)` for local tags such as `!Link`. Python never parses YAML. Values nested more than
+  `MAX_DEPTH` deep are refused, which also stops self-referencing lists.
+- Raw payloads (`_core.Sample`) are copied once into and out of Python. Zero-copy, including
+  shared memory, would need Python's buffer protocol, which PyO3 only offers as `unsafe`. Left
+  for when it's needed; it would go in the unsafe table below.
+- No `unsafe`: PyO3's macros work under `#![forbid(unsafe_code)]`.
+- Packaging: maturin builds the wheel (abi3, Python 3.13 and up). `uv sync` rebuilds the
+  extension when Rust sources change (`tool.uv.cache-keys`). Platform wheels for PyPI need
+  the publish workflow to build per platform; not done yet.
 
 ### The zenoh transport
 
@@ -434,8 +622,13 @@ A Cargo workspace in `rust/`. Lower crates know nothing about the ones above the
 
 ### Testing
 
-Every crate keeps 100% line and function coverage (`cargo llvm-cov --fail-under-lines 100
---fail-under-functions 100`, run by `make rust-test` and the `Rust` workflow). Region coverage
+Every crate keeps 100% line and function coverage, checked by `make rust-test` (which the `Rust`
+workflow runs). The extension module is measured by its Python tests (`tests/core`): the target
+runs the cargo tests and pytest against an instrumented build under one `cargo llvm-cov` session,
+then `rust/coverage_gate.py` checks the merged report. The gate leaves out only PyO3's generated
+`__pymethod_*` wrappers and the `#[pymethods]`/`#[pyclass]` lines they sit on: llvm-cov counts
+the wrappers of methods that take no arguments as never called even when they are (PyO3 0.30).
+The methods themselves are counted. Region coverage
 is reported but not enforced: some regions are error paths that can't occur, such as a `?` on a
 call that can't fail in that context. Defensive branches that can't be reached go on a line that
 is reached, rather than behind an exclusion; unit tests inside a crate don't count towards its
@@ -457,7 +650,8 @@ wasmtime, wasm-bindgen) isn't ours and isn't listed.
 | `spirisynq-c`: every exported `extern "C"` function | A C API receives raw pointers (strings, buffers, handles) from C/C++ code; Rust can't check them, so reading them is `unsafe` by definition. Each function checks for null and documents what the caller must guarantee. Unavoidable for a C API. | expected, not written yet |
 
 Build order: `yaml` → `schema` → `core` with an in-memory `Transport` for tests → `zenoh` →
-`python` → `c` → `web` → `extism`. Each is tested before the next starts.
+`python` → `extism` → `c` → `web` (`extism` moved up on 2026-11-12, so Python's `@wasm.*`
+methods can be tested end to end). Each is tested before the next starts.
 
 ## Still open
 
@@ -469,7 +663,6 @@ Build order: `yaml` → `schema` → `core` with an in-memory `Transport` for te
   fetched `gps` from replacing it with the older value. Rare (it needs the change to land
   between the mirror's subscription and the owner's answer), and the next change fixes it.
 
-- How an object is told its parent when it's created (and so its derived topic).
 - Codecs were dropped (2026-11-11). Custom encoding is per field: `<field>_before_send(value,
   sample)` sends once via `sample.send(raw…)` or `sample.send_value(v)`; `<field>_after_receive(
   sample)` returns the value (`sample.decode()` for the usual way). Methods named by convention,

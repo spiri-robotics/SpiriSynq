@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.99.1"
           components: clippy, rustfmt
       - name: Check formatting
         run: cargo fmt --check
@@ -33,10 +33,28 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.99.1"
           components: llvm-tools-preview
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
-      - name: Test with 100% line coverage
-        run: cargo llvm-cov --locked --fail-under-lines 100 --fail-under-functions 100
+      # The extension module's coverage comes from its Python tests.
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Install project
+        working-directory: .
+        run: uv sync --locked
+      - name: Test with 100% line and function coverage
+        working-directory: .
+        run: make rust-test
+
+  interpreters:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31.11.3
+      - name: Rebuild the bundled interpreters
+        working-directory: .
+        run: make interpreters
+      - name: Check they match the committed ones
+        working-directory: .
+        run: git diff --exit-code -- rust/spirisynq-extism/interpreters

@@ -52,3 +52,7 @@ wheels/
 
 # Rust
 rust/target/
+
+# The extension module maturin builds in place, and coverage profiles
+src/SpiriSynq/_core*.so
+*.profraw

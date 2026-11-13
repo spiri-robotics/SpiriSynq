@@ -4,6 +4,8 @@ use std::fmt;
 
 use spirisynq_schema::KeyError;
 
+use crate::ReplyError;
+
 /// Why a call into the [`Session`](crate::Session) was refused. Nothing was sent.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -32,6 +34,16 @@ pub enum Error {
     NotAString(String),
     /// The value can't be written as YAML.
     Encode(spirisynq_yaml::Error),
+    /// The object's type has no WASM code with this name.
+    UnknownCode(String),
+    /// This WASM code is a hook, run by the engine when its moment comes, not a property or
+    /// method to run.
+    NotRunnable(String),
+    /// WASM code failed, or what it gave back can't be read; says why.
+    Wasm(String),
+    /// An `after_call` let one of the call's error replies through: the caller raises it as it
+    /// is.
+    Reply(ReplyError),
 }
 
 impl fmt::Display for Error {
@@ -51,6 +63,13 @@ impl fmt::Display for Error {
             Error::Key(e) => e.fmt(f),
             Error::NotAString(name) => write!(f, "`{name}` is in the key, so it must be a string"),
             Error::Encode(e) => e.fmt(f),
+            Error::UnknownCode(name) => write!(f, "no WASM code `{name}`"),
+            Error::NotRunnable(name) => write!(f, "`{name}` is a hook, not a property or method"),
+            Error::Wasm(why) => write!(f, "WASM: {why}"),
+            Error::Reply(error) => {
+                let (kind, message) = error.parts();
+                write!(f, "{kind}: {message}")
+            }
         }
     }
 }
