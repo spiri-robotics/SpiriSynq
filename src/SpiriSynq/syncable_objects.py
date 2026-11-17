@@ -172,21 +172,32 @@ NORMAL, LOCAL, QUIET = "normal", "local", "quiet"
 _state = threading.local()
 
 
-def _mode() -> str:
-    return getattr(_state, "mode", NORMAL)
+def _modes() -> dict[int, str]:
+    if not hasattr(_state, "modes"):
+        _state.modes = {}
+    return _state.modes
+
+
+def _mode(obj) -> str:
+    return _modes().get(id(obj), NORMAL)
 
 
 @contextlib.contextmanager
-def _applying(mode: str):
-    """Within the block, attribute changes on this thread are applied as `mode` says:
-    `NORMAL` publishes them, `LOCAL` changes a mirror's copy only, `QUIET` tells the core
-    nothing (it already knows)."""
-    old = _mode()
-    _state.mode = mode
+def _applying(obj, mode: str):
+    """Within the block, changes to `obj`'s attributes on this thread are applied as `mode`
+    says: `NORMAL` publishes them, `LOCAL` changes a mirror's copy only, `QUIET` tells the core
+    nothing (it already knows). Only `obj`'s: a signal handler that runs meanwhile and sets
+    another object's fields publishes them as usual."""
+    modes = _modes()
+    old = modes.get(id(obj))
+    modes[id(obj)] = mode
     try:
         yield
     finally:
-        _state.mode = old
+        if old is None:
+            del modes[id(obj)]
+        else:
+            modes[id(obj)] = old
 
 
 def _running() -> set:
@@ -465,7 +476,7 @@ class SyncableObject:
         self._synq_changed(path, self._synq_get(path))
 
     def _synq_changed(self, path: str, value) -> None:
-        mode = _mode()
+        mode = _mode(self)
         if mode == NORMAL:
             self._synq_send(path, value)
         elif mode == LOCAL and not _plan(type(self))[path].hooked:
@@ -500,7 +511,7 @@ class SyncableObject:
                 continue  # setting the watched field in its own callback doesn't run it again
             running.add(token)
             try:
-                with _applying(NORMAL if side == "owner" else LOCAL):
+                with _applying(self, NORMAL if side == "owner" else LOCAL):
                     callback.run(self, path, value)
             finally:
                 running.discard(token)
@@ -551,7 +562,7 @@ class SyncableObject:
             self._synq_bad(path, str(e))
             return
         if self.synq_authoritive:
-            with _applying(NORMAL):
+            with _applying(self, NORMAL):
                 if not self._synq_set(path, value):
                     self._synq_bad(path, "the dataclass holding it is None")
             return
@@ -577,7 +588,7 @@ class SyncableObject:
         f = _plan(type(self))[path]
         if self.synq_follow_links:
             value = self._synq_follow(path, value, f.hint)
-        with _applying(QUIET):
+        with _applying(self, QUIET):
             if not self._synq_set(path, value):
                 self._synq_bad(path, "the dataclass holding it is None")
         if any(e.get("role") == "on_change_mirror" for e in self._synq_wasm().values()):
@@ -604,7 +615,7 @@ class SyncableObject:
                 continue
             if self.synq_follow_links and not self.synq_authoritive:
                 value = self._synq_follow(f.name, value, plan[f.name].hint)
-            with _applying(QUIET):
+            with _applying(self, QUIET):
                 setattr(self, f.name, value)
 
     def _synq_rehydrated(self, complete: bool) -> None:
@@ -674,7 +685,7 @@ class SyncableObject:
                 return {k: swap(v) for k, v in value.items()}
             return value
 
-        with _applying(QUIET):
+        with _applying(self, QUIET):
             self._synq_set(path, swap(self._synq_get(path)))
 
     # --- WASM ---------------------------------------------------------------------------------

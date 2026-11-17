@@ -1,79 +1,47 @@
-from conftest import zenoh_test_config
-"""
-Performance and stress tests. Heavier than unit tests — run separately if needed.
-"""
+"""Stress tests: heavier than the others."""
 
 import threading
-import time
 from dataclasses import dataclass
 
-import pytest
-
-from SpiriSynq.session import Session
 from SpiriSynq.syncable_objects import SyncableObject
 
-
-def _wait_for(predicate, timeout=2.0, interval=0.01):
-    start = time.time()
-    while time.time() - start < timeout:
-        if predicate():
-            return True
-        time.sleep(interval)
-    return False
+from .conftest import wait_for
 
 
-@pytest.fixture(autouse=True)
-def close_test_sessions():
-    from SpiriSynq.shutdown import _live_sessions
-    before = set(_live_sessions.keys())
-    yield
-    for sid, session in list(_live_sessions.items()):
-        if sid not in before:
-            session.close()
+@dataclass
+class StressObj(SyncableObject):
+    synq_type_id = "7d1e2a3b-0000-4000-8000-0000000000e1:1"
+    counter: int = 0
+    label: str = "init"
+    value: float = 0.0
 
 
-def test_concurrent_field_writes():
-    """
-    Concurrent field writes from multiple threads must not raise or corrupt state.
-    Final mirror state must converge to the last written value.
-    """
-    WRITERS = 8
-    WRITES_PER_THREAD = 200
-
-    @dataclass
-    class StressObj(SyncableObject):
-        counter: int = 0
-        label: str = "init"
-        value: float = 0.0
-
-    auth = StressObj("stress/thread_writes", synq_authoritive=True)
-    mirror_session = Session(config=zenoh_test_config())
-    mirror = StressObj.from_topic(auth.synq_absolute_path, mirror_session)
-
-    _wait_for(lambda: auth.synq_publisher.matching_status.matching)  # type: ignore[union-attr]
-
+def test_concurrent_field_writes(other):
+    """Writes from many threads at once raise nothing, and a mirror converges on the last."""
+    writers, writes = 8, 200
+    owner = StressObj("stress/thread_writes", synq_authoritive=True)
+    mirror = StressObj.from_topic("host/stress/thread_writes", session=other)
     errors = []
-    errors_lock = threading.Lock()
 
     def writer(tid):
-        for i in range(WRITES_PER_THREAD):
+        for i in range(writes):
             try:
-                auth.counter = tid * 1000 + i
-                auth.label = f"t{tid}-{i}"
-                auth.value = tid + i * 0.001
-            except Exception as e:
-                with errors_lock:
-                    errors.append((tid, i, repr(e)))
+                owner.counter = tid * 1000 + i
+                owner.label = f"t{tid}-{i}"
+                owner.value = tid + i * 0.001
+            except Exception as e:  # pragma: no cover - only on failure
+                errors.append((tid, i, repr(e)))
 
-    threads = [threading.Thread(target=writer, args=(i,), daemon=True) for i in range(WRITERS)]
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(writers)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-
-    assert not errors, f"Exceptions during concurrent writes: {errors}"
-
-    final_counter = auth.counter
-    assert _wait_for(lambda: mirror.counter == auth.counter, timeout=3.0), (
-        f"Mirror did not converge: mirror.counter={mirror.counter}, auth.counter={auth.counter} (final snapshot: {final_counter})"
+    assert not errors
+    wait_for(
+        lambda: (
+            (mirror.counter, mirror.label, mirror.value)
+            == (owner.counter, owner.label, owner.value)
+        ),
+        timeout=10,
     )

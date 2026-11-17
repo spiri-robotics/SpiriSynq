@@ -85,3 +85,16 @@ def test_a_callback_is_still_a_method():
     battery = Battery("battery", synq_authoritive=True)
     battery.track_peak(99.0)
     assert battery.peak_current_a == 99.0
+
+
+def test_a_mirrors_signal_handler_can_set_an_owners_fields(other):
+    """A handler runs while the mirror applies its change: the owner it writes to still
+    publishes, as the change is the mirror's, not the owner's."""
+    source = Battery("source", synq_authoritive=True)
+    relay = Battery("relay", synq_authoritive=True)
+    watched = Battery.from_topic("host/source")
+    watched.events.limit.connect(lambda value: setattr(relay, "limit", value))
+    far = Battery.from_topic("host/relay", session=other)
+    source.limit = 80
+    wait_for(lambda: relay.limit == 80)
+    wait_for(lambda: far.limit == 80)

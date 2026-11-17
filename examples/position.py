@@ -1,7 +1,14 @@
-import time
 import math
+import time
 
-from SpiriSynq.example_types.position import Position, Pose, Offset, Orientation, Accuracy, RootFrame
+from SpiriSynq.example_types.position import (
+    Accuracy,
+    Offset,
+    Orientation,
+    Pose,
+    Position,
+    RootFrame,
+)
 
 # Authoritative node — this is the "publisher" side. The drone flies in a local
 # NED frame whose origin is a fixed point on the globe.
@@ -13,8 +20,12 @@ origin.mount = Pose(
 )
 drone = Position("drone", synq_authoritive=True, relative_to=origin.synq_absolute_path)
 # A camera 10 cm ahead of the drone's centre, in the drone's FRD body frame
-camera = Position("drone_camera", synq_authoritive=True,
-                  relative_to=drone.synq_absolute_path, mount=Pose(Offset(x=0.1)))
+camera = Position(
+    "drone_camera",
+    synq_authoritive=True,
+    relative_to=drone.synq_absolute_path,
+    mount=Pose(Offset(x=0.1)),
+)
 
 # Observer node — mirrors the authoritative node
 observer = Position.from_topic(drone.synq_absolute_path)

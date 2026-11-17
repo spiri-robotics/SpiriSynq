@@ -184,6 +184,11 @@ def test_from_value_unions():
     assert from_value(_core.Tagged("Point", {"x": 1.0}), Other | Point) == Point(1.0)
     with pytest.raises(BadValue, match="fits none of"):
         from_value("a", int | float)
+    # An untagged value goes to an untagged member before a tagged primitive.
+    plain = from_value("a/b", Frame | str)
+    assert plain == "a/b" and type(plain) is str
+    assert type(from_value(_core.Tagged("Frame", "ECEF"), Frame | str)) is Frame
+    assert type(from_value("ECEF", Frame | None)) is Frame  # nothing else takes it
 
 
 def test_from_value_untyped():

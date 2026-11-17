@@ -158,8 +158,11 @@ def _union(value, members):
         return None
     if isinstance(value, _core.Tagged):
         # The member the tag names, before trying the others in order.
-        tagged = [m for m in members if isinstance(m, type) and _tag_matches(m, value.tag)]
-        members = tagged + [m for m in members if m not in tagged]
+        first = [m for m in members if isinstance(m, type) and _tag_matches(m, value.tag)]
+    else:
+        # An untagged value is a tagged primitive only if nothing else takes it.
+        first = [m for m in members if not (isinstance(m, type) and _tagged_primitive(m))]
+    members = first + [m for m in members if m not in first]
     reasons = []
     for member in members:
         try:

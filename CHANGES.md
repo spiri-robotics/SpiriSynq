@@ -132,7 +132,22 @@
   leaves out, checks the hash, and keeps it for every object of the session; until it arrives,
   running that code fails with `CodeNotFetched`.
 
+### Fixes
+
+- **A handler on a mirror's signal can set another object's fields.** Applying a change to a
+  mirror (and running a mirror callback) set how changes apply for the whole thread, so an owner
+  written from such a handler silently didn't publish. It's now per object.
+- **An untagged value in a union goes to an untagged member first**: a plain topic string in a
+  `RootFrame | Link | str` field stays a `str`, rather than becoming a `RootFrame`. A tagged
+  primitive still takes an untagged value when nothing else in the union does.
+
 ### Improvements
+
+- **`Position`, on the core**: an owner follows its parent through a mirror of it, as a
+  `Position` (so a parent of a subclass type works), and loses its pose while the parent's owner
+  is gone. `Pose.from_plain` is gone with v1's untyped state fetch. The unused example
+  `robot.py` and `examples/timeserver.py` are removed. Every test runs again, the stress test
+  included.
 
 - **The docs are organized by language tier**: Python, the tier-1 language, has its own
   section (`docs/python/`); a page on the other languages says what tier 2 (Rust, TypeScript
