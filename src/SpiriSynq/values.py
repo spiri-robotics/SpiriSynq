@@ -57,6 +57,17 @@ def wire_fields(cls: type) -> list[dataclasses.Field]:
     return [f for f in dataclasses.fields(cls) if not f.name.startswith("_") and f.name not in skip]
 
 
+def on_demand(cls: type, name: str) -> bool:
+    """Whether a field is on demand (`<name>_on_demand = True` on its class): a stream, not
+    state, on the key `@<name>`."""
+    return any(bool(c.__dict__.get(f"{name}_on_demand")) for c in cls.__mro__)
+
+
+def key_name(cls: type, name: str) -> str:
+    """The key chunk of field `name`: `@<name>` if it's on demand."""
+    return f"@{name}" if on_demand(cls, name) else name
+
+
 def to_value(obj: Any) -> Any:
     """`obj` as a core value. `TypeError` if it has none."""
     if obj is None or type(obj) in (bool, int, float, str, bytes):
@@ -90,7 +101,13 @@ def to_value(obj: Any) -> Any:
     if isinstance(obj, collections.abc.Sequence):
         return [to_value(v) for v in obj]
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        fields = {f.name: to_value(getattr(obj, f.name)) for f in wire_fields(type(obj))}
+        cls = type(obj)
+        # Its on-demand fields are streams: not part of its value.
+        fields = {
+            f.name: to_value(getattr(obj, f.name))
+            for f in wire_fields(cls)
+            if not on_demand(cls, f.name)
+        }
         return _core.Tagged(tag_of(type(obj)), fields)
     raise TypeError(f"a {type(obj).__name__} can't be sent: SpiriSynq has no wire form for it")
 

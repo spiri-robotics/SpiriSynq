@@ -22,7 +22,7 @@ from typing import Any, Literal, NewType, Union, get_args, get_origin
 from psygnal.containers import EventedDict, EventedList, EventedSet
 
 from SpiriSynq.link import Link
-from SpiriSynq.values import hints_of, tag_of, wire_fields
+from SpiriSynq.values import hints_of, key_name, tag_of, wire_fields
 
 SCHEMA_VERSION = 3
 """Value of `x-spirisynq-schema` on every root schema."""
@@ -173,7 +173,7 @@ class _Builder:
                 entry["default"] = default
             if f.name in skip_rehydrate:
                 entry["x-skip-rehydrate"] = True
-            properties[f.name] = entry
+            properties[key_name(c, f.name)] = entry
 
         schema: dict = {"title": c.__name__, "type": "object"}
         if not issubclass(c, SyncableObject):
@@ -352,7 +352,8 @@ def members(cls: type):
     """`(name, attribute)` for each attribute of `cls` and its bases, the nearest first."""
     seen = set()
     for klass in cls.__mro__:
-        for name, member in klass.__dict__.items():
+        # A snapshot: looking members over may cache things on the class.
+        for name, member in list(klass.__dict__.items()):
             if name not in seen:
                 seen.add(name)
                 yield name, member

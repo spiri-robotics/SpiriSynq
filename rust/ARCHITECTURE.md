@@ -523,7 +523,7 @@ YAML (encoding `application/yaml`); everything else passes through to the bindin
 | --- | --- | --- |
 | `<field>`, `<field>/<sub-field>`… | owner and mirrors | puts of field values |
 | `<method key>` | owner's queryable | remote calls |
-| `sr_rehydrate` | owner's queryable | full state |
+| `sr_rehydrate` | owner's queryable | full state; with `field=<key>`, one on-demand field's last value |
 | `sr_metadata`, `sr_metadata/<type>` | owner's queryable | `{topic, owner: <zid>, type: <$id>, bases: [<$id>…]}` |
 | `sr_object_schema`, `sr_type_schema/<type>` | owner's queryable | the type's schema |
 | `sr_alive/<zid>` | owner's liveliness token | the owner is alive, in that session |
@@ -713,11 +713,16 @@ methods can be tested end to end). Each is tested before the next starts.
   `image_lazy = True`. Settings are fixed at class definition, never changed at run time.
 - Packaging: maturin, platform wheels, and the CI workflows the project template owns.
 
-- **On-demand fields** (decided 2026-11-17, for camera frames; to build). A field whose key
+- **On-demand fields** (decided and built 2026-11-17, for camera frames). A field whose key
   chunk starts with `@` (`transport_jpeg/@data`) is a stream, not state: zenoh's wildcards never
   match a verbatim `@` chunk, mirrors don't subscribe to it when they open, and the state fetch
   leaves it out. A mirror subscribes when asked (counted holds) and may then fetch its last
   value. On the owner it is lazy and ignores incoming writes, so its listener status says
   whether anyone wants it. In Python, `<field>_on_demand = True` names the key `@<field>`; the
   attribute keeps its name. It's in the schema, as the property's name, so every binding knows.
-  `sample.send(..., priority=, reliable=)` may override the field's QoS for one sample.
+  `sample.send(..., priority=, reliable=)` may override the field's QoS for one sample (not
+  built yet). In the core: `Field::on_demand`; an owner keeps such values apart from the state,
+  so they're never in a dataclass's value, a full state or WASM's `self`;
+  `Session::subscribe` / `unsubscribe` count a mirror's holds, and the first fetches the last
+  value with a get on `sr_rehydrate` with the parameter `field=<key>`, unless the field says
+  `x-skip-rehydrate`.

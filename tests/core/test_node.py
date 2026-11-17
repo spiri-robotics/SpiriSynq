@@ -4,6 +4,7 @@ import pytest
 
 from SpiriSynq import _core
 
+from . import conftest
 from .conftest import config, mirror, wait_for
 
 TOPIC = "robot/battery"
@@ -260,3 +261,24 @@ def test_a_closed_node_refuses_everything(battery):
         node.create_owner(TOPIC, battery)
     with pytest.raises(_core.SynqError, match="the node is closed"):
         node.peers()
+
+
+def test_on_demand_fields_are_subscribed_when_asked(network):
+    schema = _core.Schema(
+        {
+            **conftest.BATTERY,
+            "properties": {**conftest.BATTERY["properties"], "@frame": {"type": "string"}},
+        }
+    )
+    a, b = network(2)
+    owner = a.create_owner(TOPIC, schema)
+    a.set_field(owner, "@frame", "first")
+    copy = mirror(b, TOPIC, schema)
+    assert b.subscribe(copy, "@frame")
+    got = incoming(b, "@frame")
+    assert (got.data, got.origin) == ("first", "rehydrate")
+    assert not b.subscribe(copy, "@frame")
+    assert not b.unsubscribe(copy, "@frame")
+    assert b.unsubscribe(copy, "@frame")
+    with pytest.raises(_core.SynqError, match="isn't on demand"):
+        b.subscribe(copy, "voltage")

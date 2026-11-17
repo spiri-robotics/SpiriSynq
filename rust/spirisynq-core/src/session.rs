@@ -115,11 +115,39 @@ struct Object {
     options: HashMap<String, FieldOptions>,
     raw_methods: HashSet<String>,
     store: Store,
+    /// On-demand fields' last values, kept apart from the state.
+    streams: HashMap<String, Stored>,
+    /// A mirror's subscriptions to on-demand fields: how many holds, and the subscriber.
+    holds: HashMap<String, (usize, EntityId)>,
     publishers: HashMap<String, EntityId>,
     role: Role,
 }
 
 impl Object {
+    /// Whether the field on `path` is on demand. It must exist.
+    fn on_demand(&self, path: &str) -> bool {
+        self.schema.field(path).is_some_and(|f| f.on_demand)
+    }
+
+    /// Set a field's value, in the state or with the streams. Whether it changed.
+    fn set(&mut self, path: &str, value: Value) -> Result<bool, Error> {
+        if !self.on_demand(path) {
+            return self.store.set(path, value);
+        }
+        let old = self
+            .streams
+            .insert(path.to_owned(), Stored::Value(value.clone()));
+        Ok(!matches!(old, Some(Stored::Value(v)) if v == value))
+    }
+
+    /// An on-demand field's last value as a sample, if it holds one.
+    fn stream_sample(&self, path: &str) -> Option<Sample> {
+        match self.streams.get(path)? {
+            Stored::Raw(sample) => Some(sample.clone()),
+            Stored::Value(v) => Some(wire::yaml_sample(v).expect("it was encoded once")),
+        }
+    }
+
     fn check_field(&self, path: &str) -> Result<(), Error> {
         match self.schema.field(path) {
             Some(_) => Ok(()),
@@ -242,6 +270,8 @@ enum Route {
 #[derive(Debug)]
 enum RequestKind {
     Rehydrate(ObjectId),
+    /// One on-demand field's last value, for the mirror that just subscribed to it.
+    Field(ObjectId),
     Call {
         raw: bool,
     },
@@ -355,6 +385,12 @@ impl Session {
             }
             fields.insert(path, field);
         }
+        // An on-demand field is published only to those who asked, and never written to.
+        for field in schema.fields().iter().filter(|f| f.on_demand) {
+            let options = fields.entry(field.path.clone()).or_default();
+            options.lazy = true;
+            options.ignore_incoming = true;
+        }
         // A field with a WASM `before_send` or `after_receive` has its own encoding.
         for code in schema.wasm() {
             if matches!(code.role, CodeRole::BeforeSend | CodeRole::AfterReceive) {
@@ -383,6 +419,8 @@ impl Session {
                 options: fields,
                 raw_methods,
                 store: Store::new(),
+                streams: HashMap::new(),
+                holds: HashMap::new(),
                 publishers: HashMap::new(),
                 role,
             },
@@ -399,11 +437,9 @@ impl Session {
         schema: Arc<TypeSchema>,
         options: ObjectOptions,
     ) -> Result<ObjectId, Error> {
-        if let Some((path, _)) = options
-            .fields
-            .iter()
-            .find(|(_, o)| o.lazy && !o.ignore_incoming)
-        {
+        if let Some((path, _)) = options.fields.iter().find(|(p, o)| {
+            o.lazy && !o.ignore_incoming && !schema.field(p).is_some_and(|f| f.on_demand)
+        }) {
             return Err(Error::LazyNeedsIgnoreIncoming(path.clone()));
         }
         let role = Role::Owner {
@@ -485,7 +521,7 @@ impl Session {
         self.declare(object, Route::Alive, |id| {
             Command::DeclareLivelinessSubscriber { id, key }
         });
-        for field in schema.fields() {
+        for field in schema.fields().iter().filter(|f| !f.on_demand) {
             let key = wire::key(topic, &field.path);
             self.declare(object, Route::FieldSub(field.path.clone()), |id| {
                 Command::DeclareSubscriber { id, key }
@@ -578,8 +614,10 @@ impl Session {
         for query in queries {
             self.end_with_error(query, "RuntimeError", "object closed");
         }
-        self.requests
-            .retain(|_, r| !matches!(r.kind, RequestKind::Rehydrate(o) if o == object));
+        self.requests.retain(|_, r| match r.kind {
+            RequestKind::Rehydrate(o) | RequestKind::Field(o) => o != object,
+            _ => true,
+        });
         Ok(())
     }
 
@@ -591,7 +629,7 @@ impl Session {
     pub fn set_field(&mut self, object: ObjectId, path: &str, value: Value) -> Result<bool, Error> {
         self.object(object)?.check_field(path)?;
         let sample = wire::yaml_sample(&value)?;
-        let changed = self.object_mut(object)?.store.set(path, value)?;
+        let changed = self.object_mut(object)?.set(path, value)?;
         if changed {
             self.publish(object, path, sample);
         }
@@ -611,7 +649,7 @@ impl Session {
         if obj.role.mirror_mut().is_none() {
             return Err(Error::NotMirror);
         }
-        obj.store.set(path, value)
+        obj.set(path, value)
     }
 
     /// Publish a field in its own encoding, as its `before_send` produced it. An owner keeps the
@@ -620,7 +658,13 @@ impl Session {
         let obj = self.object_mut(object)?;
         obj.check_field(path)?;
         if let Role::Owner { .. } = obj.role {
-            obj.store.set_raw(path, sample.clone());
+            match obj.on_demand(path) {
+                true => drop(
+                    obj.streams
+                        .insert(path.to_owned(), Stored::Raw(sample.clone())),
+                ),
+                false => obj.store.set_raw(path, sample.clone()),
+            }
         }
         self.publish(object, path, sample);
         Ok(())
@@ -655,6 +699,59 @@ impl Session {
         self.commands.push_back(Command::Put { publisher, sample });
     }
 
+    /// Subscribe a mirror to an on-demand field, and fetch its last value from the owner unless
+    /// the field says `x-skip-rehydrate`. Holds are counted: the subscription lasts until as many
+    /// [`Session::unsubscribe`]s. Whether this started it.
+    pub fn subscribe(&mut self, object: ObjectId, path: &str) -> Result<bool, Error> {
+        let obj = self.object_mut(object)?;
+        obj.check_field(path)?;
+        if obj.role.mirror_mut().is_none() {
+            return Err(Error::NotMirror);
+        }
+        if !obj.on_demand(path) {
+            return Err(Error::NotOnDemand(path.to_owned()));
+        }
+        if let Some((holds, _)) = obj.holds.get_mut(path) {
+            *holds += 1;
+            return Ok(false);
+        }
+        let topic = obj.topic.clone();
+        let fetch = obj.schema.field(path).expect("checked").rehydrate;
+        let key = wire::key(&topic, path);
+        let id = self.declare(object, Route::FieldSub(path.to_owned()), |id| {
+            Command::DeclareSubscriber { id, key }
+        });
+        let obj = self.object_mut(object).expect("checked");
+        obj.holds.insert(path.to_owned(), (1, id));
+        if fetch {
+            let key = wire::key(&topic, REHYDRATE);
+            let parameters = wire::field_parameters(path);
+            self.send_get(key, parameters, None, true, None, || {
+                RequestKind::Field(object)
+            });
+        }
+        Ok(true)
+    }
+
+    /// Let go of one hold on an on-demand field; the last one ends the subscription. Whether it
+    /// ended.
+    pub fn unsubscribe(&mut self, object: ObjectId, path: &str) -> Result<bool, Error> {
+        let obj = self.object_mut(object)?;
+        obj.check_field(path)?;
+        let Some((holds, id)) = obj.holds.get_mut(path) else {
+            return Err(Error::NotSubscribed(path.to_owned()));
+        };
+        *holds -= 1;
+        if *holds > 0 {
+            return Ok(false);
+        }
+        let id = *id;
+        obj.holds.remove(path);
+        self.routes.remove(&id);
+        self.commands.push_back(Command::Undeclare { id });
+        Ok(true)
+    }
+
     /// The object's type schema.
     pub fn schema(&self, object: ObjectId) -> Result<&Arc<TypeSchema>, Error> {
         Ok(&self.object(object)?.schema)
@@ -665,6 +762,12 @@ impl Session {
     pub fn field(&self, object: ObjectId, path: &str) -> Result<Option<&Value>, Error> {
         let obj = self.object(object)?;
         obj.check_field(path)?;
+        if obj.on_demand(path) {
+            return Ok(match obj.streams.get(path) {
+                Some(Stored::Value(v)) => Some(v),
+                _ => None,
+            });
+        }
         Ok(obj.store.get(path))
     }
 
@@ -1258,8 +1361,15 @@ impl Session {
             Route::Rehydrate => {
                 let topic = obj.topic.clone();
                 let mut replies = Vec::new();
+                let one = wire::field_parameter(&parameters);
+                if let Some(path) = &one {
+                    // An on-demand field's last value, for a mirror that just subscribed to it.
+                    let sample = obj.stream_sample(path);
+                    replies.extend(sample.map(|s| (path.clone(), s)));
+                }
                 for field in obj.schema.fields() {
-                    if field.path.contains('/') || !field.rehydrate {
+                    let whole = one.is_none();
+                    if field.path.contains('/') || !field.rehydrate || field.on_demand || !whole {
                         continue;
                     }
                     let sample = match obj.store.top(&field.path) {
@@ -1272,7 +1382,7 @@ impl Session {
                     replies.push((field.path.clone(), sample));
                 }
                 for (path, sample) in obj.store.raw_subs() {
-                    if obj.schema.field(path).is_some_and(|f| f.rehydrate) {
+                    if one.is_none() && obj.schema.field(path).is_some_and(|f| f.rehydrate) {
                         replies.push((path.clone(), sample.clone()));
                     }
                 }
@@ -1440,6 +1550,14 @@ impl Session {
                 };
                 notice
             }
+            RequestKind::Field(object) => {
+                let obj = &self.objects[&object];
+                let path = key.strip_prefix(&format!("{}/", obj.topic));
+                match path.filter(|p| obj.holds.contains_key(*p)) {
+                    Some(path) => obj.notice(object, path, sample, Origin::Rehydrate),
+                    None => return,
+                }
+            }
             RequestKind::Code { ref hash, binary } => {
                 let bytes = sample.payload.bytes().into_owned();
                 let code = match binary {
@@ -1522,6 +1640,7 @@ impl Session {
                 self.fetching.remove(&hash);
                 return;
             }
+            RequestKind::Field(_) => return,
             _ => Notice::RequestEnded { request, end },
         };
         self.notices.push_back(notice);

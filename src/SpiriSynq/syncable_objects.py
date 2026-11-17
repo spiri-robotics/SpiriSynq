@@ -28,7 +28,7 @@ from SpiriSynq.link import Link, ObjectNotFound
 from SpiriSynq.remote_callables import YAML, RemoteMethod
 from SpiriSynq.schema import get_schema, members
 from SpiriSynq.session import Session, current_session
-from SpiriSynq.values import BadValue, from_value, hints_of, to_value, wire_fields
+from SpiriSynq.values import BadValue, from_value, hints_of, key_name, to_value, wire_fields
 from SpiriSynq.wasm import WasmFunction, call_args
 
 BYTES = "zenoh/bytes"
@@ -87,6 +87,7 @@ class SubSyncableDataclass:
 @dataclass
 class _Field:
     path: str  # attribute path: `gps/latitude`
+    key: str  # its key under the topic: `transport/@data` for an on-demand field
     names: tuple[str, ...]
     hint: Any
     owner: type  # the class declaring the field, which holds its settings
@@ -136,10 +137,11 @@ def _plan(cls: type) -> dict[str, _Field]:
         return cached
     plan: dict[str, _Field] = {}
 
-    def walk(klass, fields, prefix, names, seen):
+    def walk(klass, fields, prefix, key_prefix, names, seen):
         hints = hints_of(klass)
         for f in fields:
             path = f"{prefix}{f.name}"
+            key = f"{key_prefix}{key_name(klass, f.name)}"
             hint = hints.get(f.name, f.type)
             before, after = (
                 _hook(klass, f.name, "before_send"),
@@ -147,6 +149,7 @@ def _plan(cls: type) -> dict[str, _Field]:
             )
             plan[path] = _Field(
                 path=path,
+                key=key,
                 names=(*names, f.name),
                 hint=hint,
                 owner=klass,
@@ -156,9 +159,9 @@ def _plan(cls: type) -> dict[str, _Field]:
             )
             sub = _sub_syncable(hint)
             if sub is not None and sub not in seen:
-                walk(sub, wire_fields(sub), f"{path}/", (*names, f.name), seen | {sub})
+                walk(sub, wire_fields(sub), f"{path}/", f"{key}/", (*names, f.name), seen | {sub})
 
-    walk(cls, cls.synq_fields(), "", (), frozenset())
+    walk(cls, cls.synq_fields(), "", "", (), frozenset())
     cls._synq_plan = plan
     return plan
 
@@ -240,7 +243,7 @@ class SyncableObject:
     @classmethod
     def synq_key_of(cls, path: str) -> str:
         """The key, under the topic, of the field at attribute path `path`."""
-        return path
+        return _plan(cls)[path].key
 
     @classmethod
     def synq_schema(cls) -> dict:
@@ -374,6 +377,15 @@ class SyncableObject:
         if not self.synq_session.wait(self._synq_ready, timeout or self.synq_session.call_timeout):
             raise TimeoutError(f"nobody served {self.synq_absolute_path} in time")
 
+    def synq_subscribe(self, path: str) -> bool:
+        """On a mirror: receive an on-demand field, starting with its last value. Holds are
+        counted. Whether this started the subscription."""
+        return self.synq_session.node.subscribe(self._synq_id, type(self).synq_key_of(path))
+
+    def synq_unsubscribe(self, path: str) -> bool:
+        """On a mirror: let go of one hold on an on-demand field. Whether this ended it."""
+        return self.synq_session.node.unsubscribe(self._synq_id, type(self).synq_key_of(path))
+
     def synq_call(self, method: str, timeout: float | None = None, **args) -> list:
         """Call a remote method by name, with arguments by name: every value it replies with.
         For callers without the class, such as the CLI."""
@@ -505,18 +517,23 @@ class SyncableObject:
         elif isinstance(notice, _core.Alive):
             self.synq_signal_alive.emit(notice.alive)
         elif isinstance(notice, _core.Listeners):
-            self.synq_signal_listeners.emit(notice.path, notice.listening)
+            self.synq_signal_listeners.emit(self._synq_path_of(notice.path), notice.listening)
 
     def _synq_bad(self, path: str, reason: str) -> None:
         logger.warning(f"{self.synq_absolute_path}: dropped a value for {path}: {reason}")
         self.synq_signal_bad_data.emit(path, reason)
 
-    def _synq_path_of(self, key: str) -> str:
-        return key
+    def _synq_path_of(self, key: str) -> str | None:
+        """The attribute path of the field on `key`."""
+        cls = type(self)
+        paths = cls.__dict__.get("_synq_paths")
+        if paths is None:
+            paths = cls._synq_paths = {f.key: p for p, f in _plan(cls).items()}
+        return paths.get(key)
 
     def _synq_incoming(self, notice: _core.Incoming) -> None:
         path = self._synq_path_of(notice.path)
-        f = _plan(type(self)).get(path)
+        f = None if path is None else _plan(type(self)).get(path)
         if f is None:
             return
         data = notice.data

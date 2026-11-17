@@ -355,6 +355,17 @@ impl Node {
         Ok(changed)
     }
 
+    /// Subscribe a mirror to an on-demand field (a key chunk starting with `@`), fetching its
+    /// last value. Holds are counted. Whether this started the subscription.
+    fn subscribe(&self, object: ObjectId, path: &str) -> PyResult<bool> {
+        self.with(|s| s.subscribe(object.0, path))
+    }
+
+    /// Let go of one hold on an on-demand field. Whether this ended the subscription.
+    fn unsubscribe(&self, object: ObjectId, path: &str) -> PyResult<bool> {
+        self.with(|s| s.unsubscribe(object.0, path))
+    }
+
     /// Send a field's value in its own encoding.
     fn send_raw(&self, object: ObjectId, path: &str, sample: &Sample) -> PyResult<()> {
         let sample = sample.0.clone();

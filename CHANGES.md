@@ -4,6 +4,12 @@
 
 ### Features
 
+- **On-demand fields, for streams such as camera frames.** `<field>_on_demand = True` puts a
+  field on the key `@<field>`, which zenoh's wildcards never match. Mirrors receive it only
+  after `synq_subscribe(path)` (counted, and fetching the last value), the state fetch leaves it
+  out, and the owner publishes it only while someone listens and ignores writes to it. The `@`
+  is in the schema, so every binding treats it alike.
+
 - **The Python API, rebuilt on the core.** `SyncableObject`, `SubSyncableDataclass`,
   `@remote_method` and `Session` keep their v1 shape, and now run on `SpiriSynq._core`:
   - Fields are converted to the core's values guided by their annotations (`SpiriSynq.values`):

@@ -136,6 +136,48 @@ class Camera(SyncableObject):
 
 A lazy field is still sent to new mirrors as part of the object's full state.
 
+### Streams: on-demand fields
+
+Some fields are streams, not state: a camera's frames, a lidar's scans. Most mirrors don't want
+them, and the owner shouldn't spend time making them when nobody does. Make such a field *on
+demand*:
+
+```python
+@dataclass
+class Jpeg(SubSyncableDataclass):
+    quality: int = 80
+    data: bytes = b""
+    data_on_demand = True
+    data_qos = qos.background
+
+    def data_before_send(self, data: bytes, sample: Sample) -> None:
+        sample.send(data, encoding="image/jpeg")
+
+    def data_after_receive(self, sample: Sample) -> bytes:
+        return sample.payload
+
+
+@dataclass
+class Camera(SyncableObject):
+    jpeg: Jpeg = field(default_factory=Jpeg)
+```
+
+An on-demand field's key starts with `@`: `<topic>/jpeg/@data`. A zenoh wildcard never matches a
+chunk starting with `@`, so nothing receives the field without asking for it by name:
+
+- A mirror doesn't receive it until it subscribes, and the state a new mirror fetches leaves it
+  out. `mirror.synq_subscribe("jpeg/data")` subscribes and fetches the field's last value;
+  `mirror.synq_unsubscribe("jpeg/data")` lets go. Subscriptions are counted, so each part of a
+  program can hold its own. A field with `synq_skip_rehydrate` isn't fetched on subscribing:
+  useful for a video's frames between keyframes, which mean nothing alone.
+- The owner publishes it only while someone is subscribed, and ignores writes to it from
+  mirrors. `camera.synq_has_listeners("jpeg/data")` and `synq_signal_listeners` tell it when to
+  start or stop producing.
+- It isn't part of the value of the dataclass holding it: assigning `camera.jpeg` whole sends
+  `quality`, not the frame.
+
+The `@` is part of the type's schema, so mirrors in every language treat the field the same way.
+
 ## Field settings
 
 A setting for a field is a class attribute named after the field: `<field>_<setting>`. Its value
@@ -161,7 +203,8 @@ class Camera(SyncableObject):
 ```
 
 Settings have no type annotation, so the dataclass doesn't make them fields. They are never
-synced and aren't part of the schema. They only affect how this process handles the field. They
+synced, and, except `_on_demand`, aren't part of the schema: they only affect how this process
+handles the field. They
 are fixed when the class is defined and can't be changed at run time.
 
 | Setting | Values | Default |
@@ -170,6 +213,7 @@ are fixed when the class is defined and can't be changed at run time.
 | `<field>_reliability` | `qos.drop` or `qos.reliable`, below. | `qos.drop` |
 | `<field>_ignore_incoming` | `True` to ignore writes from other processes. Owner only. | `False` |
 | `<field>_lazy` | `True` to publish only when someone is listening. Owner only. | `False` |
+| `<field>_on_demand` | `True` for a stream: see [Streams](#streams-on-demand-fields). Part of the type. | `False` |
 
 A setting goes on the class that declares the field. For a field of a nested dataclass, put it on
 the nested class.

@@ -151,3 +151,16 @@ pub(crate) fn read_metadata(value: &Value) -> Option<Metadata> {
         bases,
     })
 }
+
+/// The selector parameters that ask an owner's state fetch for one field only.
+pub(crate) fn field_parameters(path: &str) -> String {
+    format!("field={path}")
+}
+
+/// The one field a state fetch asks for, if it asks for one.
+pub(crate) fn field_parameter(parameters: &str) -> Option<String> {
+    let mut found = parameters
+        .split(';')
+        .filter_map(|p| p.strip_prefix("field="));
+    found.next().map(str::to_owned)
+}

@@ -36,6 +36,10 @@ pub struct Field {
     /// The types a link in this field's value may point to (`x-link`), anywhere in it. Empty if
     /// it holds no links.
     pub links: Vec<TypeId>,
+    /// Whether the field is a stream rather than state: a chunk of its key starts with `@`
+    /// (`transport_jpeg/@data`). zenoh's wildcards never match such a chunk. Mirrors subscribe
+    /// to it only when asked, and the full state leaves it out.
+    pub on_demand: bool,
 }
 
 /// A remote method.
@@ -274,6 +278,7 @@ impl<'a> Defs<'a> {
                 chunks: path.split('/').map(|c| Chunk::Literal(c.into())).collect(),
             });
             fields.push(Field {
+                on_demand: path.split('/').any(|c| c.starts_with('@')),
                 path: path.clone(),
                 schema: schema.clone(),
                 rehydrate,

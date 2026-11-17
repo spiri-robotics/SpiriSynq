@@ -408,3 +408,23 @@ $defs:
         ErrorKind::Name("`#` in `b c#`".into()),
     );
 }
+
+#[test]
+fn on_demand_fields() {
+    let s = ok("
+properties:
+  '@frames': {type: string}
+  transport: {$ref: '#/$defs/Transport'}
+$defs:
+  Transport:
+    x-sync: fields
+    properties:
+      quality: {type: integer}
+      '@data': {type: string}
+");
+    let on_demand = |p| s.field(p).unwrap().on_demand;
+    assert!(on_demand("@frames"));
+    assert!(on_demand("transport/@data"));
+    assert!(!on_demand("transport"));
+    assert!(!on_demand("transport/quality"));
+}

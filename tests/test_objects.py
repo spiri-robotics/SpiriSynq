@@ -395,3 +395,57 @@ def test_the_edges_of_applying_values(other):
     assert not rover._synq_same("limit", 1)
     # A notice for a field this class doesn't know is ignored.
     rover._synq_incoming(type("Notice", (), {"path": "nope", "data": 1, "origin": "owner"})())
+
+
+@dataclass
+class Jpeg(SubSyncableDataclass):
+    quality: int = 80
+    data: bytes = b""
+    data_on_demand = True
+    data_qos = qos.background
+
+    def data_before_send(self, data: bytes, sample: Sample) -> None:
+        sample.send(data, encoding="image/jpeg")
+
+    def data_after_receive(self, sample: Sample) -> bytes:
+        return sample.payload
+
+
+@dataclass
+class Streamer(SyncableObject):
+    synq_type_id = "bf8a6c1e-3b7d-4c9a-8e5f-1a2b3c4d5e6f:1"
+    exposure: float = 0.01
+    jpeg: Jpeg = field(default_factory=Jpeg)
+    frame: str = ""
+    frame_on_demand = True
+
+
+def test_on_demand_fields(other):
+    schema = Streamer.synq_schema()
+    assert "@frame" in schema["properties"]
+    assert "@data" in schema["$defs"]["Jpeg"]["properties"]
+    assert Streamer.synq_key_of("jpeg/data") == "jpeg/@data"
+    streamer = Streamer("streamer", synq_authoritive=True, frame="first")
+    streamer.jpeg.data = b"\xff\xd8one"
+    mirror = Streamer.from_topic("host/streamer", session=other)
+    assert (mirror.frame, mirror.jpeg.data, mirror.jpeg.quality) == ("", b"", 80)
+    assert not streamer.synq_has_listeners("frame")
+    heard = []
+    streamer.synq_signal_listeners.connect(lambda path, on: heard.append((path, on)))
+    # Subscribing fetches the last value, then follows.
+    assert mirror.synq_subscribe("frame")
+    assert mirror.synq_subscribe("jpeg/data")
+    wait_for(lambda: (mirror.frame, mirror.jpeg.data) == ("first", b"\xff\xd8one"))
+    wait_for(lambda: ("frame", True) in heard)
+    streamer.frame = "second"
+    streamer.jpeg.data = b"\xff\xd8two"
+    wait_for(lambda: (mirror.frame, mirror.jpeg.data) == ("second", b"\xff\xd8two"))
+    # A frame isn't part of its dataclass's value: replacing the JPEG settings doesn't send one.
+    streamer.jpeg = Jpeg(quality=50, data=b"not sent whole")
+    wait_for(lambda: mirror.jpeg.quality == 50)
+    assert mirror.jpeg.data == b""
+    assert mirror.synq_unsubscribe("frame")
+    wait_for(lambda: not streamer.synq_has_listeners("frame"))
+    streamer.frame = "third"
+    time.sleep(0.2)
+    assert mirror.frame == "second"

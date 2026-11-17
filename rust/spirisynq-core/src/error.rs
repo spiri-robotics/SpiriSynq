@@ -44,6 +44,10 @@ pub enum Error {
     /// The code isn't in the schema, and hasn't been fetched by its hash yet: a mirror fetches
     /// it from the owner when it opens, and again when an owner appears.
     CodeNotFetched(String),
+    /// Only an on-demand field (a key chunk starting with `@`) is subscribed to when asked.
+    NotOnDemand(String),
+    /// The mirror isn't subscribed to this on-demand field.
+    NotSubscribed(String),
     /// An `after_call` let one of the call's error replies through: the caller raises it as it
     /// is.
     Reply(ReplyError),
@@ -66,6 +70,13 @@ impl fmt::Display for Error {
             Error::Key(e) => e.fmt(f),
             Error::NotAString(name) => write!(f, "`{name}` is in the key, so it must be a string"),
             Error::Encode(e) => e.fmt(f),
+            Error::NotOnDemand(path) => {
+                write!(
+                    f,
+                    "`{path}` isn't on demand: mirrors always subscribe to it"
+                )
+            }
+            Error::NotSubscribed(path) => write!(f, "not subscribed to `{path}`"),
             Error::UnknownCode(name) => write!(f, "no WASM code `{name}`"),
             Error::NotRunnable(name) => write!(f, "`{name}` is a hook, not a property or method"),
             Error::Wasm(why) => write!(f, "WASM: {why}"),
