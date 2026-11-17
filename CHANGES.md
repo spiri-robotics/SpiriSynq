@@ -4,6 +4,26 @@
 
 ### Features
 
+- **The Python API, rebuilt on the core.** `SyncableObject`, `SubSyncableDataclass`,
+  `@remote_method` and `Session` keep their v1 shape, and now run on `SpiriSynq._core`:
+  - Fields are converted to the core's values guided by their annotations (`SpiriSynq.values`):
+    dataclasses travel as tagged mappings, syncable objects and `Link`s as `!Link`, and a class
+    can say how it travels with `synq_to_value` / `synq_from_value`.
+  - Schemas are the v2 format (`$id`, `x-bases`, `x-remote-methods`, `x-link`, `x-sync`,
+    `x-wasm`). A class outside a PyPI package needs `synq_type_id = "<uuid>:<version>"`.
+  - Field settings (`<field>_qos`, `_reliability`, `_ignore_incoming`, `_lazy`) take presets
+    from `SpiriSynq.qos`; `<field>_before_send` / `<field>_after_receive` give a field its own
+    encoding.
+  - `@on_change.owner` and `@on_change.mirror`; signals on `events`; `synq_signal_bad_data`,
+    `synq_signal_alive`, `synq_signal_listeners`; `synq_alive` and `synq_has_listeners`.
+  - Remote methods: generators, `async def`, `as_async()`, key templates, a `Query`
+    parameter, `before_call` / `after_call` hooks, `@remote_method_raw`.
+  - Links: a mirror follows them to mirrors of their targets, or holds an `ObjectNotFound` it
+    can `rebind()`; `follow_links=False` keeps `Link`s.
+  - `@wasm.python` (MicroPython), `@wasm.lua`, `@wasm.javascript`, `@wasm.wat` and
+    `@wasm.module`, for properties, methods, mirror callbacks, field hooks and caller hooks.
+    Not yet: `@wasm.mamba`, `@wasm.asm`, WASM code on the owner, and `.pipe()` call chaining.
+
 - **`spirisynq-yaml`, the first Rust crate of the v2 core**: the strict YAML 1.2 subset the wire
   uses, with one parser and one canonical writer for every language. Scalars are typed by YAML
   1.2's JSON schema plus `.inf`/`-.inf`/`.nan`, so `on`, `yes` and `0755` are strings. Anchors,

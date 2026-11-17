@@ -532,10 +532,28 @@ impl Node {
     }
 }
 
+/// A value read from YAML in the wire's subset, as fields arrive. Raises `SynqError` if the
+/// text isn't in it.
+#[pyfunction]
+fn yaml_load<'py>(py: Python<'py>, data: PyBackedBytes) -> PyResult<Bound<'py, PyAny>> {
+    let value = spirisynq_yaml::parse_bytes(&data).map_err(|e| err(e.to_string()))?;
+    to_py(py, &value)
+}
+
+/// A value written as YAML, as fields are sent, in UTF-8.
+#[pyfunction]
+fn yaml_dump<'py>(py: Python<'py>, value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyBytes>> {
+    let text = spirisynq_yaml::to_string(&from_py(value)?).map_err(|e| err(e.to_string()))?;
+    Ok(PyBytes::new(py, text.as_bytes()))
+}
+
 #[pymodule]
 mod _core {
     #[pymodule_export]
-    use super::{FieldOptions, Node, ObjectId, RequestId, Sample, Schema, SynqError, Tagged};
+    use super::{
+        FieldOptions, Node, ObjectId, RequestId, Sample, Schema, SynqError, Tagged, yaml_dump,
+        yaml_load,
+    };
     #[pymodule_export]
     use crate::notice::{
         Alive, BadData, Call, Discovered, Incoming, Listeners, Rehydrated, Reply, RequestEnded,

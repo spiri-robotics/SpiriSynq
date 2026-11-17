@@ -1,64 +1,63 @@
+"""Links: a field's reference to another syncable object, by its topic."""
+
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-import zenoh
 
 if TYPE_CHECKING:
     from SpiriSynq.session import Session
     from SpiriSynq.syncable_objects import SyncableObject
+
+_NOT_IN_A_TOPIC = set("*$?#")
+
+
+def check_topic(topic: str, what: str = "topic") -> str:
+    """`topic` if it's a concrete zenoh key; `ValueError` saying why if not."""
+    chunks = topic.split("/")
+    if not topic or "" in chunks:
+        raise ValueError(f"Invalid {what} {topic!r}: empty chunks aren't allowed")
+    if {".", ".."} & set(chunks):
+        raise ValueError(f"Invalid {what} {topic!r}: '.' and '..' chunks aren't allowed")
+    if bad := _NOT_IN_A_TOPIC & set(topic):
+        raise ValueError(f"Invalid {what} {topic!r}: {''.join(sorted(bad))!r} can't be in a key")
+    return topic
 
 
 @dataclass(frozen=True)
 class Link:
     """A reference to another SpiriSynq object by its absolute topic.
 
-    Sent as a tagged scalar: ``!Link myhost/camera``. A link holds only the
-    topic -- it doesn't keep the target alive or check that it exists until
-    :meth:`resolve` fetches it.
-
-    The topic must be absolute: a relative ``./camera`` would name a different
-    object on every node that received it. Use :meth:`to` to link to a live
-    object.
+    On the wire it is `!Link <topic>`. A field holding a syncable object accepts a `Link` as well
+    as the object itself, and both are sent the same way. A link only holds the topic: it doesn't
+    keep the target alive or check that it exists until `resolve` mirrors it.
     """
 
-    yaml_tag = "!Link"
     topic: str
 
     def __post_init__(self):
-        chunks = self.topic.split("/")
-        if {".", ".."} & set(chunks):
-            raise ValueError(
-                f"Invalid link {self.topic!r}: links must be absolute ('.' and '..' chunks are not allowed)"
-            )
-        try:
-            zenoh.KeyExpr(self.topic)
-        except Exception as e:
-            raise ValueError(f"Invalid link {self.topic!r}: {e}") from None
+        check_topic(self.topic, "link")
 
     @classmethod
-    def to(cls, obj: "SyncableObject") -> "Link":
-        """Link to *obj* at its absolute path."""
+    def to(cls, obj: SyncableObject) -> Link:
+        """A link to `obj`, at its absolute topic."""
         return cls(obj.synq_absolute_path)
 
-    def resolve(self, cls: type["SyncableObject"] | None = None, session: "Session | None" = None):
-        """Fetch a mirror of the linked object.
+    def resolve(self, cls: type[SyncableObject], session: Session | None = None, **options):
+        """A mirror of the linked object: `cls.from_topic(self.topic)`."""
+        return cls.from_topic(self.topic, session=session, **options)
 
-        With *cls*, this is ``cls.from_topic(self.topic)``: it registers *cls*
-        and checks the result is one. Without it, the target's type must
-        already be registered on *session* (the current session by default).
-        For a type this process doesn't have, use
-        ``session.from_topic_untyped(link.topic)``.
-        """
-        if session is None:
-            from SpiriSynq.session import current_session
-            session = current_session.get()
-        if cls is not None:
-            return cls.from_topic(self.topic, session=session)
-        return session.from_topic(self.topic)
 
-    @classmethod
-    def to_yaml(cls, representer, data):
-        return representer.represent_scalar(cls.yaml_tag, data.topic)
+@dataclass(frozen=True, eq=False)
+class ObjectNotFound(Link):
+    """What a mirror's link field holds when nobody serves the link's topic.
 
-    @classmethod
-    def from_yaml(cls, constructor, node):
-        return cls(constructor.construct_scalar(node))
+    It isn't retried on its own: `rebind()` tries again, and on success the field holds a
+    mirror.
+    """
+
+    def rebind(self, timeout: float | None = None):
+        """Mirror the target again, and put the mirror in the field. Returns the mirror;
+        raises `TimeoutError` if nobody answers this time either."""
+        rebind = object.__getattribute__(self, "_rebind")
+        return rebind(timeout)

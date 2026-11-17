@@ -96,3 +96,14 @@ def test_schemas_are_checked_and_know_their_type(battery):
     assert battery.bases == ["urn:pypi:spiri-robot:1.0:spirirobot.Part"]
     with pytest.raises(_core.SynqError):
         _core.Schema({"properties": {}})
+
+
+def test_yaml_reads_and_writes_the_wire_subset():
+    value = {"a": [1, 2.5, None], "b": b"\x00", "c": _core.Tagged("Link", "robot/cam")}
+    text = _core.yaml_dump(value)
+    assert isinstance(text, bytes)
+    assert _core.yaml_load(text) == value
+    with pytest.raises(_core.SynqError):
+        _core.yaml_load(b"&anchor 1")
+    with pytest.raises(_core.SynqError):
+        _core.yaml_dump(_core.Tagged("bad tag", 1))

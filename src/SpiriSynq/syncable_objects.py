@@ -1,982 +1,715 @@
-from SpiriSynq.remote_callables import RemoteMethod, remote_method
-from SpiriSynq.session import Session, current_session
-from SpiriSynq.serializer import load_untyped
-from SpiriSynq.qos import SynqQoS
-from SpiriSynq.schema import JsonSchema
+"""`SyncableObject`: a dataclass kept in sync across processes, and `SubSyncableDataclass`.
 
-import zenoh
-from loguru import logger
-from psygnal import EmissionInfo, SignalGroupDescriptor
-from psygnal.containers import EventedList, EventedDict, EventedSet
+An authoritative object (`synq_authoritive=True`) owns its topic: it publishes its fields,
+answers remote calls, and serves its state and schema. A mirror (`Cls.from_topic(topic)`)
+follows it. The core does the networking; this module turns Python attribute changes into the
+core's field values and back.
+"""
 
-from dataclasses import dataclass, field, fields
-from typing import ClassVar
+from __future__ import annotations
 
+import asyncio
+import contextlib
 import dataclasses
-import types as _types
-import typing
-from typing import Required, Self, TypedDict, get_args, get_origin, Union
-from deepdiff import DeepDiff, Delta
-
+import functools
 import threading
-import time
-from contextlib import contextmanager
-from psygnal import Signal
+import types
+import typing
 import weakref
+from dataclasses import dataclass, field
+from typing import Any, ClassVar, Self
+
+from loguru import logger
+from psygnal import EmissionInfo, Signal, SignalGroupDescriptor
+
+from SpiriSynq import _core, qos, values
+from SpiriSynq.callbacks import OnChange
+from SpiriSynq.link import Link, ObjectNotFound
+from SpiriSynq.remote_callables import YAML, RemoteMethod
+from SpiriSynq.schema import get_schema, members
+from SpiriSynq.session import Session, current_session
+from SpiriSynq.values import BadValue, from_value, hints_of, to_value, wire_fields
+from SpiriSynq.wasm import WasmFunction, call_args
+
+BYTES = "zenoh/bytes"
 
 
-class _Skip:
-    def __repr__(self):
-        return "SKIP"
+class Sample:
+    """A field's value on the wire, for its `<field>_before_send` and `<field>_after_receive`.
 
-
-SKIP = _Skip()
-"""Returned from a ``<field>_receive`` hook to leave the field unchanged."""
-
-
-class PutArgs(TypedDict, total=False):
-    """One put yielded by a ``<field>_publish`` hook: keyword arguments for
-    ``zenoh.Session.put``, minus the key and ``source_info``, which SpiriSynq
-    sets. QoS keys left out come from the field's ``<field>_qos``. Annotate a hook as
-    ``-> Iterator[PutArgs | bytes | str]`` to have these keys checked.
+    Arriving, it has `payload` (bytes), `encoding` and `attachment`, and `decode()` decodes it
+    the usual way. Going out, `send(payload, encoding=..., attachment=...)` sends bytes as they
+    are, and `send_value(value)` sends a value the usual way: exactly one of them, once.
     """
 
-    payload: Required[bytes | bytearray | str | zenoh.ZBytes]
-    encoding: zenoh.Encoding | str
-    congestion_control: zenoh.CongestionControl
-    priority: zenoh.Priority
-    express: bool
-    attachment: bytes | bytearray | str | zenoh.ZBytes
-    timestamp: zenoh.Timestamp
-    allowed_destination: zenoh.Locality
+    def __init__(self, payload: bytes = b"", encoding: str = BYTES, attachment=None, hint=Any):
+        self.payload = payload
+        self.encoding = encoding
+        self.attachment = attachment
+        self._hint = hint
+        self._send = None
 
+    def decode(self) -> Any:
+        """The value, decoded the usual way."""
+        if self.encoding != YAML:
+            raise ValueError(f"a {self.encoding} sample isn't encoded the usual way")
+        return from_value(_core.yaml_load(self.payload), self._hint)
 
-_RESERVED_PUT_ARGS = {"key_expr", "source_info"}
+    def send(self, payload: bytes, *, encoding: str = BYTES, attachment: bytes | None = None):
+        """Send the value as these bytes."""
+        if self._send is None:
+            raise RuntimeError("only a before_send can send its sample, once")
+        send, self._send = self._send, None
+        send(_core.Sample(bytes(payload), encoding, attachment))
 
-
-class SyncableObjectMetadata(TypedDict):
-    """Reply of sr_metadata: an object's address, YAML tags, and owner."""
-    topic: str
-    classes: list[str]
-    authoritive_node: str
-
-
-def _unwrap_dataclass_types(annotation) -> list[type]:
-    """
-    Given a type annotation (e.g. Bar | None, Optional[Bar], Bar),
-    return any contained types that are dataclasses.
-    Pure static analysis — no instances involved.
-    """
-    origin = get_origin(annotation)
-    if origin is Union or origin is _types.UnionType:
-        return [
-            a
-            for a in get_args(annotation)
-            if isinstance(a, type) and dataclasses.is_dataclass(a)
-        ]
-    if isinstance(annotation, type) and dataclasses.is_dataclass(annotation):
-        return [annotation]
-    return []
-
-
-def _collect_valid_sync_paths(
-    cls: type,
-    skip: set[str],
-    prefix: str = "",
-    _visited: frozenset = frozenset(),
-    root_cls: type | None = None,
-    warn: bool = False,
-) -> set[str]:
-    """
-    Recursively collect all valid sync paths for a dataclass class.
-    Uses only class-level type annotations — no instance access.
-
-    e.g. {"foo", "bar", "bar/value", "bar/name"}
-    """
-    if cls in _visited:
-        return set()
-    _visited = _visited | {cls}
-
-    hints = typing.get_type_hints(cls)
-    valid_paths = set()
-
-    for f in dataclasses.fields(cls):
-        if f.name in skip or f.name.startswith("_"):
-            continue
-
-        path = f"{prefix}/{f.name}" if prefix else f.name
-        valid_paths.add(path)
-
-        annotation = hints.get(f.name, f.type)
-        for nested_cls in _unwrap_dataclass_types(annotation):
-            if warn:
-                is_frozen = getattr(
-                    getattr(nested_cls, "__dataclass_params__", None), "frozen", False
-                )
-                is_evented = any(
-                    isinstance(c.__dict__.get("events"), SignalGroupDescriptor)
-                    for c in nested_cls.mro()
-                )
-                if not is_frozen and not is_evented:
-                    logger.warning(
-                        f"{(root_cls or cls).__name__}: field '{cls.__name__}.{f.name}' is a "
-                        f"non-evented, non-frozen dataclass ({nested_cls.__name__!r}). In-place "
-                        f"mutations to its fields won't trigger sync — replace the whole object, "
-                        f"use @dataclass(frozen=True), or add a SignalGroupDescriptor."
-                    )
-            valid_paths.update(
-                _collect_valid_sync_paths(
-                    nested_cls,
-                    skip,
-                    prefix=path,
-                    _visited=_visited,
-                    root_cls=root_cls or cls,
-                    warn=warn,
-                )
-            )
-
-    return valid_paths
+    def send_value(self, value: Any) -> None:
+        """Send a value the usual way."""
+        self.send(_core.yaml_dump(to_value(value)), encoding=YAML)
 
 
 @dataclass
 class SubSyncableDataclass:
-    """
-    Lightweight base for nested sub-objects within a SyncableObject.
-
-    Provides psygnal events, synq_skip_sync, and synq_skip_rehydrate filtering
-    without any zenoh publish/subscribe machinery.  Use this instead of
-    @dataclass(frozen=True) when you need mutable nested objects whose field
-    changes fire events (and therefore propagate through the parent's sync).
-    """
+    """A dataclass synced field by field inside a syncable object: `robot.gps.latitude = 45.0`
+    publishes `<topic>/gps/latitude` alone. Its own class carries its fields' settings."""
 
     events: ClassVar[SignalGroupDescriptor] = SignalGroupDescriptor()
-    synq_skip_rehydrate: ClassVar[set] = set()
     synq_skip_sync: ClassVar[set] = set()
+    synq_skip_rehydrate: ClassVar[set] = set()
 
-    @classmethod
-    def all_skip_rehydrate(cls) -> set:
-        result: set = set()
-        for c in cls.mro():
-            if hasattr(c, "synq_skip_rehydrate"):
-                result.update(c.synq_skip_rehydrate)
-        return result
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        values.register(cls)
 
-    @classmethod
-    def valid_sync_paths(cls) -> frozenset:
-        cache_attr = "_synq_valid_paths_cache"
-        # This class's own cache: getattr would find a parent's.
-        if (cached := cls.__dict__.get(cache_attr)) is not None:
-            return cached
 
-        skip: set = set()
-        for c in cls.mro():
-            if hasattr(c, "synq_skip_sync"):
-                skip.update(c.synq_skip_sync)
+# --- what the core is told about each field -----------------------------------------------
 
-        warn = next(
-            (
-                c.__dict__["warn_non_evented"]
-                for c in cls.mro()
-                if "warn_non_evented" in c.__dict__
-            ),
-            True,
-        )
-        result = frozenset(_collect_valid_sync_paths(cls, skip, warn=warn))
-        setattr(cls, cache_attr, result)
-        return result
 
-    @classmethod
-    def to_yaml(cls, representer, data):
-        skip = cls.all_skip_rehydrate()
-        syncable = {p for p in cls.valid_sync_paths() if "/" not in p}
-        field_names = {
-            f.name
-            for f in fields(cls)
-            if f.name not in skip and f.name in syncable and not f.name.startswith("_")
-        }
-        yaml_tag = getattr(cls, "yaml_tag", f"!{cls.__name__}")
-        return representer.represent_mapping(
-            yaml_tag,
-            {
-                f.name: getattr(data, f.name)
-                for f in fields(data)
-                if f.name in field_names
-            },
+@dataclass
+class _Field:
+    path: str  # attribute path: `gps/latitude`
+    names: tuple[str, ...]
+    hint: Any
+    owner: type  # the class declaring the field, which holds its settings
+    before_send: Any = None  # Python hooks; WASM ones are the core's
+    after_receive: Any = None
+    hooked: bool = False  # any hook, Python or WASM: the core keeps no value for it
+
+    def options(self) -> _core.FieldOptions:
+        name, cls = self.names[-1], self.owner
+        priority = cls.__dict__.get(f"{name}_qos", qos.data)
+        reliability = cls.__dict__.get(f"{name}_reliability", qos.drop)
+        if not isinstance(priority, qos.Priority):
+            raise TypeError(f"{cls.__qualname__}.{name}_qos must be a qos preset, like qos.data")
+        if not isinstance(reliability, qos.Reliability):
+            raise TypeError(f"{cls.__qualname__}.{name}_reliability must be qos.drop or reliable")
+        return _core.FieldOptions(
+            priority=priority.name,
+            reliable=reliability.reliable,
+            ignore_incoming=bool(cls.__dict__.get(f"{name}_ignore_incoming", False)),
+            lazy=bool(cls.__dict__.get(f"{name}_lazy", False)),
+            raw=self.after_receive is not None,
         )
 
-    def __setstate__(self, state):
-        init_fields = {f.name for f in fields(type(self))}
-        self.__init__(**{k: v for k, v in state.items() if k in init_fields})
+
+def _sub_syncable(hint) -> type | None:
+    """The `SubSyncableDataclass` a field holds: its annotation, or a branch of its union."""
+    if isinstance(hint, type) and issubclass(hint, SubSyncableDataclass):
+        return hint
+    if typing.get_origin(hint) in (typing.Union, types.UnionType):
+        for arg in typing.get_args(hint):
+            if isinstance(arg, type) and issubclass(arg, SubSyncableDataclass):
+                return arg
+    return None
 
 
-# This is so that we only publish our own changes, not ones we just received. Keeps us from echo-ing other people's changes.
-_local = threading.local()
+def _hook(cls: type, name: str, kind: str):
+    """A field's Python hook `<name>_<kind>` on `cls`, or `None`; `True` for a WASM one."""
+    for klass in cls.__mro__:
+        if (hook := klass.__dict__.get(f"{name}_{kind}")) is not None:
+            return True if isinstance(hook, WasmFunction) else hook
+    return None
 
 
-@contextmanager
-def _receiving():
-    _local.receiving = True
+def _plan(cls: type) -> dict[str, _Field]:
+    cached = cls.__dict__.get("_synq_plan")
+    if cached is not None:
+        return cached
+    plan: dict[str, _Field] = {}
+
+    def walk(klass, fields, prefix, names, seen):
+        hints = hints_of(klass)
+        for f in fields:
+            path = f"{prefix}{f.name}"
+            hint = hints.get(f.name, f.type)
+            before, after = (
+                _hook(klass, f.name, "before_send"),
+                _hook(klass, f.name, "after_receive"),
+            )
+            plan[path] = _Field(
+                path=path,
+                names=(*names, f.name),
+                hint=hint,
+                owner=klass,
+                before_send=before if callable(before) and before is not True else None,
+                after_receive=after if callable(after) and after is not True else None,
+                hooked=before is not None or after is not None,
+            )
+            sub = _sub_syncable(hint)
+            if sub is not None and sub not in seen:
+                walk(sub, wire_fields(sub), f"{path}/", (*names, f.name), seen | {sub})
+
+    walk(cls, cls.synq_fields(), "", (), frozenset())
+    cls._synq_plan = plan
+    return plan
+
+
+# --- how this thread is applying a change ---------------------------------------------------
+
+NORMAL, LOCAL, QUIET = "normal", "local", "quiet"
+_state = threading.local()
+
+
+def _mode() -> str:
+    return getattr(_state, "mode", NORMAL)
+
+
+@contextlib.contextmanager
+def _applying(mode: str):
+    """Within the block, attribute changes on this thread are applied as `mode` says:
+    `NORMAL` publishes them, `LOCAL` changes a mirror's copy only, `QUIET` tells the core
+    nothing (it already knows)."""
+    old = _mode()
+    _state.mode = mode
     try:
         yield
     finally:
-        _local.receiving = False
+        _state.mode = old
 
 
-def _is_receiving() -> bool:
-    return getattr(_local, "receiving", False)
+def _running() -> set:
+    if not hasattr(_state, "running"):
+        _state.running = set()
+    return _state.running
 
 
-class WeakMethodProxy:
-    def __init__(self, method, callback=None):
-        self._ref = weakref.WeakMethod(method, callback)
-
-    def __call__(self, *args, **kwargs):
-        method = self._ref()
-        if method is None:
-            raise ReferenceError("weakly-referenced object no longer exists")
-        return method(*args, **kwargs)
-
-    def __eq__(self, other):
-        if isinstance(other, WeakMethodProxy):
-            return self._ref == other._ref
-        return NotImplemented
-
-    def __hash__(self):
-        return hash(self._ref)
+# --- the object ---------------------------------------------------------------------------
 
 
 @dataclass
 class SyncableObject:
-    events: ClassVar[SignalGroupDescriptor] = SignalGroupDescriptor()
-    synq_topic: str
-    synq_base_topic: str | None = None
-    synq_session: Session | None = field(default_factory=current_session.get)
-    synq_authoritive: bool = False  # Whether we're the "owner" of the object, or
-    # a mirror.
-    synq_lazy_publish: bool = False
-    """Only publish changes if there are active subscribers on the zenoh network.
-    Useful for reducing unnecessary network traffic when no one is listening."""
-    synq_publish: bool = True
-    """Whether this object should publish its changes to zenoh. Set to False to
-    make this object receive-only."""
-    synq_receive: bool = True
-    """Whether this object should apply incoming changes from zenoh. Set to False
-    to make this object publish-only."""
-    synq_auto_start: bool = True
-    """Automatically call sync() in __post_init__. Set to False if you need to
-    configure the object before starting synchronization."""
-    synq_check_receive_types: bool = True
-    """Validate that received values match the expected type annotation before
-    applying them. Logs a warning and skips the update on type mismatch."""
-    synq_auto_rehydrate_on_missing_parent_timeout: float = 5.0
-    """Seconds between automatic sr_rehydrate calls triggered by missing-parent
-    updates. Set to -1 to disable."""
-    synq_mtime: float = -1
-    """time.monotonic() timestamp of the last successfully applied remote update.
-    Only updated on receive — never published or synced (monotonic clocks are
-    process-local and meaningless across nodes). -1 if no remote update has
-    been received yet."""
-    synq_signal_unknown_path = Signal(str, object)
-    """Emitted when a received update targets a path not in valid_sync_paths().
-    Args: (relative_path, zenoh.Sample) — object is not decoded since the path is unknown."""
-    synq_signal_type_mismatch = Signal(str, object)
-    """Emitted when a received value's type doesn't match the field annotation.
-    Args: (relative_path, decoded_obj)"""
-    synq_signal_missing_parent = Signal(str, object)
-    """Emitted when a nested path is valid but an intermediate object is None
-    (e.g. path is 'bar/value' but self.bar is None).
-    Args: (relative_path, decoded_obj)"""
-    synq_signal_tombstone = Signal()
-    """Emitted when a tombstone (delete) is received for this object's base path,
-    indicating the authoritative node has deleted it."""
-    synq_skip_rehydrate = set()
-    synq_is_deleted: bool = False
-    """True after a tombstone has been received or sent (authoritative close)."""
-    synq_skip_sync = {
-        "synq_lazy_publish",
-        "synq_authoritive",
-        "synq_session",
-        "synq_publish",
-        "synq_receive",
-        "synq_auto_start",
-        "synq_check_receive_types",
-        "synq_auto_rehydrate_on_missing_parent_timeout",
-        "synq_mtime",
-        "synq_is_deleted",
-        "_synq_callbacks",
-        "_synq_last_rehydrate_time",
-    }
+    """A dataclass whose fields are kept in sync over the network. See the docs, "Objects and
+    fields"."""
 
-    _synq_callbacks: dict = field(default_factory=dict)
-    _synq_last_rehydrate_time: float = field(default=0.0)
+    events: ClassVar[SignalGroupDescriptor] = SignalGroupDescriptor()
+
+    synq_topic: str
+    synq_authoritive: bool = field(default=False, kw_only=True)
+    """Whether this process owns the object, or mirrors it."""
+    synq_session: Session | None = field(default=None, kw_only=True, repr=False, compare=False)
+    synq_base_topic: str | None = field(default=None, kw_only=True, repr=False, compare=False)
+    synq_follow_links: bool = field(default=True, kw_only=True, repr=False, compare=False)
+    """On a mirror: whether link fields hold mirrors of their targets, or `Link`s."""
+    synq_auto_start: bool = field(default=True, kw_only=True, repr=False, compare=False)
+    """Start syncing when created. Off, call `sync()` once the object is ready."""
+
+    synq_skip_sync: ClassVar[set] = set()
+    """Fields never published or received."""
+    synq_skip_rehydrate: ClassVar[set] = set()
+    """Fields synced as they change, but left out of the state a new mirror fetches."""
+    synq_type_id: ClassVar[str | None] = None
+    """`<uuid>:<version>`, for a class that isn't in a package on PyPI."""
+
+    synq_signal_bad_data = Signal(str, str)
+    """`(path, reason)`: an incoming value couldn't be applied, and was dropped."""
+    synq_signal_alive = Signal(bool)
+    """On a mirror: the owner went away (`False`) or came back (`True`)."""
+    synq_signal_listeners = Signal(str, bool)
+    """On an owner: whether anyone listens to a field changed. `(path, listening)`."""
 
     def __post_init__(self):
         if self.synq_auto_start:
             self.sync()
 
-    def sync(self):
-        """Set up hookes for synchronization, including any relevent RPC hooks"""
-        if not self.synq_session:
-            raise Exception(f"No Session on {self.synq_topic}")
-        # "./camera" is relative to the base topic -- the same rule a bare topic
-        # already follows on an authoritative object.
-        relative = self.synq_topic.startswith("./")
-        if relative:
-            self.synq_topic = self.synq_topic.removeprefix("./")
-        if (relative or self.synq_authoritive) and not self.synq_base_topic:
-            self.synq_base_topic = self.synq_session.base_topic
-        self.synq_session.resolve_topic(self.synq_absolute_path)  # validate
-        self.synq_session.register_type_recursive(type(self))
-        type(
-            self
-        ).valid_sync_paths()  # warm cache; emits warn_non_evented warnings once per class
-        self.synq_session.objects[self.synq_absolute_path] = self
-
-        if self.synq_authoritive:
-            for value in {
-                id(v): v
-                for v in (getattr(type(self), name, None) for name in dir(type(self)))
-                if isinstance(v, RemoteMethod)
-            }.values():
-                # Only bind and setup methods if we're authoritive. Deduped:
-                # .client()/.server() hooks expose the same method twice.
-                value.setup_zenoh_callback(self)
-
-            tags = self.synq_type_tags()
-
-            for tag in tags:
-                tag = tag.removeprefix("!")
-                self.sr_metadata.setup_zenoh_callback(
-                    self, path=self.synq_absolute_path, name=f"sr_metadata/{tag}"
-                )
-                self.sr_object_schema.setup_zenoh_callback(
-                    self, path=self.synq_absolute_path, name=f"sr_type_schema/{tag}"
-                )
-        # One publisher per object: its id tags every sample the object sends,
-        # so field puts and the tombstone share one source_sn sequence. Field
-        # puts go through session.put() under that id (a publisher on
-        # <path>/** can't put to sub-keys), so RELIABLE here only affects what
-        # is sent through the publisher itself: the tombstone in close().
-        self.synq_publisher = self.synq_session.zenoh_session.declare_publisher(
-            f"{self.synq_absolute_path}/**",
-            reliability=zenoh.Reliability.RELIABLE,
-        )
-        self._synq_own_source_ids = {
-            (str(self.synq_publisher.id.zid), self.synq_publisher.id.eid)
-        }
-        logger.trace(
-            f"{self.synq_publisher} on {self.synq_session.zenoh_session.zid()}"
-        )
-        self.events.connect(self._zenoh_publish_changes)
-        self.synq_subscriber = self.synq_session.zenoh_session.declare_subscriber(
-            f"{self.synq_absolute_path}/**",
-            WeakMethodProxy(self._zenoh_receive_changes),
-        )
-        logger.trace(
-            f"{self.synq_subscriber} on {self.synq_session.zenoh_session.zid()}"
-        )
-
-    @staticmethod
-    def _event_to_zenoh_path(event: EmissionInfo) -> str:
-        parts = []
-        for p in event.path:
-            if not p.attr:
-                raise Exception(
-                    f"{event} non-attribute access. Did you use a list or dict?"
-                )
-            parts.append(p.attr)
-        return "/".join(parts)
-
-    @logger.catch()
-    def _zenoh_publish_changes(self, event: EmissionInfo):
-        """Publish changes from a remote zenoh object"""
-
-        if _is_receiving():
-            return
-        if not self.synq_publish:
-            return
-        if self.synq_lazy_publish and (
-            not self.synq_publisher or not self.synq_publisher.matching_status.matching  # type: ignore[union-attr]
-        ):
-            logger.trace(f"{self} not matching subscribers, not publishing")
-            return
-
-        assert self.synq_session, "No session, can't publish changes"
-
-        # Container child events (list.append, dict[k]=v, etc.) propagate through
-        # the parent SignalGroup with a non-attribute element in the path.
-        # Publish the whole container atomically from the top-level field.
-        if any(not p.attr for p in event.path):
-            field_name = event.path[0].attr if event.path else None
-            if field_name and field_name in self.valid_sync_paths():
-                container = getattr(self, field_name, None)
-                if isinstance(container, (EventedList, EventedDict)):
-                    self._synq_publish_path(field_name, container, container=True)
-            return
-
-        event_path = self._event_to_zenoh_path(event)
-
-        if not event_path in self.valid_sync_paths():
-            return
-
-        # EventedSet mutations emit (added, removed) args, not the set itself.
-        # Publish the whole current set atomically regardless of the mutation args.
-        current = getattr(self, event_path, None)
-        if isinstance(current, EventedSet):
-            self._synq_publish_path(event_path, current, container=True)
-            return
-
-        self._synq_publish_path(event_path, event.args[0])
-
-    def _synq_publish_path(self, path: str, value, container: bool = False):
-        """Publish *value* at *path*, through the field's ``_publish`` hook if any."""
-        assert self.synq_session
-        full_path = f"{self.synq_absolute_path}/{path}"
-        field_qos = self.synq_qos_for(path)
-
-        def put(args: PutArgs):
-            kwargs: dict = field_qos.put_kwargs() if field_qos is not None else {}
-            kwargs.update(args)
-            assert self.synq_session and self.synq_publisher
-            self.synq_session.zenoh_session.put(
-                full_path,
-                source_info=self.synq_session.source_info(
-                    source_id=self.synq_publisher.id
-                ),
-                **kwargs,
-            )
-
-        hook = self._synq_field_hook(path, "publish")
-        if hook is not None:
-            logger.trace(f"publishing (hook) {full_path}")
-            hook_name = f"{type(hook.__self__).__name__}.{hook.__name__}"
-            for item in hook(value) or ():
-                if isinstance(item, (bytes, bytearray, str)):
-                    item = {"payload": item}
-                if not isinstance(item, dict) or "payload" not in item:
-                    raise TypeError(
-                        f"{hook_name} yielded {item!r:.80}, expected a PutArgs dict "
-                        f"with a 'payload' key, or bytes/str"
-                    )
-                if reserved := _RESERVED_PUT_ARGS & item.keys():
-                    raise ValueError(
-                        f"{hook_name} may not set {sorted(reserved)}; SpiriSynq sets them"
-                    )
-                put(item)
-            return
-
-        codec = None if container else self.synq_session._encoder_for(value)
-        if codec:
-            payload, encoding = codec.encode(value)
-            logger.trace(f"publishing (codec) {full_path} = {type(value).__name__}")
-            put({"payload": payload, "encoding": encoding})
-        else:
-            enc_data = self.synq_session.type_registry.dumps(value)
-            enc_data = enc_data.removesuffix("\n...")
-            logger.trace(f"publishing yaml {full_path} = {enc_data}")
-            put({"payload": enc_data, "encoding": zenoh.Encoding.APPLICATION_YAML})
-
-    def synq_qos_for(self, path: str) -> SynqQoS | None:
-        """Resolve the QoS for a sync path, or None for zenoh's defaults.
-
-        Checks ``<field>_qos`` on the object that owns the field (instance
-        attribute, then class attribute), then the nearest ancestor field
-        (``bar/value`` falls back to ``bar_qos``). Only SynqQoS instances count.
-        """
-        segments, owners = self._synq_path_owners(path)
-        for depth in range(len(owners) - 1, -1, -1):
-            qos = getattr(owners[depth], f"{segments[depth]}_qos", None)
-            if isinstance(qos, SynqQoS):
-                return qos
-        return None
-
-    def _synq_path_owners(self, path: str) -> tuple[list[str], list]:
-        """Split *path* and walk the live objects owning each segment:
-        ``owners[i]`` holds ``segments[i]``. Stops short at a None parent."""
-        segments = path.split("/")
-        owners: list = [self]
-        for seg in segments[:-1]:
-            owner = getattr(owners[-1], seg, None)
-            if owner is None:
-                break
-            owners.append(owner)
-        return segments, owners
-
-    def _synq_field_hook(self, path: str, kind: str):
-        """Bound ``<field>_publish`` / ``<field>_receive`` method on the object
-        that owns the field at *path* (``bar/value`` looks for ``value_publish``
-        on ``self.bar``), or None. Unlike QoS there is no ancestor fallback.
-        Dataclass fields that happen to share the name don't count."""
-        segments, owners = self._synq_path_owners(path)
-        if len(owners) < len(segments):
-            return None
-        owner = owners[-1]
-        name = f"{segments[-1]}_{kind}"
-        if name in getattr(owner, "__dataclass_fields__", {}) or not callable(
-            getattr(type(owner), name, None)
-        ):
-            return None
-        return getattr(owner, name)
-
-    def _is_own_source(self, source_id) -> bool:
-        """True if source_id names this object's own publisher -- i.e. this
-        is our own publish echoing back, not another
-        object's genuine update. A zenoh session id (zid) is shared by every
-        SyncableObject on that session, so identity must be checked at the
-        per-publisher level (zid + eid), not just the session's zid.
-
-        Compares against ids snapshotted in sync() rather than the live
-        publisher objects, since a delayed echo can arrive after close() has
-        already undeclared and cleared them."""
-        if source_id is None:
-            return False
-        own_ids = getattr(self, "_synq_own_source_ids", None)
-        if not own_ids:
-            return False
-        return (str(source_id.zid), source_id.eid) in own_ids
-
-    @logger.catch()
-    def _zenoh_receive_changes(self, sample: zenoh.Sample):
-        """Receive changes from a remote zenoh"""
-        with _receiving():
-            assert self.synq_session, "No Session"
-            # This checks that we did not publish this ourselves.
-            if sample.source_info and self._is_own_source(sample.source_info.source_id):
-                logger.trace(f"Skipping update on {sample.key_expr}, own publish")
-                return
-            if not self.synq_receive:
-                return
-            if sample.kind == zenoh.SampleKind.DELETE:
-                key = str(sample.key_expr)
-                if key in (self.synq_absolute_path, f"{self.synq_absolute_path}/**"):
-                    logger.debug(f"Tombstone received for {self.synq_absolute_path}")
-                    self.synq_is_deleted = True
-                    self.synq_signal_tombstone.emit()
-                return
-            if not sample.payload:
-                logger.warning(f"Update payload not ok")
-                return
-
-            if not str(sample.key_expr).startswith(self.synq_absolute_path + "/"):
-                logger.error(
-                    f"Received '{sample.key_expr}' on {self.synq_absolute_path}"
-                )
-                return
-            relative_path = str(sample.key_expr).removeprefix(
-                self.synq_absolute_path + "/"
-            )
-            if relative_path not in self.valid_sync_paths():
-                logger.warning(
-                    f"Path {self.synq_absolute_path} -- {relative_path} not a valid path {self.valid_sync_paths()} "
-                )
-                self.synq_signal_unknown_path.emit(relative_path, sample)
-                return
-            codec = self.synq_session._decoder_for(sample.encoding)
-            if codec:
-                obj = codec.decode(sample)
-                logger.trace(
-                    f"received (codec) {self.synq_absolute_path}/{relative_path}"
-                )
-            else:
-                payload = sample.payload.to_string()
-                logger.trace(f"received {self.synq_absolute_path} = {payload}")
-                obj = self.synq_session.type_registry.load(payload)
-
-            hook = self._synq_field_hook(relative_path, "receive")
-            if hook is not None:
-                obj = hook(obj, sample)
-                if obj is SKIP:
-                    logger.trace(f"receive hook skipped {relative_path}")
-                    return
-
-            if self.synq_check_receive_types and not self.valid_sync_type(
-                relative_path, obj
-            ):
-                logger.warning(
-                    f"obj `{obj}` of type {type(obj)} at {sample.key_expr} is not of type {self._resolve_sync_type(relative_path)}"
-                )
-                self.synq_signal_type_mismatch.emit(relative_path, obj)
-                return
-
-            # Check for None parents before attempting delta application.
-            # e.g. path "bar/value" is valid but self.bar is None.
-            if "/" in relative_path:
-                cursor = self
-                for seg in relative_path.split("/")[:-1]:
-                    cursor = getattr(cursor, seg, None)
-                    if cursor is None:
-                        logger.debug(
-                            f"Null parent at '{seg}' for path {relative_path} on {self.synq_absolute_path}"
-                        )
-                        self.synq_signal_missing_parent.emit(relative_path, obj)
-                        timeout = self.synq_auto_rehydrate_on_missing_parent_timeout
-                        if timeout >= 0:
-                            now = time.monotonic()
-                            if now - self._synq_last_rehydrate_time >= timeout:
-                                self._synq_last_rehydrate_time = now
-                                threading.Thread(
-                                    target=self.sr_rehydrate, daemon=True
-                                ).start()
-                        return
-
-            # Evented containers: update in-place so existing event hooks stay connected.
-            if "/" not in relative_path:
-                current = getattr(self, relative_path, None)
-                if isinstance(current, EventedList) and isinstance(
-                    obj, (EventedList, list)
-                ):
-                    current[:] = list(obj)
-                    logger.trace(f"applied container (in-place list) {relative_path}")
-                    self.synq_mtime = time.monotonic()
-                    return
-                if isinstance(current, EventedDict) and isinstance(
-                    obj, (EventedDict, dict)
-                ):
-                    current.clear()
-                    current.update(dict(obj))
-                    logger.trace(f"applied container (in-place dict) {relative_path}")
-                    self.synq_mtime = time.monotonic()
-                    return
-                if isinstance(current, EventedSet) and isinstance(
-                    obj, (EventedSet, set, frozenset, list)
-                ):
-                    current.clear()
-                    current.update(set(obj))
-                    logger.trace(f"applied container (in-place set) {relative_path}")
-                    self.synq_mtime = time.monotonic()
-                    return
-
-            path = str(sample.key_expr).removeprefix(self.synq_absolute_path).split("/")
-            logger.trace(f"received {path} = {obj}")
-            # Convert "foo/bar/biz" → "root.foo.bar.biz" for DeepDiff path format
-            deepdiff_path = "root." + ".".join(relative_path.split("/"))
-
-            delta = Delta(
-                flat_dict_list=[
-                    {
-                        "path": deepdiff_path,
-                        "action": "values_changed",
-                        "value": obj,
-                    }
-                ],
-                mutate=True,  # mutates self in place rather than returning a copy
-                raise_errors=True,
-            )
-
-            try:
-                self + delta  # type: ignore[operator]  # mutate=True applies delta in-place
-                logger.trace(f"applied {relative_path} = {obj}")
-                self.synq_mtime = time.monotonic()
-            except Exception as e:
-                logger.exception(f"Failed to apply delta for {relative_path}")
+    # --- the type -----------------------------------------------------------------------------
 
     @classmethod
-    def from_topic(cls, topic, session=None):
-        if not session:
-            session = current_session.get()
-        session.register_type_recursive(cls)
-        new_obj = session.from_topic(topic)
+    def synq_fields(cls) -> list[dataclasses.Field]:
+        """The dataclass fields that are synced."""
+        return [f for f in wire_fields(cls) if not f.name.startswith("synq_")]
 
-        assert isinstance(new_obj, cls), f"{type(new_obj)} is not an instance of {cls}"
-        return new_obj
+    @classmethod
+    def synq_key_of(cls, path: str) -> str:
+        """The key, under the topic, of the field at attribute path `path`."""
+        return path
+
+    @classmethod
+    def synq_schema(cls) -> dict:
+        """The type's JSON Schema, as the core and other processes see it."""
+        return get_schema(cls)
+
+    @classmethod
+    def _synq_core_schema(cls) -> _core.Schema:
+        cached = cls.__dict__.get("_synq_checked")
+        if cached is None:
+            try:
+                cached = _core.Schema(get_schema(cls))
+            except _core.SynqError as e:
+                raise TypeError(f"{cls.__qualname__}: {e}") from None
+            cls._synq_checked = cached
+        return cached
+
+    @classmethod
+    def _synq_member_map(cls) -> tuple[dict[str, RemoteMethod], list[OnChange]]:
+        cached = cls.__dict__.get("_synq_member_cache")
+        if cached is None:
+            methods, callbacks = {}, []
+            for _, member in members(cls):
+                if isinstance(member, RemoteMethod):
+                    methods.setdefault(member.name, member)
+                elif isinstance(member, OnChange) and not isinstance(member.func, WasmFunction):
+                    callbacks.append(member)
+            cached = (methods, callbacks)
+            cls._synq_member_cache = cached
+        return cached
+
+    # --- starting -----------------------------------------------------------------------------
+
+    def sync(self) -> None:
+        """Start syncing: open the object in the core, as its owner or as a mirror."""
+        cls = type(self)
+        session = self.synq_session or current_session.get()
+        object.__setattr__(self, "synq_session", session)
+        topic = self.synq_topic
+        relative = topic.startswith("./")
+        if relative:
+            object.__setattr__(self, "synq_topic", topic.removeprefix("./"))
+        if (relative or self.synq_authoritive) and not self.synq_base_topic:
+            object.__setattr__(self, "synq_base_topic", session.base_topic)
+        path = session.resolve_topic(self.synq_absolute_path)
+        schema = cls._synq_core_schema()
+        plan = _plan(cls)
+        options = {cls.synq_key_of(p): f.options() for p, f in plan.items()}
+        self._synq_ready = threading.Event()
+        self._synq_links: dict[str, SyncableObject] = {}
+        self._synq_linked_from: tuple[weakref.ref, str] | None = None
+        node = session.node
+        if self.synq_authoritive:
+            methods, _ = cls._synq_member_map()
+            raw = [name for name, m in methods.items() if m.raw]
+            object_id = session._register(
+                lambda: node.create_owner(path, schema, options, raw), self
+            )
+        else:
+            object_id = session._register(lambda: node.create_mirror(path, schema, options), self)
+        self._synq_id = object_id
+        if self.synq_authoritive:
+            for f in cls.synq_fields():
+                value = getattr(self, f.name)
+                if plan[f.name].before_send is None or value is not None:
+                    self._synq_send(f.name, value)
+            self._synq_ready.set()
+        self.events.connect(self._synq_on_event)
+
+    @classmethod
+    def from_topic(
+        cls,
+        topic: str,
+        session: Session | None = None,
+        *,
+        timeout: float | None = None,
+        wait: bool = True,
+        follow_links: bool = True,
+    ) -> Self:
+        """A mirror of the object on `topic`.
+
+        Waits up to `timeout` seconds (the session's call timeout by default) for the owner's
+        state, and raises `TimeoutError` if it doesn't come. With `wait=False`, returns at once:
+        the state arrives when the owner answers.
+        """
+        session = session or current_session.get()
+        obj = cls.__new__(cls)
+        for f in dataclasses.fields(cls):
+            if f.default is not dataclasses.MISSING:
+                value = f.default
+            elif f.default_factory is not dataclasses.MISSING:
+                value = f.default_factory()
+            else:
+                value = None
+            object.__setattr__(obj, f.name, value)
+        object.__setattr__(obj, "synq_topic", topic)
+        object.__setattr__(obj, "synq_session", session)
+        object.__setattr__(obj, "synq_authoritive", False)
+        object.__setattr__(obj, "synq_follow_links", follow_links)
+        obj.sync()
+        if wait and not session.wait(obj._synq_ready, timeout or session.call_timeout):
+            obj.close()
+            raise TimeoutError(f"nobody served {topic} in time")
+        return obj
+
+    # --- state --------------------------------------------------------------------------------
 
     @property
     def synq_absolute_path(self) -> str:
+        """The topic this object actually uses."""
         if self.synq_base_topic:
             return f"{self.synq_base_topic}/{self.synq_topic}"
-        return f"{self.synq_topic}"
+        return self.synq_topic
 
-    def __str__(self) -> str:
-        user_fields = {
-            f.name: getattr(self, f.name)
-            for f in dataclasses.fields(self)
-            if not f.name.startswith("synq_") and not f.name.startswith("_")
-        }
-        fields_str = ", ".join(f"{k}={v!r}" for k, v in user_fields.items())
-        cls_name = type(self).__name__
-        path = self.synq_absolute_path
-        if fields_str:
-            return f"{cls_name}({path!r}, {fields_str})"
-        return f"{cls_name}({path!r})"
+    @property
+    def synq_alive(self) -> bool:
+        """Whether the owner is alive: always, on the owner itself."""
+        if self.synq_authoritive:
+            return True
+        return self.synq_session.node.alive(self._synq_id)
 
-    @classmethod
-    def synq_type_tags(cls) -> list:
-        tags = []
-        for c in cls.mro():
-            # Each class's own tag: getattr would repeat a base's for an unregistered class.
-            class_tag = c.__dict__.get("yaml_tag", f"!{c.__name__}")
-            if class_tag == "!object":
-                break
-            tags.append(class_tag)
-        tags.sort()
-        return tags
+    def synq_has_listeners(self, path: str | None = None) -> bool:
+        """On an owner: whether any other process listens to a field, or to any field."""
+        key = None if path is None else type(self).synq_key_of(path)
+        return self.synq_session.node.has_listeners(self._synq_id, key)
 
-    @remote_method()
-    def sr_metadata(self) -> SyncableObjectMetadata:
-        """Returns topic path, YAML type tags, and authoritative node ID."""
-        assert self.synq_session
-        return {
-            "topic": self.synq_absolute_path,
-            "classes": self.synq_type_tags(),
-            "authoritive_node": str(self.synq_session.zenoh_session.zid()),
-        }
+    def synq_rehydrate(self, timeout: float | None = None) -> None:
+        """On a mirror: fetch the owner's full state again, and wait for it."""
+        self._synq_ready.clear()
+        self.synq_session.node.rehydrate(self._synq_id)
+        if not self.synq_session.wait(self._synq_ready, timeout or self.synq_session.call_timeout):
+            raise TimeoutError(f"nobody served {self.synq_absolute_path} in time")
 
-    @remote_method()
-    def sr_rehydrate(self) -> Self:
-        """Returns the full current state of this object."""
-        return self
-
-    @sr_rehydrate.client(raw=True)
-    def sr_rehydrate_client(self, reply) -> Self:
-        cls = self.__class__
-        skip: set[str] = set()
-        for c in cls.mro():
-            if hasattr(c, "synq_skip_sync"):
-                skip.update(c.synq_skip_sync)
-            if hasattr(c, "synq_skip_rehydrate"):
-                skip.update(c.synq_skip_rehydrate)
-        syncable = {p for p in cls.valid_sync_paths() if "/" not in p}
-        to_sync = list(syncable - skip)
-
-        # Deserialize as a plain dict — strips YAML tags, returns a mapping.
-        assert reply.ok, f"RPC error: {reply.err.payload.to_string()}"
-        updated = load_untyped(reply.ok.payload.to_string())
-
-        current = {f: getattr(self, f) for f in to_sync}
-        diff = DeepDiff(current, updated, include_paths=to_sync)
-        if not diff:
-            return self
-
-        delta = Delta(diff, mutate=True, raise_errors=True)
-        current + delta  # type: ignore[operator]
-
-        for f in to_sync:
-            new_v = current[f]
-            if new_v != getattr(self, f):
-                self + Delta(  # type: ignore[operator]
-                    flat_dict_list=[
-                        {
-                            "path": f"root.{f}",
-                            "action": "values_changed",
-                            "value": new_v,
-                        }
-                    ],
-                    mutate=True,
-                    raise_errors=True,
-                )
-        return self
-
-    @remote_method()
-    def sr_object_schema(self) -> JsonSchema:
-        """Returns the JSON Schema for this object's syncable fields and RPC endpoints."""
-        from SpiriSynq.schema import get_schema
-
-        assert self.synq_session
-        return get_schema(type(self), codecs=self.synq_session._codecs)  # type: ignore[return-value]
-
-    @classmethod
-    def all_skip_rehydrate(cls) -> set:
-        """Returns synq_skip_rehydrate on this and all parent classes merged"""
-        result = set()
-        for c in cls.mro():
-            if hasattr(c, "synq_skip_rehydrate"):
-                result.update(c.synq_skip_rehydrate)
-        return result
-
-    @classmethod
-    def valid_sync_paths(cls) -> frozenset[str]:
-        """
-        Returns all valid Zenoh publish paths for this class.
-        Merges synq_skip_sync across the MRO, then recursively walks
-        dataclass field type annotations. Cached on the class itself.
-        """
-        cache_attr = "_synq_valid_paths_cache"
-        # This class's own cache: getattr would find a parent's.
-        if (cached := cls.__dict__.get(cache_attr)) is not None:
-            return cached
-
-        skip = set()
-        for c in cls.mro():
-            if hasattr(c, "synq_skip_sync"):
-                skip.update(c.synq_skip_sync)
-
-        warn = next(
-            (
-                c.__dict__["warn_non_evented"]
-                for c in cls.mro()
-                if "warn_non_evented" in c.__dict__
-            ),
-            True,
+    def synq_call(self, method: str, timeout: float | None = None, **args) -> list:
+        """Call a remote method by name, with arguments by name: every value it replies with.
+        For callers without the class, such as the CLI."""
+        session = self.synq_session
+        values_ = {k: to_value(v) for k, v in args.items()}
+        timeout = timeout or session.call_timeout
+        request = session.node.call(
+            self._synq_id, method, values_, raw_replies=True, timeout_ms=int(timeout * 1000)
         )
-        result = frozenset(_collect_valid_sync_paths(cls, skip, warn=warn))
-        setattr(cls, cache_attr, result)
-        return result
+        from SpiriSynq.remote_callables import RpcException
 
-    @classmethod
-    def _resolve_sync_type(cls, path: str) -> tuple[type, ...] | None:
-        """
-        Resolves the expected types at a given sync path. Cached on the class.
-        Returns a tuple of valid types (for use with isinstance), or None if path is invalid.
-        """
-        cache_attr = "_synq_type_cache"
-        cache: dict[str, tuple[type, ...] | None] | None = cls.__dict__.get(cache_attr)
-        if cache is None:
-            cache = {}
-            setattr(cls, cache_attr, cache)
-        if path in cache:
-            return cache[path]
+        out = []
+        for value, error in session.replies(request, timeout + 5):
+            if error is not None:
+                raise RpcException(error[0], error[1], topic=self.synq_absolute_path)
+            if isinstance(value, _core.Sample):
+                if value.encoding != YAML:
+                    out.append(value.payload)
+                    continue
+                value = _core.yaml_load(value.payload)
+            out.append(values._untyped(value))
+        return out
 
-        result = cls._resolve_sync_type_uncached(path)
-        cache[path] = result
-        return result
-
-    @classmethod
-    def _resolve_sync_type_uncached(cls, path: str) -> tuple[type, ...] | None:
-        segments = path.strip("/").split("/")
-        current_cls = cls
-
-        for i, segment in enumerate(segments):
-            if not dataclasses.is_dataclass(current_cls):
-                return None
-
-            hints = typing.get_type_hints(current_cls)
-            if segment not in {f.name for f in dataclasses.fields(current_cls)}:
-                return None
-
-            annotation = hints.get(segment)
-            if annotation is None:
-                return None
-
-            origin = get_origin(annotation)
-            inner_types = (
-                tuple(get_args(annotation))
-                if origin is Union or origin is _types.UnionType
-                else (annotation,)
-            )
-
-            if i == len(segments) - 1:
-                return inner_types  # caller does isinstance(obj, inner_types)
-
-            dc_types = [
-                t
-                for t in inner_types
-                if isinstance(t, type) and dataclasses.is_dataclass(t)
-            ]
-            if not dc_types:
-                return None
-            current_cls = dc_types[0]
-
-        return None
-
-    @classmethod
-    def valid_sync_type(cls, path: str, obj: object) -> bool:
-        """Returns True if obj matches the expected type(s) at the given sync path."""
-        inner_types = cls._resolve_sync_type(path)
-        if inner_types is None:
-            return False
-        return isinstance(obj, inner_types)
-
-    @classmethod
-    def to_yaml(cls, representer, data):
-        skip = cls.all_skip_rehydrate()
-        # Reuse valid_sync_paths to get the top-level field names to serialize
-        # (only direct fields, not nested paths)
-        syncable = {p for p in cls.valid_sync_paths() if "/" not in p}
-        field_names = {
-            f.name
-            for f in fields(cls)
-            if f.name not in skip and f.name in syncable and not f.name.startswith("_")
-        }
-        yaml_tag = getattr(cls, "yaml_tag", f"!{cls.__name__}")
-        return representer.represent_mapping(
-            yaml_tag,
-            {
-                f.name: getattr(data, f.name)
-                for f in fields(data)
-                if f.name in field_names
-            },
-        )
-
-    def sync_dumps(self) -> str:
-        """Canonical yaml representation of this object"""
-        assert self.synq_session
-        return self.synq_session.type_registry.dumps(self)
-
-    def __setstate__(self, state):
-        # Routes through __init__ -> __post_init__ on yaml deserialize
-        self.__init__(**state)
-
-    def close(self):
-        """Undeclare all zenoh resources and disconnect event handlers."""
-        try:
-            self.events.disconnect(self._zenoh_publish_changes)
-        except Exception:
-            pass
-
-        pub = getattr(self, "synq_publisher", None)
-        if pub is not None and self.synq_authoritive:
-            # Tombstone: through the object's own publisher, continuing the
-            # source_sn sequence of its field puts.
-            try:
-                source_info = (
-                    self.synq_session.source_info(source_id=pub.id)
-                    if self.synq_session
-                    else None
-                )
-                pub.delete(source_info=source_info)
-                self.synq_is_deleted = True
-            except Exception:
-                pass
-
-        sub = getattr(self, "synq_subscriber", None)
-        if sub is not None:
-            try:
-                sub.undeclare()
-            except Exception:
-                pass
-            self.synq_subscriber = None
-
-        pub = getattr(self, "synq_publisher", None)
-        if pub is not None:
-            try:
-                pub.undeclare()
-            except Exception:
-                pass
-            self.synq_publisher = None
-
-        for queryable in list(getattr(self, "_synq_callbacks", {}).values()):
-            try:
-                queryable.undeclare()
-            except Exception:
-                pass
-        if hasattr(self, "_synq_callbacks"):
-            self._synq_callbacks.clear()
+    def close(self) -> None:
+        """Release the object's network resources. An owner's mirrors see it go away."""
+        object_id = getattr(self, "_synq_id", None)
+        if object_id is None:
+            return
+        self._synq_id = None
+        with contextlib.suppress(Exception):
+            self.events.disconnect(self._synq_on_event)
+        self.synq_session._forget(object_id)
 
     def __del__(self):
+        with contextlib.suppress(Exception):
+            self.close()
+
+    def __str__(self) -> str:
+        shown = ", ".join(f"{f.name}={getattr(self, f.name)!r}" for f in self.synq_fields())
+        name, path = type(self).__name__, self.synq_absolute_path
+        return f"{name}({path!r}, {shown})" if shown else f"{name}({path!r})"
+
+    __hash__ = object.__hash__
+
+    # --- paths --------------------------------------------------------------------------------
+
+    def _synq_get(self, path: str):
+        obj = self
+        for name in path.split("/"):
+            if obj is None:
+                return None
+            obj = getattr(obj, name)
+        return obj
+
+    def _synq_set(self, path: str, value) -> bool:
+        """Set the attribute at `path`; `False` if a dataclass holding it is `None`."""
+        *parents, name = path.split("/")
+        obj = self
+        for parent in parents:
+            obj = getattr(obj, parent)
+            if obj is None:
+                return False
+        setattr(obj, name, value)
+        return True
+
+    # --- going out ----------------------------------------------------------------------------
+
+    def _synq_on_event(self, info: EmissionInfo) -> None:
+        steps = info.path
+        if any(not step.attr for step in steps):
+            path = steps[0].attr  # a container changed in place: send it whole
+        else:
+            path = "/".join(step.attr for step in steps)
+        plan = _plan(type(self))
+        if path not in plan or getattr(self, "_synq_id", None) is None:
+            return
+        self._synq_changed(path, self._synq_get(path))
+
+    def _synq_changed(self, path: str, value) -> None:
+        mode = _mode()
+        if mode == NORMAL:
+            self._synq_send(path, value)
+        elif mode == LOCAL and not _plan(type(self))[path].hooked:
+            self.synq_session.node.set_field_local(
+                self._synq_id, type(self).synq_key_of(path), to_value(value)
+            )
+        if self.synq_authoritive:
+            self._synq_callbacks("owner", path, value)
+
+    def _synq_send(self, path: str, value) -> None:
+        cls = type(self)
+        node, key = self.synq_session.node, cls.synq_key_of(path)
+        before = _plan(cls)[path].before_send
+        if before is None:
+            node.set_field(self._synq_id, key, to_value(value))
+            return
+        sample = Sample()
+        sample._send = lambda s: node.send_raw(self._synq_id, key, s)
+        holder = self._synq_get(path.rpartition("/")[0]) if "/" in path else self
+        before(holder, value, sample)
+        if sample._send is not None:
+            raise RuntimeError(f"{path}_before_send returned without sending")
+
+    def _synq_callbacks(self, side: str, path: str, value) -> None:
+        _, callbacks = type(self)._synq_member_map()
+        for callback in callbacks:
+            if callback.side != side or path not in callback.fields:
+                continue
+            running = _running()
+            token = (id(self), id(callback))
+            if token in running:
+                continue  # setting the watched field in its own callback doesn't run it again
+            running.add(token)
+            try:
+                with _applying(NORMAL if side == "owner" else LOCAL):
+                    callback.run(self, path, value)
+            finally:
+                running.discard(token)
+
+    # --- coming in ----------------------------------------------------------------------------
+
+    def _synq_notice(self, notice) -> None:
+        if isinstance(notice, _core.Incoming):
+            self._synq_incoming(notice)
+        elif isinstance(notice, _core.BadData):
+            self._synq_bad(notice.path, notice.reason)
+        elif isinstance(notice, _core.Rehydrated):
+            self._synq_rehydrated(notice.complete)
+        elif isinstance(notice, _core.Alive):
+            self.synq_signal_alive.emit(notice.alive)
+        elif isinstance(notice, _core.Listeners):
+            self.synq_signal_listeners.emit(notice.path, notice.listening)
+
+    def _synq_bad(self, path: str, reason: str) -> None:
+        logger.warning(f"{self.synq_absolute_path}: dropped a value for {path}: {reason}")
+        self.synq_signal_bad_data.emit(path, reason)
+
+    def _synq_path_of(self, key: str) -> str:
+        return key
+
+    def _synq_incoming(self, notice: _core.Incoming) -> None:
+        path = self._synq_path_of(notice.path)
+        f = _plan(type(self)).get(path)
+        if f is None:
+            return
+        data = notice.data
+        wire = None
         try:
-            logger.trace(f"Deleting object at {self.synq_absolute_path}")
-        except AttributeError:
-            pass
-        self.close()
+            if isinstance(data, _core.Sample):
+                # Only a field with a Python after_receive gets its samples as they are.
+                holder = self._synq_get(path.rpartition("/")[0]) if "/" in path else self
+                sample = Sample(data.payload, data.encoding, data.attachment, f.hint)
+                value = from_value(to_value(f.after_receive(holder, sample)), f.hint)
+            else:
+                wire = data
+                value = from_value(wire, f.hint)
+        except Exception as e:
+            self._synq_bad(path, str(e))
+            return
+        if self.synq_authoritive:
+            with _applying(NORMAL):
+                if not self._synq_set(path, value):
+                    self._synq_bad(path, "the dataclass holding it is None")
+            return
+        if wire is not None and not f.hooked:
+            try:
+                changed = self.synq_session.node.set_field_local(self._synq_id, notice.path, wire)
+            except _core.SynqError as e:
+                self._synq_bad(path, str(e))
+                return
+            if not changed and self._synq_same(path, wire):
+                return
+        self._synq_apply(path, value)
+        self._synq_callbacks("mirror", path, value)
+
+    def _synq_same(self, path: str, wire) -> bool:
+        try:
+            return to_value(self._synq_get(path)) == wire
+        except TypeError:
+            return False
+
+    def _synq_apply(self, path: str, value) -> None:
+        """Set a mirror's copy of a field to what the core already holds."""
+        f = _plan(type(self))[path]
+        if self.synq_follow_links:
+            value = self._synq_follow(path, value, f.hint)
+        with _applying(QUIET):
+            if not self._synq_set(path, value):
+                self._synq_bad(path, "the dataclass holding it is None")
+        if any(e.get("role") == "on_change_mirror" for e in self._synq_wasm().values()):
+            self._synq_refresh()
+
+    def _synq_wasm(self) -> dict:
+        return get_schema(type(self)).get("x-wasm", {})
+
+    def _synq_refresh(self) -> None:
+        """Bring the attributes in line with the core's copy, after WASM code set fields."""
+        cls = type(self)
+        plan = _plan(cls)
+        node = self.synq_session.node
+        for f in cls.synq_fields():
+            if plan[f.name].hooked:
+                continue
+            wire = node.field(self._synq_id, cls.synq_key_of(f.name))
+            if wire is None or self._synq_same(f.name, wire):
+                continue
+            try:
+                value = from_value(wire, plan[f.name].hint)
+            except BadValue as e:
+                self._synq_bad(f.name, str(e))
+                continue
+            if self.synq_follow_links and not self.synq_authoritive:
+                value = self._synq_follow(f.name, value, plan[f.name].hint)
+            with _applying(QUIET):
+                setattr(self, f.name, value)
+
+    def _synq_rehydrated(self, complete: bool) -> None:
+        if complete:
+            self._synq_ready.set()
+            return
+        linked = self._synq_linked_from
+        if linked is None or self.synq_alive:
+            return
+        parent = linked[0]()
+        if parent is not None:
+            parent._synq_not_found(linked[1], self)
+
+    # --- links --------------------------------------------------------------------------------
+
+    def _synq_follow(self, path: str, value, hint):
+        """`value` with each `Link` in it replaced by a mirror of its target."""
+        if isinstance(value, Link) and not isinstance(value, ObjectNotFound):
+            target = _link_class(hint)
+            if target is None:
+                return value
+            return self._synq_mirror_of(path, value.topic, target)
+        if isinstance(value, list):
+            item = (typing.get_args(hint) or (Any,))[0]
+            return [self._synq_follow(path, v, item) for v in value]
+        if isinstance(value, dict):
+            args = typing.get_args(hint)
+            item = args[1] if len(args) > 1 else Any
+            return {k: self._synq_follow(path, v, item) for k, v in value.items()}
+        return value
+
+    def _synq_mirror_of(self, path: str, topic: str, cls: type) -> SyncableObject:
+        mirror = self._synq_links.get(topic)
+        if mirror is None or not isinstance(mirror, cls) or mirror._synq_id is None:
+            mirror = cls.from_topic(topic, session=self.synq_session, wait=False)
+            mirror._synq_linked_from = (weakref.ref(self), path)
+            self._synq_links[topic] = mirror
+        return mirror
+
+    def _synq_not_found(self, path: str, mirror: SyncableObject) -> None:
+        """A followed link's target isn't served: put a placeholder where its mirror was."""
+        topic = mirror.synq_absolute_path
+        if self._synq_links.get(topic) is not mirror:
+            return
+        del self._synq_links[topic]
+        placeholder = ObjectNotFound(topic)
+        cls = type(mirror)
+        mirror.close()
+
+        def rebind(timeout):
+            found = cls.from_topic(topic, session=self.synq_session, timeout=timeout)
+            found._synq_linked_from = (weakref.ref(self), path)
+            self._synq_links[topic] = found
+            self._synq_replace(path, placeholder, found)
+            return found
+
+        object.__setattr__(placeholder, "_rebind", rebind)
+        self._synq_replace(path, mirror, placeholder)
+
+    def _synq_replace(self, path: str, old, new) -> None:
+        def swap(value):
+            if value is old:
+                return new
+            if isinstance(value, list):
+                return [swap(v) for v in value]
+            if isinstance(value, dict):
+                return {k: swap(v) for k, v in value.items()}
+            return value
+
+        with _applying(QUIET):
+            self._synq_set(path, swap(self._synq_get(path)))
+
+    # --- WASM ---------------------------------------------------------------------------------
+
+    def _synq_run_wasm(self, code: WasmFunction, args: tuple, kwargs: dict):
+        given = {k: to_value(v) for k, v in call_args(code.func, args, kwargs).items()}
+        try:
+            result = self.synq_session.node.run_wasm(self._synq_id, code.name, given)
+        except _core.SynqError as e:
+            raise RuntimeError(str(e)) from None
+        self._synq_refresh()
+        return from_value(result, hints_of(code.func).get("return", Any))
+
+    async def _synq_run_wasm_async(self, code: WasmFunction, args: tuple, kwargs: dict):
+        return await asyncio.to_thread(self._synq_run_wasm, code, args, kwargs)
+
+    # --- serving calls ------------------------------------------------------------------------
+
+    def _synq_serve(self, call: _core.Call) -> None:
+        methods, _ = type(self)._synq_member_map()
+        method = methods.get(call.method)
+        if method is None:
+            self.synq_session.node.reply_error(call.query, "LookupError", "no such method")
+            return
+        method.serve(self, call)
 
 
-_GENERIC_RESERVED_FIELDS = {f.name for f in dataclasses.fields(SyncableObject)}
+def _link_class(hint) -> type | None:
+    """The syncable class a link field's annotation names."""
+    if isinstance(hint, type) and issubclass(hint, SyncableObject):
+        return hint
+    if typing.get_origin(hint) in (typing.Union, types.UnionType):
+        for arg in typing.get_args(hint):
+            if isinstance(arg, type) and issubclass(arg, SyncableObject):
+                return arg
+    return None
 
 
-def make_generic_syncable_class(name: str, field_names: list) -> type:
-    """Build a SyncableObject subclass with *field_names*, each typed ``object``.
+@functools.cache
+def _untyped_class(type_id: str, names: tuple[str, ...]) -> type:
+    fields = [(n, Any, field(default=None)) for n in names]
+    name = type_id.rsplit(".", 1)[-1].rsplit(":", 1)[-1] or "Untyped"
+    cls = dataclasses.make_dataclass(name if name.isidentifier() else "Untyped", fields,
+                                     bases=(SyncableObject,))  # fmt: skip
+    return cls
 
-    Used by ``Session.from_topic_untyped`` to mirror objects whose real
-    dataclass isn't importable in this process (e.g. a peer written in
-    another language, or a class this process never imported). Skips names
-    that collide with SyncableObject's own fields, since those are always
-    supplied positionally/by keyword by the sync machinery itself.
-    """
-    fields_spec = [
-        (fname, object, dataclasses.field(default=None))
-        for fname in field_names
-        if fname.isidentifier()
-        and not fname.startswith("_")
-        and fname not in _GENERIC_RESERVED_FIELDS
-    ]
-    return dataclasses.make_dataclass(name, fields_spec, bases=(SyncableObject,))
+
+def untyped_class(schema: dict) -> type:
+    """A syncable class made from a served schema: its fields, typed `Any`."""
+    names = tuple(
+        n for n in schema.get("properties", {}) if n.isidentifier() and not n.startswith("synq_")
+    )
+    cls = _untyped_class(schema["$id"], names)
+    cls._synq_schema = schema
+    return cls

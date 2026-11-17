@@ -712,3 +712,12 @@ methods can be tested end to end). Each is tested before the next starts.
   `recording_reliability = qos.reliable` (default `qos.drop`, best effort), `voltage_ignore_incoming = True`,
   `image_lazy = True`. Settings are fixed at class definition, never changed at run time.
 - Packaging: maturin, platform wheels, and the CI workflows the project template owns.
+
+- **On-demand fields** (decided 2026-11-17, for camera frames; to build). A field whose key
+  chunk starts with `@` (`transport_jpeg/@data`) is a stream, not state: zenoh's wildcards never
+  match a verbatim `@` chunk, mirrors don't subscribe to it when they open, and the state fetch
+  leaves it out. A mirror subscribes when asked (counted holds) and may then fetch its last
+  value. On the owner it is lazy and ignores incoming writes, so its listener status says
+  whether anyone wants it. In Python, `<field>_on_demand = True` names the key `@<field>`; the
+  attribute keeps its name. It's in the schema, as the property's name, so every binding knows.
+  `sample.send(..., priority=, reliable=)` may override the field's QoS for one sample.

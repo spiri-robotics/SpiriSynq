@@ -1,55 +1,47 @@
-import zenoh
-import socket
+"""`Session`: one connection to the zenoh network, with the SpiriSynq core on it.
+
+Most programs use the default session, `current_session.get()`, opened on first use. Open your
+own for a custom zenoh configuration, or to join several networks from one process.
+
+Threads: the core's notices come out on a *pump* thread, which hands replies to the calls
+waiting for them, and everything else to the *callback* thread, in order. Field changes,
+signals and callbacks run there: SpiriSynq's network thread. Remote methods called on an owner
+run on a pool of worker threads, so a slow one doesn't hold up the others.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import atexit
+import concurrent.futures
+import contextlib
+import json
 import os
-from pathlib import Path
-from deepdiff import DeepDiff, Delta
-from dataclasses import dataclass, field
-from typing import get_type_hints, get_origin, get_args
-from SpiriSynq.remote_callables import rpc_call
-from SpiriSynq.shutdown import register_session
-from SpiriSynq.codecs import Codec, BUILTIN_CODECS
-from SpiriSynq.serializer import SessionSerializer
-from SpiriSynq.link import Link
-from loguru import logger
+import queue
+import socket
+import threading
+import time
 import weakref
-from contextvars import ContextVar
-from contextlib import contextmanager
-from collections import defaultdict
-from psygnal.containers import EventedList, EventedDict, EventedSet
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+from loguru import logger
 
-def _represent_evented_list(representer, data):
-    return representer.represent_sequence("!EventedList", list(data))
+from SpiriSynq import _core
+from SpiriSynq.link import check_topic
 
+if TYPE_CHECKING:
+    from SpiriSynq.syncable_objects import SyncableObject
 
-def _construct_evented_list(constructor, node):
-    return EventedList(constructor.construct_sequence(node, deep=True))
+_REQUEST_NOTICES = (_core.Reply, _core.RequestEnded, _core.Discovered, _core.SchemaFetched)
 
-
-def _represent_evented_dict(representer, data):
-    return representer.represent_mapping("!EventedDict", dict(data))
-
-
-def _construct_evented_dict(constructor, node):
-    return EventedDict(constructor.construct_mapping(node, deep=True))
-
-
-def _represent_evented_set(representer, data):
-    return representer.represent_sequence("!EventedSet", list(data))
-
-
-def _construct_evented_set(constructor, node):
-    return EventedSet(constructor.construct_sequence(node, deep=True))
 
 def _default_base_topic() -> str:
     if (override := os.getenv("SPIRI_SYNQ_BASE_TOPIC")) is not None:
         return override
-    # Prefer /etc/spirisynq_base_topic (the host's /etc/hostname, bind-
-    # mounted here by our compose templates rather than over the
-    # container's own /etc/hostname, which would break hostname/etc-hosts
-    # consistency for anything else in the container) over
-    # socket.gethostname(): inside a container the kernel hostname is
-    # per-container, not per-UAV, so it drifts from the host's.
+    # The host's /etc/hostname, bind-mounted here into containers: a container's own
+    # hostname is per container, not per machine.
     try:
         if name := Path("/etc/spirisynq_base_topic").read_text().strip():
             return name
@@ -58,365 +50,311 @@ def _default_base_topic() -> str:
     return socket.gethostname()
 
 
-@dataclass
 class Session:
-    """A connection to the Zenoh network.
+    """A connection to the zenoh network.
 
-    Most applications use the module-level default session created at import time
-    and never construct a ``Session`` directly. You only need to create one explicitly
-    if you want to connect with custom Zenoh config, or to connect to multiple
-    independent Zenoh networks from the same process.
-
-    The session opens a Zenoh peer connection on construction and closes it on
-    garbage collection. For deterministic cleanup, call :meth:`close` explicitly.
-
-    Example — custom config::
-
-        import zenoh
-        from SpiriSynq.session import Session
-
-        config = zenoh.Config.from_file("zenoh.json5")
-        session = Session(config=config)
-        counter = Counter("myapp/counter", synq_session=session, synq_authoritive=True)
-
-    Example — multiple sessions::
-
-        session_a = Session()
-        session_b = Session()
-
-        with session_b.as_default():
-            # Objects created here use session_b
-            mirror = Counter.from_topic("myhost/myapp/counter")
+    `config` is zenoh's configuration, as a dict or JSON5 text; by default, zenoh's own
+    defaults (peer mode, finding peers by multicast). `call_timeout` is how long, in seconds, a
+    remote call waits when its method doesn't say.
     """
 
-    config: zenoh.Config = field(default_factory=zenoh.Config)
-    """Zenoh configuration. Defaults to peer-mode auto-discovery with no router."""
-    base_topic: str = field(default_factory=_default_base_topic)
-    """Topic prefix prepended to all authoritative objects on this session.
-    Defaults to, in order: the ``SPIRI_SYNQ_BASE_TOPIC`` environment variable, the
-    contents of ``/etc/spirisynq_base_topic`` (e.g. the host's ``/etc/hostname``
-    bind-mounted into a container), then the hostname."""
-    type_registry: SessionSerializer = field(default_factory=SessionSerializer)
-    """YAML serialiser/deserialiser used for all payloads on this session.
-    Types are registered here by :meth:`register_type_recursive`."""
-    zenoh_session: zenoh.Session = field(init=False)
-    """The underlying Zenoh session. Available after construction."""
-    objects: weakref.WeakValueDictionary = field(
-        default_factory=weakref.WeakValueDictionary
-    )
-    """Weak map of ``absolute_path → SyncableObject`` for all live objects on this session."""
-    _sequence_number_for_source: dict[tuple, int] = field(default_factory=lambda: defaultdict(int))
-    """Next ``source_sn`` per source entity, keyed by ``(zid, eid)``. See :meth:`source_info`."""
-    _codecs: list = field(default_factory=list, repr=False)
-    """Custom codecs registered via :meth:`register_codec`."""
-    _generic_classes: dict = field(default_factory=dict, repr=False)
-    """Cache of tag-tuple -> synthesized class, populated by :meth:`from_topic_untyped`."""
+    def __init__(
+        self,
+        config: dict | str | None = None,
+        *,
+        base_topic: str | None = None,
+        call_timeout: float = 10.0,
+        wasm_timeout: float = 1.0,
+        wasm_memory_mib: int = 64,
+    ):
+        if config is None:
+            config = {}
+        if isinstance(config, dict):
+            config = json.dumps(config)
+        self.base_topic = base_topic if base_topic is not None else _default_base_topic()
+        self.call_timeout = call_timeout
+        self.node = _core.Node(config, wasm_timeout=wasm_timeout, wasm_memory_mib=wasm_memory_mib)
+        self._lock = threading.RLock()
+        self._objects: weakref.WeakValueDictionary[_core.ObjectId, SyncableObject] = (
+            weakref.WeakValueDictionary()
+        )
+        self._requests: dict[_core.RequestId, queue.SimpleQueue] = {}
+        self._callbacks: queue.SimpleQueue = queue.SimpleQueue()
+        self._closed = threading.Event()
+        self._workers = concurrent.futures.ThreadPoolExecutor(32, "SpiriSynq call")
+        self._pump = threading.Thread(target=self._run_pump, name="SpiriSynq pump", daemon=True)
+        self._callback_thread = threading.Thread(
+            target=self._run_callbacks, name="SpiriSynq network", daemon=True
+        )
+        self._pump.start()
+        self._callback_thread.start()
+        _live.add(self)
+        logger.debug(f"opened session {self.node.zid}")
 
-    @contextmanager
-    def as_default(self: "Session"):
-        """Context manager that makes this session the default for the current thread/task.
+    @property
+    def zid(self) -> str:
+        """This session's zenoh id."""
+        return self.node.zid
 
-        Any ``SyncableObject`` constructed inside the block that does not pass
-        ``synq_session=`` explicitly will use this session instead of the
-        module-level default.
-
-        Can also be used as a plain context manager around a block of code::
-
-            session2 = Session()
-            with session2.as_default():
-                mirror = Counter.from_topic("myhost/myapp/counter")
-                # mirror was created on session2
-        """
+    @contextlib.contextmanager
+    def as_default(self):
+        """Make this the session objects use when they aren't given one, inside the block."""
         token = current_session.set(self)
         try:
             yield self
         finally:
             current_session.reset(token)
 
-    def is_class_registered(self, cls):
-        """Return True if *cls* has been registered with this session's type registry."""
-        representer_registered = cls in self.type_registry.representer.yaml_representers
-        tag = getattr(cls, "yaml_tag", None)
-        constructor_registered = (
-            tag in self.type_registry.constructor.yaml_constructors if tag else False
-        )
-        return representer_registered and constructor_registered
-
     def resolve_topic(self, topic: str) -> str:
-        """Expand a leading ``.`` chunk to :attr:`base_topic` and validate the result.
+        """`topic` with a leading `.` chunk replaced by the base topic, checked.
 
-        ``./camera`` resolves to ``<base_topic>/camera`` and ``.`` alone to the base
-        topic itself, so ``./camera`` and ``myhost/camera`` name the same key. Topics
-        without a leading ``.`` are returned unchanged. ``.`` anywhere else, and
-        ``..`` anywhere, raise :class:`ValueError` — ``.`` is a valid literal Zenoh
-        chunk, so an unexpanded marker must never reach the network.
+        `./camera` is `<base_topic>/camera`. `ValueError` if the result isn't a topic.
         """
         chunks = topic.split("/")
         if chunks[0] == ".":
             chunks[0] = self.base_topic
         resolved = "/".join(chunks)
-        if {".", ".."} & set(resolved.split("/")):
+        try:
+            return check_topic(resolved)
+        except ValueError:
             raise ValueError(
-                f"Invalid topic {topic!r}: '.' is only allowed as the first chunk, '..' is not allowed"
-            )
-        try:
-            zenoh.KeyExpr(resolved)
-        except Exception as e:
-            raise ValueError(f"Invalid topic {topic!r}: {e}") from None
-        return resolved
+                f"Invalid topic {topic!r}: '.' is only allowed as the first chunk, and a topic "
+                f"has no empty chunks, '..', or any of '*$?#'"
+            ) from None
 
-    def from_topic(self, topic):
-        """Fetch and return the current state of an object at *topic* via ``sr_rehydrate``.
+    # --- objects --------------------------------------------------------------------------
 
-        The type must already be registered with this session (call
-        :meth:`register_type_recursive` first, or use ``SyncableObject.from_topic``
-        which handles registration automatically).
+    def _register(self, open_object, obj: SyncableObject) -> _core.ObjectId:
+        """Open an object in the core with `open_object()`, and route its notices to `obj`."""
+        with self._lock:
+            object_id = open_object()
+            self._objects[object_id] = obj
+        return object_id
 
-        Returns the deserialised object. The concrete type depends on the YAML tag
-        in the reply, so the return type is ``Any``. *topic* may be relative
-        (``./camera``); see :meth:`resolve_topic`.
-        """
-        topic = self.resolve_topic(topic)
-        new_obj = rpc_call(f"{topic}/sr_rehydrate", self)
-        return new_obj
+    def _object(self, object_id: _core.ObjectId) -> SyncableObject | None:
+        with self._lock:
+            return self._objects.get(object_id)
 
-    def from_topic_untyped(self, topic: str):
-        """Mirror an object at *topic* without its dataclass being importable here.
+    def _forget(self, object_id: _core.ObjectId) -> None:
+        with self._lock:
+            self._objects.pop(object_id, None)
+        with contextlib.suppress(_core.SynqError):
+            self.node.close_object(object_id)
 
-        Discovers the object's field names (``sr_object_schema``) and wire type
-        tags (``sr_metadata``), synthesizes a matching ``SyncableObject``
-        subclass with every field typed ``object``, registers it for those
-        tags, and returns a mirror -- same as :meth:`from_topic`, but for
-        types this process never defined or imported (e.g. a peer written in
-        another language, or a dynamically-defined class on the authoritative
-        side).
+    # --- requests -------------------------------------------------------------------------
 
-        Nested custom dataclass fields still decode to whatever type tag they
-        carry on the wire; if that type also isn't registered here, decoding
-        those nested values will fail. Only the object's own top-level fields
-        are guaranteed to work generically.
-        """
-        from SpiriSynq.syncable_objects import make_generic_syncable_class
+    def _request_queue(self, request: _core.RequestId) -> queue.SimpleQueue:
+        with self._lock:
+            q = self._requests.get(request)
+            if q is None:
+                q = self._requests[request] = queue.SimpleQueue()
+            return q
 
-        topic = self.resolve_topic(topic)
-        metadata = rpc_call(f"{topic}/sr_metadata", self)
-        schema = rpc_call(f"{topic}/sr_object_schema", self)
-        tags = metadata.get("classes") or [f"!{topic.rsplit('/', 1)[-1]}"]
-        field_names = list(schema.get("properties", {}).keys())
-
-        cache_key = tuple(tags)
-        cls = self._generic_classes.get(cache_key)
-        if cls is None:
-            class_name = tags[0].lstrip("!") or "UntypedObject"
-            cls = make_generic_syncable_class(class_name, field_names)
-            cls.yaml_tag = tags[0]
-            self.register_type_recursive(cls)
-            for tag in tags[1:]:
-                if tag not in self.type_registry.constructor.yaml_constructors:
-                    self.type_registry.constructor.add_constructor(
-                        tag,
-                        lambda loader, node, _cls=cls: loader.construct_yaml_object(node, _cls),
-                    )
-            self._generic_classes[cache_key] = cls
-
-        return self.from_topic(topic)
-
-    def list_topics(self, type_filter: str = "", prefix: str = ""):
-        """Yield metadata dicts for all objects currently discoverable on the network.
-
-        Queries ``**/sr_metadata/<type_filter>`` and yields one dict per reply.
-        Each dict contains at minimum ``topic``, ``classes``, and ``authoritive_node``.
-
-        Args:
-            type_filter: If given, only topics whose class list includes this type
-                name (without the ``!`` YAML tag prefix) are returned.
-            prefix: Restrict the search to topics under this key prefix. May be
-                relative (``.`` for this session's own objects).
-
-        Example::
-
-            for meta in session.list_topics(type_filter="Counter"):
-                print(meta["topic"])
-
-        Works identically to ``synq topic list`` on the CLI.
-        """
-        if prefix:
-            prefix = self.resolve_topic(prefix)
-        query_topic = (
-            f"{prefix}/**/sr_metadata/{type_filter}"
-            if prefix
-            else f"**/sr_metadata/{type_filter}"
-        )
-        query_topic = query_topic.strip("/").removesuffix("/")
-
-        replies = self.zenoh_session.get(
-            query_topic, consolidation=zenoh.ConsolidationMode.NONE
-        )
-        for reply in replies:
-            if reply.ok:
-                raw = reply.ok.payload.to_bytes().decode("utf-8")
-                # parse YAML into dict
-                metadata = self.type_registry.load(raw)
-                logger.debug(f"Found topic: {metadata}")
-                yield metadata
-            else:
-                assert reply.err, "Reply not OK and no reply err. Weird." #Begone type checker
-                logger.warning(
-                    f"Error reply in list_topics: {reply.err.payload.to_string()}"
-                )
-
-    def register_type_recursive(self, cls: type) -> None:
-        """Register *cls* and every type reachable from its field annotations.
-
-        Walks all type hints transitively. For each type:
-
-        - Already representable (via MRO against the YAML representer) → skip.
-        - Otherwise → assign a yaml_tag if missing, call register_class, then
-          verify it took. Raises TypeError if a type cannot be registered so
-          the problem surfaces at sync() time rather than at first serialisation.
-        """
-        visited: set[type] = set()
-
-        def _is_representable(t: type) -> bool:
-            rep = self.type_registry.representer
-            return t in rep.yaml_representers
-
-        def _register(t: type) -> None:
-            if not isinstance(t, type) or t in visited:
-                return
-            visited.add(t)
-
-            if not _is_representable(t):
-                # Its own tag, not one inherited from an already-registered base:
-                # that would serialize the subclass as its base.
-                if "yaml_tag" not in t.__dict__:
-                    t.yaml_tag = f"!{t.__name__}"
-                self.type_registry.register_class(t)
-                if not _is_representable(t):
-                    raise TypeError(
-                        f"{t.__qualname__!r} cannot be YAML-serialized. "
-                        f"Add to_yaml / from_yaml class methods or register a "
-                        f"custom representer/constructor before calling sync()."
-                    )
-
+    def _take(self, request, deadline: float | None):
+        q = self._request_queue(request)
+        while True:
+            wait = 0.1 if deadline is None else min(0.1, deadline - time.monotonic())
+            if wait <= 0:
+                with self._lock:
+                    self._requests.pop(request, None)
+                raise TimeoutError("no reply in time")
             try:
-                hints = get_type_hints(t)
-            except Exception:
-                hints = {}
+                return q.get(timeout=wait)
+            except queue.Empty:
+                if self._closed.is_set():
+                    raise RuntimeError("the session is closed") from None
 
-            skip: set[str] = set()
-            for c in getattr(t, "__mro__", [t]):
-                for attr in ("synq_skip_sync", "synq_skip_rehydrate"):
-                    if attr in c.__dict__:
-                        skip.update(c.__dict__[attr])
-
-            for field_name, hint in hints.items():
-                # Same rule as valid_sync_paths/to_yaml: '_' fields never go on the wire.
-                if field_name in skip or field_name.startswith("_"):
-                    continue
-                _register_annotation(hint)
-
-        def _register_annotation(annotation) -> None:
-            if annotation is object:
-                # Bare `object` (used by synthesized generic/untyped fields) is
-                # never representable on its own and can't take a yaml_tag --
-                # it just means "accept anything", so there's nothing to register.
+    def notices(self, request, timeout: float | None) -> Iterator:
+        """A request's notices, until it ends."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            notice = self._take(request, deadline)
+            if isinstance(notice, _core.RequestEnded):
+                with self._lock:
+                    self._requests.pop(request, None)
+                if notice.end == "cut_short":
+                    raise TimeoutError("the call was cut short: no answer in time")
                 return
-            origin = get_origin(annotation)
-            if origin is None:
-                if isinstance(annotation, type):
-                    _register(annotation)
-            else:
-                for arg in get_args(annotation):
-                    if isinstance(arg, type):
-                        _register(arg)
+            yield notice
 
-        _register(cls)
+    def replies(self, request, timeout: float | None) -> Iterator[tuple[Any, Any]]:
+        """A call's replies as `(value, error)`, until it ends. `TimeoutError` if it's cut
+        short."""
+        for notice in self.notices(request, timeout):
+            yield notice.value, notice.error
 
-    def register_codec(self, codec: "Codec") -> None:
-        """Register a custom :class:`Codec` on this session.
+    async def areplies(self, request, timeout: float | None) -> AsyncIterator[tuple[Any, Any]]:
+        """`replies`, for async code."""
+        replies = self.replies(request, timeout)
+        done = object()
+        while (item := await asyncio.to_thread(next, replies, done)) is not done:
+            yield item
 
-        The encoder is selected by matching ``codec.python_type`` against the
-        Python type of the value being published (MRO walk, most-specific first).
-        The decoder is selected by matching ``codec.zenoh_schema`` against the
-        encoding reported by an incoming zenoh sample.
+    # --- discovery ------------------------------------------------------------------------
 
-        Example::
+    def list_topics(
+        self, type_filter: str | type = "", prefix: str = "", timeout: float = 2.0
+    ) -> Iterator[dict]:
+        """The objects on the network, as metadata dicts: `topic`, `owner` (its session id),
+        `type` (its `$id`), `bases`, and `classes` (the type and its bases).
 
-            import numpy as np
-            import zenoh
-            from SpiriSynq.session import Codec, current_session
-
-            session = current_session.get()
-            session.register_codec(Codec(
-                python_type=np.ndarray,
-                zenoh_schema=zenoh.Encoding("image/jpeg"),
-                encoder=lambda arr: (encode_jpeg(arr), zenoh.Encoding("image/jpeg")),
-                decoder=lambda sample: decode_jpeg(sample.payload.to_bytes()),
-            ))
+        `type_filter` is a syncable class, a type `$id`, or a class name. `prefix` limits the
+        search to topics under it, and may be relative (`./`).
         """
-        self._codecs.append(codec)
+        from SpiriSynq.schema import type_id
 
-    def _encoder_for(self, value) -> "Codec | None":
-        """Return the first registered codec whose python_type matches type(value) via MRO."""
-        for mro_type in type(value).__mro__:
-            for codec in self._codecs:
-                if codec.python_type is mro_type:
-                    return codec
-        return None
+        type_arg = None
+        name = ""
+        if isinstance(type_filter, type):
+            type_arg = type_id(type_filter)
+        elif ":" in type_filter:
+            type_arg = type_filter
+        else:
+            name = type_filter.lstrip("!")
+        request = self.node.discover(self.resolve_topic(prefix) if prefix else None, type_arg)
+        with contextlib.suppress(TimeoutError):
+            for found in self.notices(request, timeout):
+                classes = [found.type_id, *found.bases]
+                if name and not any(_names(c, name) for c in classes):
+                    continue
+                yield {
+                    "topic": found.topic,
+                    "owner": found.owner,
+                    "type": found.type_id,
+                    "bases": list(found.bases),
+                    "classes": classes,
+                }
 
-    def _decoder_for(self, encoding) -> "Codec | None":
-        """Return the first registered codec whose zenoh_schema matches *encoding*."""
-        for codec in self._codecs:
-            if codec.zenoh_schema == encoding:
-                return codec
-        return None
+    def fetch_schema(self, topic: str, timeout: float | None = None) -> dict:
+        """The schema the object on `topic` serves. `LookupError` if nobody answers."""
+        request = self.node.fetch_schema(self.resolve_topic(topic))
+        with contextlib.suppress(TimeoutError):
+            for notice in self.notices(request, timeout or self.call_timeout):
+                if notice.error is not None:
+                    raise LookupError(f"{topic}: {notice.error[0]}: {notice.error[1]}")
+                return notice.value
+        raise LookupError(f"nothing serves {topic}")
 
-    def source_info(self, source_id=None):
-        """Build a ``zenoh.SourceInfo`` for the next sample from *source_id*.
+    def from_topic_untyped(self, topic: str, **options) -> SyncableObject:
+        """Mirror the object on `topic` without its class: one made from the schema it serves,
+        with every field typed `Any`."""
+        from SpiriSynq.syncable_objects import untyped_class
 
-        As with zenoh's own ``source_sn``, the sequence number is monotonic per
-        source entity (zid + eid), not per key, so a subscriber that sees all of
-        a publisher's samples can detect gaps and reordering. Each
-        ``SyncableObject`` publishes under its own publisher's id, so objects
-        on the same session don't share a counter."""
-        if source_id is None:
-            source_id = self.zenoh_session.id
-        key = (str(getattr(source_id, "zid", source_id)), getattr(source_id, "eid", None))
-        source_info = zenoh.SourceInfo(
-            source_id=source_id,
-            source_sn=self._sequence_number_for_source[key],
-        )
-        self._sequence_number_for_source[key] += 1
-        return source_info
+        schema = self.fetch_schema(topic)
+        return untyped_class(schema).from_topic(topic, session=self, **options)
 
-    def close(self):
+    # --- the threads ----------------------------------------------------------------------
+
+    def _run_pump(self) -> None:
+        node = self.node
+        while not self._closed.is_set():
+            notice = node.next_notice(0.2)  # None once the node is closed
+            if notice is None:
+                continue
+            if isinstance(notice, _REQUEST_NOTICES):
+                self._request_queue(notice.request).put(notice)
+            else:
+                self._callbacks.put(notice)
+        self._callbacks.put(None)
+
+    def _run_callbacks(self) -> None:
+        while True:
+            notice = self._callbacks.get()
+            if notice is None:
+                return
+            self._dispatch(notice)
+
+    def on_network_thread(self) -> bool:
+        return threading.current_thread() is self._callback_thread
+
+    def wait(self, done: threading.Event, timeout: float | None) -> bool:
+        """Wait for `done`. On the network thread, carry on handling notices meanwhile."""
+        if not self.on_network_thread():
+            return done.wait(timeout)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not done.is_set():
+            left = None if deadline is None else deadline - time.monotonic()
+            if left is not None and left <= 0:
+                return False
+            try:
+                notice = self._callbacks.get(timeout=min(0.1, left or 0.1))
+            except queue.Empty:
+                continue
+            if notice is None:
+                self._callbacks.put(None)
+                return done.is_set()
+            self._dispatch(notice)
+        return True
+
+    def _dispatch(self, notice) -> None:
+        obj = self._object(notice.object)
+        if obj is None:
+            return
         try:
-            self.zenoh_session.close()
+            if isinstance(notice, _core.Call):
+                self._workers.submit(obj._synq_serve, notice)
+            else:
+                obj._synq_notice(notice)
         except Exception:
-            pass
+            logger.exception(f"{obj.synq_absolute_path}: error handling {type(notice).__name__}")
+
+    def close(self) -> None:
+        """Close every object and the zenoh session."""
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self.node.close()
+        self._workers.shutdown(wait=False, cancel_futures=True)
+        _live.discard(self)
 
     def __del__(self):
-        self.close()
-
-    def __post_init__(self):
-        self._codecs.extend(BUILTIN_CODECS)
-        self.type_registry.representer.add_representer(EventedList, _represent_evented_list)
-        self.type_registry.representer.add_representer(EventedDict, _represent_evented_dict)
-        self.type_registry.representer.add_representer(EventedSet, _represent_evented_set)
-        self.type_registry.constructor.add_constructor("!EventedList", _construct_evented_list)
-        self.type_registry.constructor.add_constructor("!EventedDict", _construct_evented_dict)
-        self.type_registry.constructor.add_constructor("!EventedSet", _construct_evented_set)
-        self.type_registry.register_class(Link)
-        self.zenoh_session = zenoh.open(self.config)
-        logger.info(f"Started zenoh session {self.zenoh_session.zid()}")
-
-        # Register for deterministic shutdown. This does NOT keep the session
-        # alive (the registry is weak); it only lets the shutdown hook find and
-        # close it before the interpreter joins zenoh's non-daemon threads. See
-        # SpiriSynq/shutdown.py for why this, and not __del__ / atexit / context
-        # managers, is what works.
-        register_session(self)
+        with contextlib.suppress(Exception):
+            self.close()
 
 
-current_session: ContextVar[Session] = ContextVar("current_session", default=Session())
+def _names(type_id: str, name: str) -> bool:
+    """Whether a type `$id` is of a class called `name`."""
+    path = type_id.split(":")[-2] if type_id.startswith("urn:uuid:") else type_id.split(":")[-1]
+    return path == name or path.endswith(f".{name}")
+
+
+_live: weakref.WeakSet[Session] = weakref.WeakSet()
+
+
+@atexit.register
+def _close_all() -> None:
+    for session in list(_live):
+        with contextlib.suppress(Exception):
+            session.close()
+
+
+class _CurrentSession:
+    """The session objects use when they aren't given one: like a `ContextVar`, but the
+    default session opens on first use, not on import."""
+
+    def __init__(self):
+        import contextvars
+
+        self._var: contextvars.ContextVar[Session | None] = contextvars.ContextVar(
+            "current_session", default=None
+        )
+        self._default: Session | None = None
+        self._lock = threading.Lock()
+
+    def get(self) -> Session:
+        session = self._var.get()
+        if session is not None:
+            return session
+        with self._lock:
+            if self._default is None or self._default._closed.is_set():
+                self._default = Session()
+            return self._default
+
+    def set(self, session: Session):
+        return self._var.set(session)
+
+    def reset(self, token) -> None:
+        self._var.reset(token)
+
+
+current_session = _CurrentSession()

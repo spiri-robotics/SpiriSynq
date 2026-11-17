@@ -1,42 +1,54 @@
-from dataclasses import dataclass, field
+"""Presets for field settings: a field's priority (``<field>_qos``) and reliability
+(``<field>_reliability``).
 
-import zenoh
+```python
+@dataclass
+class Camera(SyncableObject):
+    image: bytes = b""
+    image_qos = qos.background
+    recording: bool = False
+    recording_reliability = qos.reliable
+```
+"""
+
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class SynqQoS:
-    """Zenoh QoS for publishes of one field.
+class Priority:
+    """A field's priority on the network: one of the presets below."""
 
-    Declare on a SyncableObject as ``<field>_qos: ClassVar[SynqQoS]``, e.g.
-    ``image_qos: ClassVar[SynqQoS] = SynqQoS(priority=zenoh.Priority.DATA_HIGH)``.
-    QoS is local to the sender; it is never synced, rehydrated or included in
-    the schema.
-    """
+    name: str
 
-    # zenoh's enums are unhashable, so they need default_factory and a custom __hash__
-    priority: zenoh.Priority = field(default_factory=lambda: zenoh.Priority.DATA)
-    congestion_control: zenoh.CongestionControl = field(
-        default_factory=lambda: zenoh.CongestionControl.DROP
-    )
-    express: bool = False
+    def __repr__(self) -> str:
+        return f"qos.{self.name}"
 
-    def __hash__(self):
-        return hash((int(self.priority), int(self.congestion_control), self.express))
 
-    def __post_init__(self):
-        # Fail at class definition rather than on the first publish.
-        if not isinstance(self.priority, zenoh.Priority):
-            raise TypeError(f"priority must be a zenoh.Priority, got {self.priority!r}")
-        if not isinstance(self.congestion_control, zenoh.CongestionControl):
-            raise TypeError(
-                f"congestion_control must be a zenoh.CongestionControl, "
-                f"got {self.congestion_control!r}"
-            )
+@dataclass(frozen=True)
+class Reliability:
+    """Whether a value lost in transit is sent again: `drop` or `reliable`."""
 
-    def put_kwargs(self) -> dict:
-        """Keyword arguments for ``zenoh.Session.put``."""
-        return {
-            "priority": self.priority,
-            "congestion_control": self.congestion_control,
-            "express": self.express,
-        }
+    reliable: bool
+
+    def __repr__(self) -> str:
+        return "qos.reliable" if self.reliable else "qos.drop"
+
+
+realtime = Priority("real_time")
+"""Control loops and anything that must not wait."""
+interactive_high = Priority("interactive_high")
+"""Values a person is waiting on."""
+interactive_low = Priority("interactive_low")
+data_high = Priority("data_high")
+data = Priority("data")
+"""The default."""
+data_low = Priority("data_low")
+background = Priority("background")
+"""Bulk data, such as images and logs."""
+
+drop = Reliability(False)
+"""Best effort: a value lost in transit stays lost. The default."""
+reliable = Reliability(True)
+"""A value lost in transit is sent again."""
+
+PRIORITIES = (realtime, interactive_high, interactive_low, data_high, data, data_low, background)
