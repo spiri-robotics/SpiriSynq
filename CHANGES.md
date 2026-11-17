@@ -4,6 +4,15 @@
 
 ### Features
 
+- **`synq` and tab completion, on the core.** Every command is back: `topic list`, `watch`,
+  `bandwidth`, `put`, `rpc`, `call`, `schema` and `rehydrate`, `zenoh info` and `scout`, and
+  `meta type_schema`, documented again on a page of their own. `--type` takes a class name or a
+  type `$id`; `topic rehydrate` prints the state as one document of fields by path; `topic call`
+  sends its arguments as the v2 call payload and exits 1 on an error, 2 on no answer.
+  `_core.Node` gains what they need beyond the engine (`put`, `watch`, `get`, `routers`), and
+  `_core.scout`. The CLI opens its session on first use, so printing a completion script opens
+  none.
+
 - **On-demand fields, for streams such as camera frames.** `<field>_on_demand = True` puts a
   field on the key `@<field>`, which zenoh's wildcards never match. Mirrors receive it only
   after `synq_subscribe(path)` (counted, and fetching the last value), the state fetch leaves it

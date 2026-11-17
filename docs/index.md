@@ -61,6 +61,7 @@ languages
 :caption: Reference
 
 type_identity
+cli
 ```
 
 ```{toctree}

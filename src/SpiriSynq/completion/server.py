@@ -1,9 +1,8 @@
 """The tab-completion server, ``synq _complete-server``: one warm process that answers Tabs.
 
-It holds a zenoh session and keeps the list of objects current by asking
-``**/sr_metadata/*`` every ``SCAN_EVERY`` seconds; the per-tag keys give
-each object's topic and tags without parsing a payload. It writes them to
-the cache for the fallback. An object's schema (its RPC methods and their
+It holds a session and keeps the list of objects current by looking for
+them every ``SCAN_EVERY`` seconds, each with the names of its types. It
+writes them to the cache for the fallback. An object's schema (its RPC methods and their
 parameters) is fetched when a Tab needs it and kept ``SCHEMA_TTL`` seconds.
 A Tab gets an answer within ``DEADLINE`` seconds: a schema that isn't back
 by then is left to arrive for the next Tab. It only ever reads metadata and
@@ -21,9 +20,10 @@ holds its pid while it runs), and it exits after ``idle`` seconds without a
 request, on SIGTERM, or after a request once its own code has changed, so
 the next Tab starts one that's up to date.
 """
+
+import contextlib
 import fcntl
 import hmac
-import json
 import os
 import secrets
 import select
@@ -33,14 +33,14 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 
-import yaml
-import zenoh
 from loguru import logger
 
 from SpiriSynq import completion
+from SpiriSynq.session import Session
 
 IDLE = 600.0
 DEADLINE = 0.3
@@ -50,35 +50,31 @@ FIRST_SCAN = 1.5
 SCHEMA_TTL = 5.0
 QUERY_TIMEOUT = 5.0
 
-METADATA = "/sr_metadata/"
 
-
-def scan(z: zenoh.Session, window: float) -> dict[str, list[str]]:
-    """Every object that answers within ``window`` seconds, with its tags, asking again as the session learns routes."""
+def scan(session: Session, window: float) -> dict[str, list[str]]:
+    """Every object that answers within ``window`` seconds, with the names of its types, asking
+    again as the session learns routes."""
     found: defaultdict[str, set[str]] = defaultdict(set)
     deadline = time.monotonic() + window
     while (remaining := deadline - time.monotonic()) > 0:
-        for reply in z.get(f"**{METADATA}*", consolidation=zenoh.ConsolidationMode.NONE, timeout=remaining):
-            if reply.ok:
-                topic, _, tag = str(reply.ok.key_expr).rpartition(METADATA)
-                found[topic].add(tag)
+        for meta in session.list_topics(timeout=remaining):
+            found[meta["topic"]].update(completion.type_name(t) for t in meta["classes"])
         time.sleep(0.1)
-    return {topic: sorted(tags) for topic, tags in found.items()}
+    return {topic: sorted(types) for topic, types in found.items()}
 
 
-def fetch_schema(z: zenoh.Session, topic: str) -> dict | None:
-    for reply in z.get(f"{topic}/sr_object_schema", timeout=QUERY_TIMEOUT):
-        if reply.ok:
-            schema = yaml.safe_load(reply.ok.payload.to_string())    # plain JSON values, by the spec
-            return schema if isinstance(schema, dict) else None
-    return None
+def fetch_schema(session: Session, topic: str) -> dict | None:
+    try:
+        return session.fetch_schema(topic, timeout=QUERY_TIMEOUT)
+    except LookupError:
+        return None
 
 
 class LiveSource:
     """What the completion callbacks complete from, inside the server."""
 
-    def __init__(self, z: zenoh.Session, cache: Path, base_topic: str):
-        self.z = z
+    def __init__(self, session: Session, cache: Path, base_topic: str):
+        self.session = session
         self.cache = cache
         self.default_base = base_topic
         self.base: str | None = None
@@ -101,13 +97,13 @@ class LiveSource:
         now = time.monotonic()
         cached = self._schemas.get(topic)
         if cached is None or cached[0] < now:
-            cached = (now + SCHEMA_TTL, self._pool.submit(fetch_schema, self.z, topic))
+            cached = (now + SCHEMA_TTL, self._pool.submit(fetch_schema, self.session, topic))
             self._schemas[topic] = cached
         try:
             return cached[1].result(timeout=max(0.0, self.deadline - time.monotonic()))
         except FutureTimeout:
             return None
-        except Exception as e:      # no object there, a bad reply: nothing to offer
+        except Exception as e:  # no object there, a bad reply: nothing to offer
             logger.debug(f"schema of {topic}: {e!r}")
             return None
 
@@ -115,7 +111,7 @@ class LiveSource:
         window = FIRST_SCAN
         while not self._stop.is_set():
             try:
-                found = scan(self.z, window)
+                found = scan(self.session, window)
             except Exception as e:
                 logger.warning(f"scanning for objects: {e!r}")
             else:
@@ -148,7 +144,8 @@ def serve(connect: list[str] = (), idle: float = IDLE, run: Path | None = None) 
     """
     run = run or completion.runtime_dir()
     run.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock = open(run / "complete.lock", "a+")
+    # Held open, and locked, for as long as the server runs.
+    lock = open(run / "complete.lock", "a+")  # noqa: SIM115
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -158,21 +155,23 @@ def serve(connect: list[str] = (), idle: float = IDLE, run: Path | None = None) 
     lock.flush()
 
     import typer
+
     from SpiriSynq import cli
-    from SpiriSynq.session import Session, _default_base_topic, current_session
+    from SpiriSynq.session import _default_base_topic, current_session
 
     # The base topic comes with each request; this one is for shells that don't set it.
     os.environ.pop("SPIRI_SYNQ_BASE_TOPIC", None)
     if connect:
-        config = zenoh.Config()
-        config.insert_json5("connect/endpoints", json.dumps(list(connect)))
-        config.insert_json5("scouting/multicast/enabled", "false")
-        session = Session(config=config)
+        config = {
+            "connect": {"endpoints": list(connect)},
+            "scouting": {"multicast": {"enabled": False}},
+        }
+        session = Session(config)
     else:
         session = current_session.get()
     watch = [Path(completion.__file__), Path(__file__), Path(cli.__file__)]
     before = mtimes(watch)
-    live = completion.source = LiveSource(session.zenoh_session, completion.cache_path(), _default_base_topic())
+    live = completion.source = LiveSource(session, completion.cache_path(), _default_base_topic())
     command = typer.main.get_command(cli.app)
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
 
@@ -185,7 +184,7 @@ def serve(connect: list[str] = (), idle: float = IDLE, run: Path | None = None) 
         os.chmod(sock_path, 0o600)
         unix.listen()
         listeners.append(unix)
-    except OSError as e:            # a path too long for a Unix socket: bash's TCP still works
+    except OSError as e:  # a path too long for a Unix socket: bash's TCP still works
         logger.warning(f"no Unix socket at {sock_path}: {e}")
         unix.close()
     tcp = socket.socket()
@@ -217,7 +216,7 @@ def serve(connect: list[str] = (), idle: float = IDLE, run: Path | None = None) 
         if unix in listeners:
             sock_path.unlink(missing_ok=True)
         tcp_path.unlink(missing_ok=True)
-        lock.truncate(0)            # a pid in the lock file is a running server
+        lock.truncate(0)  # a pid in the lock file is a running server
         live.close()
         session.close()
 
@@ -235,7 +234,9 @@ def handle(conn: socket.socket, command, live: LiveSource, token: str | None) ->
         protocol, their_token, shell, base, cur, line = data.decode().rstrip("\n").split("\t", 5)
     except (OSError, UnicodeDecodeError, ValueError):
         return
-    if protocol != completion.PROTOCOL or (token is not None and not hmac.compare_digest(their_token, token)):
+    if protocol != completion.PROTOCOL or (
+        token is not None and not hmac.compare_digest(their_token, token)
+    ):
         return
     live.base = base or None
     live.deadline = time.monotonic() + DEADLINE
@@ -244,7 +245,5 @@ def handle(conn: socket.socket, command, live: LiveSource, token: str | None) ->
     except Exception as e:
         logger.exception(f"completing {line!r}: {e!r}")
         return
-    try:
+    with contextlib.suppress(OSError):  # the shell gave up waiting
         conn.sendall((reply + "\n").encode() if reply else b"")
-    except OSError:
-        pass

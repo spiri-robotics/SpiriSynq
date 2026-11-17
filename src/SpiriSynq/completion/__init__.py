@@ -15,10 +15,10 @@ server for the next Tab.
 
 What completes:
 
-- a topic, one ``/`` chunk at a time, from every object answering
-  ``**/sr_metadata``; ``./`` stands for the base topic, as ``resolve_topic``
-  reads it.
-- a type tag (``--type``, ``meta type_schema``), from the same replies.
+- a topic, one ``/`` chunk at a time, from every object found on the
+  network; ``./`` stands for the base topic, as ``resolve_topic`` reads it.
+- a type (``--type``, ``meta type_schema``), from the same objects: its class
+  name, or its whole ``$id`` when the ``$id`` names no class.
 - ``topic call``'s method, below an object's topic, and its ``key=value``
   arguments: the keys from the method's ``parameters`` in the object's
   schema, the values from each one's ``enum``, ``boolean`` or ``null``
@@ -34,6 +34,8 @@ Typer's bash and zsh classes are replaced:
 - Nothing synq completes is a local file, so neither shell falls back to
   files.
 """
+
+import json
 import os
 import shlex
 import socket
@@ -45,17 +47,19 @@ from enum import StrEnum
 from pathlib import Path
 
 import click
-import yaml
 from click.shell_completion import add_completion_class, get_completion_class, split_arg_string
+
 # Typer's shell classes: private, but what --install-completion itself uses.
 from typer import _completion_classes as typer_shells
 
 PROGS = ("synq", "spirisynq")
 PROTOCOL = "1"
-"""First field of a request. A server that doesn't speak it closes the connection, and the shell falls back."""
+"""First field of a request. A server that doesn't speak it closes the connection, and the shell
+falls back."""
 
 START_GAP = 5.0
-"""Seconds after starting a server before the fallback starts another, so a burst of Tabs starts one."""
+"""Seconds after starting a server before the fallback starts another, so a burst of Tabs starts
+one."""
 
 MORE = ("/", "=")
 """A candidate ending in one of these is waiting for more: no space after it."""
@@ -77,7 +81,7 @@ def runtime_dir(environ: Mapping[str, str] = os.environ) -> Path:
 
 
 def read_topics(path: Path) -> dict[str, list[str]]:
-    """The cache: each topic with its tags, one ``topic<TAB>Tag Tag`` per line."""
+    """The cache: each topic with its types, one ``topic<TAB>Type Type`` per line."""
     try:
         lines = path.read_text().splitlines()
     except FileNotFoundError:
@@ -98,14 +102,16 @@ def write_topics(path: Path, topics: Mapping[str, list[str]]) -> None:
 
 # ── What the callbacks complete from ────────────────────────────────────
 
+
 class CachedSource:
-    """Without the server: the topics and tags it last wrote, and no schemas."""
+    """Without the server: the topics and types it last wrote, and no schemas."""
 
     def topics(self) -> dict[str, list[str]]:
         return read_topics(cache_path())
 
     def base_topic(self) -> str:
         from SpiriSynq.session import _default_base_topic
+
         return _default_base_topic()
 
     def schema(self, topic: str) -> dict | None:
@@ -122,12 +128,12 @@ def chunks(keys, incomplete: str) -> list[str]:
     A key that's also a prefix of others gives both. ``sr_`` chunks only when
     asked for by name, as shells hide dotfiles.
     """
-    head = incomplete[:incomplete.rfind("/") + 1]
-    hidden = not incomplete[len(head):].startswith("sr_")
+    head = incomplete[: incomplete.rfind("/") + 1]
+    hidden = not incomplete[len(head) :].startswith("sr_")
     out = set()
     for key in keys:
         if key.startswith(incomplete):
-            chunk, slash, _ = key[len(head):].partition("/")
+            chunk, slash, _ = key[len(head) :].partition("/")
             if chunk and not (hidden and chunk.startswith("sr_")):
                 out.add(head + chunk + slash)
     return sorted(out)
@@ -145,7 +151,7 @@ def relative(incomplete: str, complete) -> list:
     for c in complete(base + incomplete[1:]):
         value, help = c if isinstance(c, tuple) else (c, None)
         if value.startswith(f"{base}/"):
-            value = "." + value[len(base):]
+            value = "." + value[len(base) :]
             out.append((value, help) if help is not None else value)
     return out
 
@@ -156,14 +162,24 @@ def complete_topic(incomplete: str) -> list[str]:
 
 
 def complete_tag(incomplete: str) -> list[str]:
-    """Autocompletion for a type tag, without its ``!``."""
-    tags = {tag.lstrip("!") for tags in source.topics().values() for tag in tags}
-    return sorted(t for t in tags if t.startswith(incomplete))
+    """Autocompletion for a type: a class name or a type ``$id``."""
+    types = {t for types in source.topics().values() for t in types}
+    return sorted(t for t in types if t.startswith(incomplete))
+
+
+def type_name(type_id: str) -> str:
+    """What to call a type: the class a ``urn:pypi:`` ``$id`` names, else the whole ``$id``."""
+    if type_id.startswith("urn:pypi:"):
+        return type_id.rpartition(":")[2].rpartition(".")[2]
+    return type_id
+
+
+def methods(schema: dict | None) -> dict:
+    return (schema or {}).get("x-remote-methods") or {}
 
 
 def endpoints(topic: str) -> dict:
-    schema = source.schema(topic)
-    return (schema or {}).get("x-rpc-endpoints") or {}
+    return methods(source.schema(topic))
 
 
 def first_line(text: str | None) -> str:
@@ -171,17 +187,22 @@ def first_line(text: str | None) -> str:
 
 
 def complete_method(incomplete: str) -> list:
-    """Autocompletion for ``topic call``'s ``TOPIC/METHOD``: topics, then the methods below an object's."""
+    """Autocompletion for ``topic call``'s ``TOPIC/METHOD``: topics, then the methods below an
+    object's."""
+
     def complete(inc: str) -> list:
         topics = source.topics()
-        found: list = chunks((f"{t}/" for t in topics), inc)    # a topic alone isn't a method
-        topic = inc[:inc.rfind("/")]
+        found: list = chunks((f"{t}/" for t in topics), inc)  # a topic alone isn't a method
+        topic = inc[: inc.rfind("/")]
         if topic in topics:
             methods = endpoints(topic)
             names = chunks((f"{topic}/{name}" for name in methods), inc)
             found = [v for v in found if v not in names]
-            found += [(v, first_line(methods[v.rpartition("/")[2]].get("description"))) for v in names]
+            found += [
+                (v, first_line(methods[v.rpartition("/")[2]].get("description"))) for v in names
+            ]
         return found
+
     return relative(incomplete, complete)
 
 
@@ -189,8 +210,6 @@ def describe(schema: dict, defs: dict) -> str:
     """A value schema in a few words: ``fast | slow``, ``number | null``, ``Pose``."""
     if "$ref" in schema:
         return schema["$ref"].rpartition("/")[2]
-    if "x-python-type" in schema:
-        return schema["x-python-type"]
     if "enum" in schema:
         return " | ".join(scalar(v) for v in schema["enum"])
     if "const" in schema:
@@ -203,14 +222,21 @@ def describe(schema: dict, defs: dict) -> str:
 
 
 def scalar(value) -> str:
-    """``value`` as it's written in ``key=value``: YAML, as the server parses it."""
-    return yaml.safe_dump(value, default_flow_style=True, width=1 << 16).removesuffix("\n...\n").strip()
+    """``value`` as it's written in ``key=value``: YAML, as ``topic call`` reads it."""
+    from SpiriSynq import _core
+
+    if isinstance(value, list | dict):
+        return json.dumps(value, separators=(",", ":"))  # flow style: YAML too
+    return _core.yaml_dump(value).decode().strip()
 
 
 def values(schema: dict, defs: dict) -> list[str]:
-    """The values a value schema names: its enum or const, true/false for a boolean, null, its default."""
+    """The values a value schema names: its enum or const, true/false for a boolean, null, its
+    default."""
     if "$ref" in schema:
-        schema = defs.get(schema["$ref"].rpartition("/")[2], {}) | {k: v for k, v in schema.items() if k != "$ref"}
+        schema = defs.get(schema["$ref"].rpartition("/")[2], {}) | {
+            k: v for k, v in schema.items() if k != "$ref"
+        }
     found = [scalar(v) for v in schema.get("enum", [])]
     if "const" in schema:
         found.append(scalar(schema["const"]))
@@ -235,7 +261,7 @@ def complete_arguments(ctx: click.Context, incomplete: str) -> list:
         target = source.base_topic() + target[1:]
     topic, _, method = target.rpartition("/")
     schema = source.schema(topic) if topic else None
-    endpoint = ((schema or {}).get("x-rpc-endpoints") or {}).get(method)
+    endpoint = methods(schema).get(method)
     if not endpoint:
         return []
     defs = schema.get("$defs", {})
@@ -249,7 +275,7 @@ def complete_arguments(ctx: click.Context, incomplete: str) -> list:
     given = {kv.partition("=")[0] for kv in ctx.params.get("kwargs") or []}
     required = parameters.get("required", [])
     out = []
-    for pname in sorted(properties, key=lambda p: p not in required):   # required ones first
+    for pname in sorted(properties, key=lambda p: p not in required):  # required ones first
         if pname.startswith(name) and pname not in given:
             help = describe(properties[pname], defs)
             out.append((f"{pname}=", help + (" (required)" if pname in required else "")))
@@ -257,6 +283,7 @@ def complete_arguments(ctx: click.Context, incomplete: str) -> list:
 
 
 # ── Starting the server ─────────────────────────────────────────────────
+
 
 def server_running(run: Path) -> bool:
     with socket.socket(socket.AF_UNIX) as s:
@@ -281,8 +308,11 @@ def start_server(environ: Mapping[str, str] = os.environ) -> None:
     stamp.touch()
     subprocess.Popen(
         [sys.executable, "-m", "SpiriSynq", "_complete-server"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        cwd="/", start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd="/",
+        start_new_session=True,
     )
 
 
@@ -293,19 +323,26 @@ RUNTIME_DIR_SH = "${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/spirisynq"
 # stderr (the session's log line) would land on the command line being typed.
 FALLBACK_ENV = " ".join(f"_{prog.upper()}_COMPLETE=complete_%(shell)s" for prog in PROGS)
 
-BASH = """\
+BASH = (
+    """\
 %(complete_func)s() {
     local line=${COMP_LINE:0:COMP_POINT} cur=${COMP_WORDS[COMP_CWORD]}
-    local dir=""" + RUNTIME_DIR_SH + """ port token fd reply
+    local dir="""
+    + RUNTIME_DIR_SH
+    + """ port token fd reply
     COMPREPLY=()
     if read -r port token 2>/dev/null <"$dir/complete.tcp" &&
        { exec {fd}<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null; then
-        printf '""" + PROTOCOL + """\\t%%s\\tbash\\t%%s\\t%%s\\t%%s\\n' "$token" "$SPIRI_SYNQ_BASE_TOPIC" "$cur" "$line" >&$fd
+        printf '"""
+    + PROTOCOL
+    + """\\t%%s\\tbash\\t%%s\\t%%s\\t%%s\\n' "$token" "$SPIRI_SYNQ_BASE_TOPIC" "$cur" "$line" >&$fd
         while IFS= read -r -t 2 -u $fd reply; do COMPREPLY+=("$reply"); done
         exec {fd}>&-
     else
         local IFS=$'\\n'
-        COMPREPLY=( $(env COMP_LINE="$line" COMP_CUR="$cur" """ + FALLBACK_ENV % {"shell": "bash"} + """ "$1" 2>/dev/null) )
+        COMPREPLY=( $(env COMP_LINE="$line" COMP_CUR="$cur" """
+    + FALLBACK_ENV % {"shell": "bash"}
+    + """ "$1" 2>/dev/null) )
     fi
     if [[ ${#COMPREPLY[@]} == 1 && ${COMPREPLY[0]} == *[/=] ]]; then
         compopt -o nospace
@@ -313,32 +350,47 @@ BASH = """\
     return 0
 }
 
-complete -F %(complete_func)s """ + " ".join(PROGS) + """
+complete -F %(complete_func)s """
+    + " ".join(PROGS)
+    + """
 """
+)
 
-ZSH = """\
-#compdef """ + " ".join(PROGS) + """
+ZSH = (
+    """\
+#compdef """
+    + " ".join(PROGS)
+    + """
 
 %(complete_func)s() {
-    local dir=""" + RUNTIME_DIR_SH + """ reply fd
+    local dir="""
+    + RUNTIME_DIR_SH
+    + """ reply fd
     if zmodload zsh/net/socket 2>/dev/null && zsocket "$dir/complete.sock" 2>/dev/null; then
         fd=$REPLY
-        print -rn -u $fd -- $'""" + PROTOCOL + """\\t\\tzsh\\t'"$SPIRI_SYNQ_BASE_TOPIC"$'\\t\\t'"${words[1,$CURRENT]}"$'\\n'
+        print -rn -u $fd -- $'"""
+    + PROTOCOL
+    + """\\t\\tzsh\\t'"$SPIRI_SYNQ_BASE_TOPIC"$'\\t\\t'"${words[1,$CURRENT]}"$'\\n'
         read -r -d '' -t 2 -u $fd reply
         exec {fd}>&-
     else
-        reply="$(env _TYPER_COMPLETE_ARGS="${words[1,$CURRENT]}" """ + FALLBACK_ENV % {"shell": "zsh"} + """ "${words[1]}" 2>/dev/null)"
+        reply="$(env _TYPER_COMPLETE_ARGS="${words[1,$CURRENT]}" """
+    + FALLBACK_ENV % {"shell": "zsh"}
+    + """ "${words[1]}" 2>/dev/null)"
     fi
     eval "$reply"
 }
 
 # Autoloaded from $fpath, this file is the body of _synq and runs on every Tab
 # unless later Tabs go straight to the function it defines.
-compdef %(complete_func)s """ + " ".join(PROGS) + """
+compdef %(complete_func)s """
+    + " ".join(PROGS)
+    + """
 if [[ $zsh_eval_context[-1] == loadautofunc ]]; then
     %(complete_func)s "$@"
 fi
 """
+)
 
 
 class BashComplete(typer_shells.BashComplete):
@@ -348,6 +400,7 @@ class BashComplete(typer_shells.BashComplete):
     the environment. A script from Typer's ``--install-completion`` sets neither,
     and gets Typer's own handling.
     """
+
     source_template = BASH
     request: tuple[str, str] | None = None
     from_typer = False
@@ -374,7 +427,7 @@ class BashComplete(typer_shells.BashComplete):
         args, incomplete = self.get_completion_args()
         _, cur = self.get_request() or ("", incomplete)
         # What bash split off before its word: "mode=" for "mode=fa", whose word is "fa".
-        split_off = incomplete[:len(incomplete) - len(cur)] if incomplete.endswith(cur) else ""
+        split_off = incomplete[: len(incomplete) - len(cur)] if incomplete.endswith(cur) else ""
         values = [item.value for item in self.get_completions(args, incomplete)]
         return "\n".join(v.removeprefix(split_off) for v in values if v.startswith(split_off))
 
@@ -384,6 +437,7 @@ class ZshComplete(typer_shells.ZshComplete):
 
     ``request`` is the line: the server sets it, the fallback reads ``_TYPER_COMPLETE_ARGS``.
     """
+
     source_template = ZSH
     request: str | None = None
 
@@ -407,7 +461,7 @@ class ZshComplete(typer_shells.ZshComplete):
             formatted = "\n".join(self.format_completion(item) for item in items)
             return f"_arguments '*: :(({formatted}))'"
         # Shown without what's typed up to its last '/' or '=', as zsh shows files.
-        hidden = incomplete[:max(incomplete.rfind(c) for c in MORE) + 1]
+        hidden = incomplete[: max(incomplete.rfind(c) for c in MORE) + 1]
         more = [i for i in items if i.value.endswith(MORE)]
         done = [i for i in items if not i.value.endswith(MORE)]
         lines = [self.add(more, hidden, "-S ''")]
@@ -417,13 +471,18 @@ class ZshComplete(typer_shells.ZshComplete):
 
     @staticmethod
     def add(items, hidden: str, *options: str) -> str:
-        """Code adding ``items``, without ``hidden`` in front: ``_describe`` when any has help, to show it."""
+        """Code adding ``items``, without ``hidden`` in front: ``_describe`` when any has help, to
+        show it."""
         options = " ".join(["-p", shlex.quote(hidden), *options])
         values = [i.value.removeprefix(hidden) for i in items]
         if not any(i.help for i in items):
             return f"compadd {options} -- {shlex.join(values)}"
-        described = [v.replace(":", "\\:") + (f":{i.help}" if i.help else "") for v, i in zip(values, items)]
-        return f"local -a described=({shlex.join(described)}); _describe -t values '' described {options}"
+        described = [
+            v.replace(":", "\\:") + (f":{i.help}" if i.help else "")
+            for v, i in zip(values, items, strict=True)
+        ]
+        described = shlex.join(described)
+        return f"local -a described=({described}); _describe -t values '' described {options}"
 
 
 class FishComplete(typer_shells.FishComplete):
@@ -456,7 +515,8 @@ def script(shell: str, prog_name: str = "synq") -> str:
 
 
 def answer(cli, shell: str, line: str, cur: str = "") -> str:
-    """What the script expects back for ``line``, for the server: ``COMPREPLY`` lines for bash, code to eval for zsh."""
+    """What the script expects back for ``line``, for the server: ``COMPREPLY`` lines for bash,
+    code to eval for zsh."""
     if shell == "bash":
         complete = BashComplete(cli, {}, "synq", "_SYNQ_COMPLETE")
         complete.request = (line, cur)

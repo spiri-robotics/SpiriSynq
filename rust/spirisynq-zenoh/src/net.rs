@@ -98,7 +98,7 @@ pub(crate) enum Step {
 /// Whether a reply is zenoh's own word that the get timed out, rather than a queryable's. The
 /// getter's session sends it with no replier; a routing node that gave up on a query it forwarded
 /// sends it as entity 0, which no queryable is. The get ends right after it either way.
-fn is_timeout(reply: &Reply) -> bool {
+pub fn is_timeout(reply: &Reply) -> bool {
     let from_zenoh = reply.replier_id().is_none_or(|id| id.eid() == 0);
     from_zenoh
         && reply

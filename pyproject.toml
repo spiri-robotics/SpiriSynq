@@ -44,6 +44,8 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 concurrency = ["thread"]
+# The completion server runs as its own process: measure it too.
+patch = ["subprocess"]
 
 [tool.ruff]
 line-length = 100

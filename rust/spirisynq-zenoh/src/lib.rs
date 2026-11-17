@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-pub use net::ZenohBytes;
+pub use net::{ZenohBytes, is_timeout};
 use spirisynq_core::{Notice, Session, Zid};
 pub use zenoh;
 use zenoh::Wait;

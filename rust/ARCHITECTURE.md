@@ -635,6 +635,14 @@ A Cargo workspace in `rust/`. Lower crates know nothing about the ones above the
   `float`, `str`, `bytes`, lists (tuples go out as lists), dicts, and `_core.Tagged(tag,
   value)` for local tags such as `!Link`. Python never parses YAML. Values nested more than
   `MAX_DEPTH` deep are refused, which also stops self-referencing lists.
+- Plain zenoh, for the `synq` command line (2026-11-17): `Node.put`, `Node.watch` (a
+  subscriber, read with `recv(timeout)`), `Node.get` (iterate over its replies: any reply key,
+  no consolidation, zenoh's own timeout reply dropped), `Node.routers` and `_core.scout`. They
+  go straight to the node's zenoh session, beside the engine rather than through it: nothing
+  they do is SpiriSynq's protocol, so the engine has no business with it. The CLI speaks the
+  protocol itself where it needs to (a call's YAML payload and its `done` reply).
+  `_core.scout` is tested with a fake node answering a scout over loopback unicast UDP, not
+  multicast.
 - Raw payloads (`_core.Sample`) are copied once into and out of Python. Zero-copy, including
   shared memory, would need Python's buffer protocol, which PyO3 only offers as `unsafe`. Left
   for when it's needed; it would go in the unsafe table below.

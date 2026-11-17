@@ -1,690 +1,593 @@
+"""`synq`: look at a SpiriSynq network, and poke at it.
+
+Data goes to stdout as YAML (or JSON, where asked), one document per record, so it can be piped;
+progress and errors go to stderr. Commands exit 0 even when nothing answers, and say so on
+stderr.
+"""
+
+import base64
+import json
 import sys
+import threading
+import time
+from datetime import UTC, datetime
+from enum import StrEnum
+
 import typer
-from SpiriSynq import completion
-from SpiriSynq.session import current_session
 from rich.console import Console
 from rich.syntax import Syntax
-import base64
-import zenoh
 
-# Completion scripts come from `synq completion`; Typer's own install would replace our shell classes.
+from SpiriSynq import _core, completion
+from SpiriSynq.session import Session, current_session
+
+YAML = "application/yaml"
+DONE = "x-spirisynq/done"
+
+# Completion scripts come from `synq completion`; Typer's own install would replace our shell
+# classes.
 app = typer.Typer(add_completion=False)
 completion.register()
-topic_app = typer.Typer()
+topic_app = typer.Typer(help="Objects and the keys under them.")
 app.add_typer(topic_app, name="topic")
+zenoh_app = typer.Typer(help="The zenoh network itself.")
+app.add_typer(zenoh_app, name="zenoh")
+meta_app = typer.Typer(help="Types.")
+app.add_typer(meta_app, name="meta")
 
-session = current_session.get()
-
-# stdout console for data output (pipeable)
 console_out = Console(file=sys.stdout, highlight=False)
-# stderr console for logging/status
+"""Data, for pipes."""
 console_err = Console(file=sys.stderr)
+"""Progress and errors."""
+
+
+def session() -> Session:
+    """The session commands use: opened on first use, so `synq completion` opens none."""
+    return current_session.get()
+
 
 @app.callback()
 def term_callback(
-    ctx: typer.Context,
-    truncate: bool = typer.Option(None, "--truncate/--no-truncate", help="Truncate long lines (default: yes on TTY, no when piped)"),
+    truncate: bool = typer.Option(
+        None,
+        "--truncate/--no-truncate",
+        help="Truncate long lines (default: yes on a terminal, no when piped)",
+    ),
 ):
     if not (truncate if truncate is not None else sys.stdout.isatty()):
-        console_err.print("[dim]stdout truncation disabled[/dim]")
         console_out.soft_wrap = True
 
 
+def fail(message: str, code: int = 1):
+    console_err.print(f"[red]Error:[/red] {message}")
+    raise typer.Exit(code)
+
+
 def resolve(topic: str) -> str:
-    """Resolve a topic argument (``./camera`` → ``<base_topic>/camera``), exiting on an invalid one."""
+    """A topic argument, with `./` for the base topic; exits on one that isn't a topic. A
+    trailing `/`, as completion leaves one, is dropped."""
     try:
-        return session.resolve_topic(topic)
+        return session().resolve_topic(topic.rstrip("/") or topic)
     except ValueError as e:
-        console_err.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        fail(str(e))
 
 
 def out_overflow():
-    """Overflow mode for long stdout lines: ellipsis when truncating, else None.
-
-    An explicit overflow overrides the console's soft_wrap, so it must only be
-    passed when truncation is enabled or --no-truncate output gets cut off.
-    """
+    """Ellipsis for long lines when truncating. An explicit overflow overrides soft wrapping,
+    so it's only passed when truncating."""
     return None if console_out.soft_wrap else "ellipsis"
+
+
+def show(text: str, lexer: str = "yaml") -> None:
+    console_out.print(
+        Syntax(text.rstrip("\n"), lexer, theme="ansi_dark", background_color="default"),
+        overflow=out_overflow(),
+    )
+
+
+def dump(value) -> str:
+    return _core.yaml_dump(value).decode()
+
+
+def document(value) -> None:
+    """One record of a multi-document YAML stream."""
+    console_out.print("---")
+    show(dump(value))
+
+
+def payload_text(message) -> tuple[str, bool]:
+    """A payload as text, and whether it's binary: a payload that isn't YAML or UTF-8 text is
+    `!!binary` and base64."""
+    if message.encoding == YAML or message.encoding.startswith("text/"):
+        try:
+            return message.payload.decode().strip(), False
+        except UnicodeDecodeError:
+            pass
+    return f"!!binary {base64.b64encode(message.payload).decode('ascii')}", True
+
+
+def payload_value(message):
+    """A payload as a value: YAML decoded, anything else as bytes."""
+    if message.encoding == YAML:
+        try:
+            return _core.yaml_load(message.payload)
+        except _core.SynqError:
+            pass
+    return message.payload
+
+
+def interactive() -> bool:
+    """Whether stdin is a terminal, not a pipe."""
+    return sys.stdin.isatty()
+
+
+def parse(text: str):
+    """A value written on the command line: YAML, else the text itself."""
+    try:
+        return _core.yaml_load(text.encode())
+    except _core.SynqError:
+        return text
+
+
+# --- topic ---------------------------------------------------------------------------------
 
 
 @topic_app.command("list")
 def topic_list(
-    _type: str = typer.Option("", "--type", "-t", help="Filter by type", autocompletion=completion.complete_tag),
-    prefix: str = typer.Option(None, "--prefix", "-p", help="Key prefix", autocompletion=completion.complete_topic),
+    type_filter: str = typer.Option(
+        "",
+        "--type",
+        "-t",
+        help="Only objects of this type: a class name or a type $id",
+        autocompletion=completion.complete_tag,
+    ),
+    prefix: str = typer.Option(
+        None,
+        "--prefix",
+        "-p",
+        help="Only topics under this",
+        autocompletion=completion.complete_topic,
+    ),
+    timeout: float = typer.Option(2.0, "--timeout", help="Seconds to wait for answers"),
 ):
-    """List all topics"""
-    if prefix:
-        prefix = resolve(prefix)
-    query_topic =f"{prefix}/**/sr_metadata/{_type}" if prefix else f"**/sr_metadata/{_type}"
-    query_topic = query_topic.strip("/").removesuffix("/")
-
-    console_err.print(f"[dim]Querying: {query_topic}[/dim]")
-
-    replies = session.zenoh_session.get(query_topic,consolidation=zenoh.ConsolidationMode.NONE)
-
+    """List the objects on the network: each one's topic, owner, type and base types."""
     found = 0
-    for reply in replies:
-        if reply.ok:
-            raw = reply.ok.payload.to_bytes().decode("utf-8").strip()
-            # Start each entry with a YAML document marker so the output is a
-            # parseable multi-document stream
-            console_out.print("---")
-            syntax = Syntax(raw, "yaml", theme="ansi_dark", background_color="default")
-            console_out.print(syntax)
-            found += 1
-        else:
-            console_err.print(f"[red]Error reply:[/red] {reply.err}")
+    for meta in session().list_topics(type_filter, resolve(prefix) if prefix else "", timeout):
+        meta.pop("classes")
+        document(meta)
+        found += 1
+    console_err.print(f"[dim]{found} object(s)[/dim]")
 
-    console_err.print(f"[dim]{found} result(s)[/dim]")
 
 @topic_app.command("watch")
 def topic_watch(
-    topic: str = typer.Argument(..., help="Topic key expression to subscribe to (wildcards supported)",
-                               autocompletion=completion.complete_topic),
-    show_paths: bool = typer.Option(None, "--show-paths/--no-show-paths", "-p/-P", help="Include key path in output"),
-    json_output: bool = typer.Option(False, "--json", "-j", help="Output as NDJSON (value kept as raw string)"),
-    show_timestamp: bool = typer.Option(False, "--timestamp/--no-timestamp", "-t/-T", help="Include Zenoh message timestamp in output"),
-    show_received_timestamp: bool = typer.Option(True, "--received-timestamp/--no-received-timestamp", "-rt/-RT", help="Include when we received the message"),
-    count: int = typer.Option(0, "--count", "-n", help="Exit after receiving N messages (0 = unlimited)"),
+    topic: str = typer.Argument(
+        ...,
+        help="Key expression to watch (wildcards work)",
+        autocompletion=completion.complete_topic,
+    ),
+    show_paths: bool = typer.Option(
+        None, "--show-paths/--no-show-paths", "-p/-P", help="Include each sample's key"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", "-j", help="NDJSON, with the value as its text"
+    ),
+    show_timestamp: bool = typer.Option(
+        False, "--timestamp/--no-timestamp", "-t/-T", help="Include when it was sent, if known"
+    ),
+    show_received_timestamp: bool = typer.Option(
+        True,
+        "--received-timestamp/--no-received-timestamp",
+        "-rt/-RT",
+        help="Include when it arrived",
+    ),
+    count: int = typer.Option(0, "--count", "-n", help="Stop after N samples (0: never)"),
 ):
-    """Watch a topic for incoming messages as a newline-delimited YAML or JSON stream."""
-    import time
-    import json
-    import threading
-    from datetime import datetime, timezone
+    """Watch what's put on a topic, as a YAML stream, or JSON lines.
 
-    topic = resolve(topic)
-
-    # Default to showing paths when using wildcards, since the key helps identify which topic fired
+    Streams (`@` fields) aren't matched by wildcards: watch them by their key.
+    """
+    topic = resolve_pattern(topic)
     if show_paths is None:
         show_paths = "*" in topic
-
-    console_err.print(f"[dim]Subscribing to: [bold]{topic}[/bold] (Ctrl+C to stop)[/dim]")
-
-    # --- Helpers ---
-
-    def decode_payload(sample) -> tuple[str, bool]:
-        """Return (raw_string, is_binary) for a sample's payload."""
-        if sample.encoding == zenoh.Encoding.ZENOH_BYTES:
-            b64 = base64.b64encode(sample.payload.to_bytes()).decode("ascii")
-            return f"!!binary {b64}", True
-        return sample.payload.to_bytes().decode("utf-8").strip(), False
-
-    def build_metadata(key: str, sample) -> dict:
-        """Collect any requested metadata fields into an ordered dict."""
-        meta = {}
-        if show_paths:
-            meta["path"] = key
-        if show_timestamp:
-            meta["timestamp"] = (
-                sample.timestamp.time.isoformat() if sample.timestamp is not None else None
-            )
-        if show_received_timestamp:
-            meta["received"] = datetime.now(timezone.utc).isoformat()
-        return meta
-
-    def emit_json(meta: dict, raw: str, is_binary: bool):
-        # Binary values are already base64-encoded in raw; pass them through as-is
-        value_out = raw if is_binary else raw
-
-        if meta:
-            # Merge metadata and value into a single JSON object
-            line = json.dumps({**meta, "value": value_out}, separators=(",", ":"))
-        else:
-            # No metadata — emit the bare value
-            line = json.dumps(value_out, separators=(",", ":"))
-
-        console_out.print(Syntax(line, "json", theme="ansi_dark", background_color="default"),overflow=out_overflow())
-
-    def emit_yaml(meta: dict, raw: str, is_binary: bool):
-        if meta:
-            parts = [f"{k}: {v}" for k, v in meta.items()]
-
-            if is_binary:
-                parts.append(f"value: {raw}")
-            else:
-                if "\n" in raw:
-                    indented = "\n".join(f"  {line}" for line in raw.splitlines())
-                    parts.append(f"value: |-\n{indented}")
-                else:
-                    parts.append(f"value: {raw}")
-
-            out = "\n".join(parts)
-        else:
-            out = raw
-
-        console_out.print(Syntax(out, "yaml", theme="ansi_dark", background_color="default"),overflow=out_overflow())
-
-        # Separate records with a YAML document delimiter when metadata is present
-        if meta:
-            console_out.print("---")
-
-    # --- Subscriber callback ---
-
-    done = threading.Event()
-    received = [0]
-
-    def on_sample(sample):
-        key = str(sample.key_expr)
-        raw, is_binary = decode_payload(sample)
-        meta = build_metadata(key, sample)
-
-        if json_output:
-            emit_json(meta, raw, is_binary)
-        else:
-            emit_yaml(meta, raw, is_binary)
-
-        if count:
-            received[0] += 1
-            if received[0] >= count:
-                done.set()
-
-    # --- Main loop ---
-
-    subscriber = session.zenoh_session.declare_subscriber(topic, on_sample)
-
+    console_err.print(f"[dim]Watching [bold]{topic}[/bold] (Ctrl+C to stop)[/dim]")
+    watch = session().node.watch(topic)
+    received = 0
     try:
-        if count:
-            done.wait()
-        else:
-            while True:
-                time.sleep(0.1)
+        while not count or received < count:
+            message = watch.recv()
+            text, binary = payload_text(message)
+            meta = {}
+            if show_paths:
+                meta["path"] = message.key
+            if show_timestamp:
+                stamp = message.timestamp
+                meta["timestamp"] = (
+                    None if stamp is None else datetime.fromtimestamp(stamp, UTC).isoformat()
+                )
+            if show_received_timestamp:
+                meta["received"] = datetime.now(UTC).isoformat()
+            if json_output:
+                record = {**meta, "value": text} if meta else text
+                show(json.dumps(record, separators=(",", ":")), "json")
+            elif meta:
+                lines = [f"{k}: {'null' if v is None else v}" for k, v in meta.items()]
+                if "\n" in text and not binary:
+                    indented = "\n".join(f"  {line}" for line in text.splitlines())
+                    lines.append(f"value: |-\n{indented}")
+                else:
+                    lines.append(f"value: {text}")
+                show("\n".join(lines))
+                console_out.print("---")
+            else:
+                show(text)
+            received += 1
     except KeyboardInterrupt:
         console_err.print("\n[dim]Stopped.[/dim]")
     finally:
-        # Always undeclare the subscriber to cleanly release the Zenoh resource
-        subscriber.undeclare()
+        watch.close()
+
+
+def resolve_pattern(topic: str) -> str:
+    """A key expression argument: `./` for the base topic, wildcards allowed."""
+    if topic == "." or topic.startswith("./"):
+        return session().base_topic + topic[1:]
+    return topic
+
+
+def rate(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}/s"
+        n /= 1024
+    return f"{n:.1f} TB/s"
+
 
 @topic_app.command("bandwidth")
 def topic_bandwidth(
-    topic: str = typer.Argument(..., help="Topic key expression to subscribe to (wildcards supported)",
-                               autocompletion=completion.complete_topic),
-    interval: float = typer.Option(1.0, "--interval", "-i", help="Reporting interval in seconds"),
-    raw_bytes: bool = typer.Option(False, "--bytes", help="Output raw byte count per interval to stdout (machine-readable)"),
+    topic: str = typer.Argument(
+        ...,
+        help="Key expression to watch (wildcards work)",
+        autocompletion=completion.complete_topic,
+    ),
+    interval: float = typer.Option(1.0, "--interval", "-i", help="Seconds between reports"),
+    raw_bytes: bool = typer.Option(
+        False, "--bytes", help="Print each interval's byte count to stdout instead"
+    ),
+    reports: int = typer.Option(0, "--count", "-n", help="Stop after N reports (0: never)"),
 ):
-    """Monitor bandwidth (bytes/sec) received on a topic."""
-    import time
-    import threading
-
-    topic = resolve(topic)
-    console_err.print(f"[dim]Subscribing to: [bold]{topic}[/bold] (Ctrl+C to stop)[/dim]")
-
-    byte_count = [0]
-    msg_count = [0]
+    """Measure what's put on a topic, in bytes and samples per second."""
+    topic = resolve_pattern(topic)
+    console_err.print(f"[dim]Watching [bold]{topic}[/bold] (Ctrl+C to stop)[/dim]")
+    watch = session().node.watch(topic)
+    counts = [0, 0]
     lock = threading.Lock()
+    stop = threading.Event()
 
-    def on_sample(sample):
-        n = len(sample.payload.to_bytes())
-        with lock:
-            byte_count[0] += n
-            msg_count[0] += 1
+    def count():
+        while not stop.is_set():
+            message = watch.recv(0.1)
+            if message is not None:
+                with lock:
+                    counts[0] += len(message.payload)
+                    counts[1] += 1
 
-    subscriber = session.zenoh_session.declare_subscriber(topic, on_sample)
-
-    def fmt_bytes(n):
-        for unit in ("B", "KB", "MB", "GB"):
-            if n < 1024:
-                return f"{n:.1f} {unit}/s"
-            n /= 1024
-        return f"{n:.1f} TB/s"
-
+    counter = threading.Thread(target=count, daemon=True)
+    counter.start()
+    done = 0
     try:
-        while True:
+        while not reports or done < reports:
             time.sleep(interval)
             with lock:
-                b, m = byte_count[0], msg_count[0]
-                byte_count[0] = 0
-                msg_count[0] = 0
+                (size, samples), counts[:] = counts, [0, 0]
             if raw_bytes:
-                console_out.print(b)
+                console_out.print(size)
             else:
-                bps = b / interval
-                mps = m / interval
-                console_err.print(f"{fmt_bytes(bps)}  ({mps:.1f} msg/s)")
+                console_err.print(f"{rate(size / interval)}  ({samples / interval:.1f} msg/s)")
+            done += 1
     except KeyboardInterrupt:
         console_err.print("\n[dim]Stopped.[/dim]")
     finally:
-        subscriber.undeclare()
+        stop.set()
+        counter.join()
+        watch.close()
 
 
-from enum import Enum
-
-class InputType(str, Enum):
+class InputType(StrEnum):
     auto = "auto"
-    yaml = "yaml"   # parse as YAML/JSON (YAML is a superset)
-    raw  = "raw"    # treat entire stdin as a single raw string value, no parsing
+    yaml = "yaml"
+    raw = "raw"
 
 
 @topic_app.command("put")
 def topic_put(
-    topic: str = typer.Argument(None, help=(
-        "Topic key to publish to. "
-        "Optional if the stream contains 'path:' fields. "
-        "If provided alongside a stream with 'path:' fields, the stream path "
-        "must be a subpath of this topic (used as a prefix guard)."
-    ), autocompletion=completion.complete_topic),
-    value: str = typer.Argument(None, help="Value to publish directly (omit to read from stdin)"),
+    topic: str = typer.Argument(
+        None,
+        help=(
+            "Key to put on. Optional if the input has `path:` fields; with them, it's a prefix "
+            "every path must be under."
+        ),
+        autocompletion=completion.complete_topic,
+    ),
+    value: str = typer.Argument(None, help="Value to put (omit to read stdin)"),
     input_type: InputType = typer.Option(
         InputType.auto,
-        "--input-type", "-i",
+        "--input-type",
+        "-i",
         help=(
-            "How to interpret stdin. "
-            "'auto' detects YAML/JSON vs raw by attempting a parse. "
-            "'yaml' forces YAML/JSON parsing (YAML is a superset of JSON). "
-            "'raw' treats the entire input as a single opaque string value."
+            "How to read the value: 'yaml' must be YAML, 'auto' is YAML if it reads as YAML "
+            "and text otherwise, 'raw' is all of stdin as one text value."
         ),
     ),
 ):
-    """Publish to a topic.
+    """Put a value on a key, as a field write: from the command line, or a stream on stdin.
 
-    Accepts either a direct topic + value, or a piped stream from `topic watch`.
-    The stream may be YAML (default) or JSON — both are handled transparently
-    since YAML is a superset of JSON.
-
-    Stream path validation:
-        If `topic` is provided and the stream contains `path:` fields, each
-        stream path must be a subpath of `topic`. This prevents accidentally
-        replaying a stream to the wrong part of the topic tree.
+    The stream is YAML documents, such as `topic watch` writes. A document with a `path:` is
+    put on that path, its `value:` the value; any other is a value for TOPIC.
     """
-    import sys
-
     if topic is not None:
         topic = resolve(topic)
 
-    def put(path: str, raw: str):
-        console_err.print(f"[dim]Publishing {path}: {raw}[/dim]")
-        session.zenoh_session.put(path, raw)
+    def put(key: str, value) -> None:
+        text = dump(value)
+        console_err.print(f"[dim]Putting {key}: {text.strip()}[/dim]")
+        session().node.put(key, text.encode())
 
-    def validate_subpath(stream_path: str, prefix: str):
-        """Raise if stream_path is not a subpath of prefix.
+    def read(text: str):
+        if input_type == InputType.raw:
+            return text
+        try:
+            return _core.yaml_load(text.encode())
+        except _core.SynqError as e:
+            if input_type == InputType.yaml:
+                fail(f"not YAML: {e}")
+            return text
 
-        Ensures that a stream captured from one part of the topic tree
-        cannot be accidentally replayed to an unrelated topic.
-        """
-        if not stream_path.startswith(prefix.rstrip("/") + "/") and stream_path != prefix:
-            console_err.print(
-                f"[red]Error:[/red] stream path [bold]{stream_path}[/bold] "
-                f"is not a subpath of [bold]{prefix}[/bold]"
-            )
-            raise typer.Exit(1)
-
-    # --- Direct argument mode ---
-    # Both topic and value provided on the command line; publish immediately.
-    if value is not None:
-        if topic is None:
-            console_err.print("[red]Error: topic is required when providing a value directly.[/red]")
-            raise typer.Exit(1)
-        put(topic, value)
+    if value is not None:  # TOPIC comes first, so it's given too
+        put(topic, read(value))
         return
-
-    # --- Stdin stream mode ---
-    if sys.stdin.isatty():
-        console_err.print("[red]Error: no value provided and stdin is a TTY.[/red]")
-        raise typer.Exit(1)
-
-    # raw mode: treat entire stdin as a single opaque value, no parsing.
-    # Requires topic to be provided since there is no path in the stream.
+    if interactive():
+        fail("no value given, and stdin is a terminal")
     if input_type == InputType.raw:
         if topic is None:
-            console_err.print("[red]Error: topic is required when using --input-type raw.[/red]")
-            raise typer.Exit(1)
+            fail("--input-type raw needs a topic")
         put(topic, sys.stdin.read().strip())
         return
 
-    def process_document(doc: str):
-        """Parse and publish a single YAML document from the stream.
-
-        In 'auto' mode, attempts to parse as YAML. If the document contains
-        a 'path' key (i.e. came from `topic watch --show-paths`), that path
-        is used as the publish target. If a topic prefix was provided as an
-        argument, the stream path is validated against it first.
-
-        If no 'path' key is present, the topic argument is used directly
-        and the raw document string is published as-is.
-
-        In 'yaml' mode, behaves identically to 'auto' but skips the fallback
-        to raw — a parse failure is treated as an error.
-        """
-        doc = doc.strip()
-        if not doc:
+    def put_document(text: str) -> None:
+        if not text.strip():
             return
-
-        parsed = None
-        try:
-            parsed = session.type_registry.load(doc)
-        except Exception as e:
-            if input_type == InputType.yaml:
-                console_err.print(f"[red]Error: failed to parse YAML document:[/red] {e}")
-                raise typer.Exit(1)
-            # auto mode: fall through and treat as raw string
-
+        parsed = read(text)
         if isinstance(parsed, dict) and "path" in parsed:
-            # Stream came from `topic watch --show-paths`
-            stream_path = resolve(parsed["path"])
-            if topic is not None:
-                validate_subpath(stream_path, topic)
-            raw = str(parsed.get("value", ""))
-            put(stream_path, raw)
+            path = resolve(parsed["path"])
+            if topic is not None and path != topic and not path.startswith(f"{topic}/"):
+                fail(f"{path} isn't under {topic}")
+            put(path, parsed.get("value"))
         elif topic is not None:
-            # Bare value stream — no path in document, use topic argument
-            put(topic, doc)
+            put(topic, parsed)
         else:
-            console_err.print(
-                f"[red]Error: no path in document and no topic argument given, skipping:[/red] {doc}"
-            )
+            console_err.print(f"[red]No path and no topic, skipped:[/red] {text.strip()}")
 
-    # Buffer lines and split on --- document separators
-    buffer = []
+    buffer: list[str] = []
     for line in sys.stdin:
         if line.strip() == "---":
-            process_document("".join(buffer))
+            put_document("".join(buffer))
             buffer = []
         else:
             buffer.append(line)
+    put_document("".join(buffer))
 
-    # Handle final document with no trailing ---
-    if buffer:
-        process_document("".join(buffer))
+
+def schemas(topic: str | None, prefix: str | None, type_filter: str = ""):
+    """`(topic, schema)` of the object at `topic`, or of every object under `prefix`."""
+    s = session()
+    if topic is not None:
+        topics = [resolve(topic)]
+    else:
+        found = s.list_topics(type_filter, resolve(prefix) if prefix else "")
+        topics = sorted(meta["topic"] for meta in found)
+    for t in topics:
+        try:
+            yield t, s.fetch_schema(t)
+        except LookupError as e:
+            console_err.print(f"[yellow]{e}[/yellow]")
 
 
 @topic_app.command("rpc")
 def topic_rpc(
-    prefix: str = typer.Option(None, "--prefix", "-p", help="Key prefix to search under",
-                               autocompletion=completion.complete_topic),
-    topic: str = typer.Argument(None, help="Specific topic path (omit to search all topics)",
-                                autocompletion=completion.complete_topic),
+    topic: str = typer.Argument(
+        None,
+        help="One object's topic (omit to list every object's)",
+        autocompletion=completion.complete_topic,
+    ),
+    prefix: str = typer.Option(
+        None,
+        "--prefix",
+        "-p",
+        help="Only objects under this",
+        autocompletion=completion.complete_topic,
+    ),
 ):
-    """List all RPC endpoints across topics.
-
-    Queries sr_object_schema for each topic and extracts x-rpc-endpoints.
-    Use --prefix to narrow the search, or pass a specific topic path as an argument.
-    """
-    if topic:
-        query_topic = f"{resolve(topic)}/sr_object_schema"
-    elif prefix:
-        query_topic = f"{resolve(prefix)}/**/sr_object_schema"
-    else:
-        query_topic = "**/sr_object_schema"
-
-    console_err.print(f"[dim]Querying: {query_topic}[/dim]")
-
-    replies = session.zenoh_session.get(query_topic)
-
+    """List remote methods: each object's, from its schema."""
     found = 0
-    for reply in replies:
-        if reply.ok:
-            topic_path = str(reply.ok.key_expr).removesuffix("/sr_object_schema")
-            raw = reply.ok.payload.to_bytes().decode("utf-8")
-            try:
-                schema = session.type_registry.load(raw)
-            except Exception as e:
-                console_err.print(f"[red]Failed to parse schema for {topic_path}:[/red] {e}")
-                continue
-
-            if not isinstance(schema, dict):
-                continue
-
-            rpc_endpoints = schema.get("x-rpc-endpoints", {})
-            if not rpc_endpoints:
-                continue
-
-            record = {"topic": topic_path, "endpoints": rpc_endpoints}
-            out = session.type_registry.dumps(record).strip()
-            syntax = Syntax(out, "yaml", theme="ansi_dark", background_color="default")
-            console_out.print(syntax)
-            console_out.print("---")
+    for t, schema in schemas(topic, prefix):
+        methods = schema.get("x-remote-methods")
+        if methods:
+            document({"topic": t, "methods": methods})
             found += 1
-        else:
-            console_err.print(f"[red]Error reply:[/red] {reply.err}")
-
-    console_err.print(f"[dim]{found} topic(s) with RPC endpoints[/dim]")
+    console_err.print(f"[dim]{found} object(s) with remote methods[/dim]")
 
 
 @topic_app.command("call")
 def topic_call(
-    topic: str = typer.Argument(..., help="Full RPC path including method name (e.g. my/topic/method_name)",
-                                autocompletion=completion.complete_method),
-    kwargs: list[str] = typer.Argument(default=None, help="Arguments as key=value pairs (values parsed as YAML)",
-                                       autocompletion=completion.complete_arguments),
-    timeout: float = typer.Option(None, "--timeout", "-t", help="Timeout in seconds"),
+    topic: str = typer.Argument(
+        ...,
+        help="The method's key: the object's topic, then the method (my/robot/move_to)",
+        autocompletion=completion.complete_method,
+    ),
+    kwargs: list[str] = typer.Argument(
+        default=None,
+        help="Arguments, as key=value; each value is read as YAML",
+        autocompletion=completion.complete_arguments,
+    ),
+    timeout: float = typer.Option(None, "--timeout", "-t", help="Seconds to wait for replies"),
 ):
-    """Call an RPC endpoint and display the result.
+    """Call a remote method, and print what it returns.
 
-    Arguments are passed as key=value pairs where values are interpreted as YAML literals.
-    Generator endpoints stream each yielded value separated by ---.
-
-    Examples:
+    A generator's values come one document each.
 
         synq topic call my/robot/move_to x=1.0 y=2.0
-
-        synq topic call my/sensor/read_frames count=10
     """
-    import zenoh as _zenoh
-    from SpiriSynq.remote_callables import GENERATOR_DONE_ENCODING, encode_parameters
-
-    parsed_kwargs = {}
-    for kv in (kwargs or []):
-        if "=" not in kv:
-            console_err.print(f"[red]Error: argument '{kv}' must be in key=value format[/red]")
-            raise typer.Exit(1)
-        k, v = kv.split("=", 1)
-        parsed_kwargs[k] = v
-
-    selector = _zenoh.Selector(resolve(topic), encode_parameters(parsed_kwargs))
-    console_err.print(f"[dim]Calling: {selector}[/dim]")
-
-    get_kwargs: dict = dict(consolidation=_zenoh.QueryConsolidation(_zenoh.ConsolidationMode.NONE))
-    if timeout is not None:
-        get_kwargs["timeout"] = timeout
-
-    item_count = 0
-    got_reply = False
-    for reply in session.zenoh_session.get(selector, **get_kwargs):
-        got_reply = True
-        if reply.err:
-            console_err.print(f"[red]RPC error on {selector}:[/red] {reply.err.payload.to_string()}")
-            raise typer.Exit(1)
-
-        raw = reply.ok.payload.to_string().strip()
-
-        if reply.ok.encoding == GENERATOR_DONE_ENCODING:
-            if raw and raw not in ("null", "~"):
-                if item_count > 0:
-                    console_out.print("---")
-                syntax = Syntax(raw, "yaml", theme="ansi_dark", background_color="default")
-                console_out.print(syntax)
+    args = {}
+    for kv in kwargs or []:
+        name, eq, text = kv.partition("=")
+        if not eq:
+            fail(f"argument '{kv}' isn't key=value")
+        args[name] = parse(text)
+    key = resolve(topic)
+    console_err.print(f"[dim]Calling {key}[/dim]")
+    s = session()
+    replies = s.node.get(key, payload=_core.yaml_dump(args), timeout=timeout or s.call_timeout)
+    answered = False
+    for reply in replies:
+        answered = True
+        if not reply.ok:
+            error = payload_value(reply)
+            if isinstance(error, dict) and {"type", "message"} <= error.keys():
+                error = f"{error['type']}: {error['message']}"
+            fail(f"{key}: {error}")
+        if reply.encoding == DONE:
             break
-
-        if item_count > 0:
-            console_out.print("---")
-        syntax = Syntax(raw, "yaml", theme="ansi_dark", background_color="default")
-        console_out.print(syntax)
-        item_count += 1
-
-    console_err.print(f"[dim]done[/dim]")
-    if not got_reply:
-        console_err.print(f"[red]Error: no reply received (timeout or no matching endpoint)[/red]")
-        raise typer.Exit(2)
+        text, _ = payload_text(reply)
+        console_out.print("---")
+        show(text)
+    else:
+        if answered:
+            fail(f"{key}: the call was cut short", 2)
+    if not answered:
+        fail("no reply: nothing serves that method, or it didn't answer in time", 2)
+    console_err.print("[dim]done[/dim]")
 
 
 @topic_app.command("schema")
 def topic_schema(
-    topic: str = typer.Argument(..., help="Topic path to retrieve schema for",
-                                autocompletion=completion.complete_topic),
+    topic: str = typer.Argument(
+        ..., help="The object's topic", autocompletion=completion.complete_topic
+    ),
 ):
-    """Retrieve and display the schema for a topic."""
-    topic = resolve(topic)
-    query_path = f"{topic}/sr_object_schema"
-    console_err.print(f"[dim]Querying: {query_path}[/dim]")
-
-    replies = session.zenoh_session.get(query_path)
-
-    found = 0
-    for reply in replies:
-        if reply.ok:
-            raw = reply.ok.payload.to_bytes().decode("utf-8").strip()
-            syntax = Syntax(raw, "yaml", theme="ansi_dark", background_color="default")
-            console_out.print(syntax)
-            found += 1
-        else:
-            console_err.print(f"[red]Error reply:[/red] {reply.err}")
-
-    if found == 0:
-        console_err.print(f"[yellow]No schema found for {topic}[/yellow]")
-    else:
-        console_err.print(f"[dim]{found} result(s)[/dim]")
+    """Print the schema an object serves."""
+    try:
+        schema = session().fetch_schema(resolve(topic))
+    except LookupError as e:
+        console_err.print(f"[yellow]No schema: {e}[/yellow]")
+        return
+    show(dump(schema))
 
 
 @topic_app.command("rehydrate")
 def topic_rehydrate(
-    topic: str = typer.Argument(..., help="Topic path to rehydrate current state for",
-                                autocompletion=completion.complete_topic),
+    topic: str = typer.Argument(
+        ..., help="The object's topic", autocompletion=completion.complete_topic
+    ),
 ):
-    """Retrieve the current state of a topic via the rehydrate queryable.
+    """Print an object's state, as its owner holds it: each field by its path.
 
-    This is useful when you suspect your local state is out of sync, or when
-    connecting to a network without a caching router. Queries the topic path
-    directly rather than the metadata or schema sub-paths.
-
-    Emits a full yaml object instead of changes to sub topics.
+    What a new mirror fetches. Streams (`@` fields) and fields that skip the state aren't in it.
     """
-    topic = f"{resolve(topic)}/sr_rehydrate"
-    console_err.print(f"[dim]Querying: {topic}[/dim]")
+    topic = resolve(topic)
+    s = session()
+    state = {}
+    for reply in s.node.get(f"{topic}/sr_rehydrate", timeout=s.call_timeout):
+        if reply.ok and reply.encoding != DONE:
+            state[reply.key.removeprefix(f"{topic}/")] = payload_value(reply)
+    if not state:
+        console_err.print(f"[yellow]No state from {topic}[/yellow]")
+        return
+    show(dump(state))
 
-    replies = session.zenoh_session.get(topic)
 
-    found = 0
-    for reply in replies:
-        if reply.ok:
-            raw = reply.ok.payload.to_bytes().decode("utf-8").strip()
-            syntax = Syntax(raw, "yaml", theme="ansi_dark", background_color="default")
-            console_out.print(syntax)
-            found += 1
-        else:
-            console_err.print(f"[red]Error reply:[/red] {reply.err}")
+# --- zenoh ---------------------------------------------------------------------------------
 
-    if found == 0:
-        console_err.print(f"[yellow]No response from {topic}[/yellow]")
-    else:
-        console_err.print(f"[dim]{found} result(s)[/dim]")
-
-zenoh_app = typer.Typer()
-app.add_typer(zenoh_app, name="zenoh")
 
 @zenoh_app.command("info")
 def zenoh_info():
-    """Show information about the current zenoh session."""
-    info = session.zenoh_session.info
+    """Show this session's zenoh id, where it listens, and who it's connected to."""
+    node = session().node
+    show(
+        dump(
+            {
+                "zid": node.zid,
+                "locators": node.locators(),
+                "routers": node.routers(),
+                "peers": node.peers(),
+            }
+        )
+    )
 
-    record = {
-        "zid": str(info.zid()),
-        "routers": [str(r) for r in info.routers_zid()],
-        "peers": [str(p) for p in info.peers_zid()],
-    }
-
-    out = session.type_registry.dumps(record).strip()
-    syntax = Syntax(out, "yaml", theme="ansi_dark", background_color="default")
-    console_out.print(syntax)
 
 @zenoh_app.command("scout")
 def zenoh_scout(
-    timeout: float = typer.Option(1.0, "--timeout", "-t", help="Scouting duration in seconds"),
-    routers: bool = typer.Option(True, "--routers/--no-routers", help="Scout for routers"),
-    peers: bool = typer.Option(True, "--peers/--no-peers", help="Scout for peers"),
-    clients: bool = typer.Option(False, "--clients/--no-clients", help="Scout for clients"),
+    timeout: float = typer.Option(1.0, "--timeout", "-t", help="Seconds to scout for"),
+    routers: bool = typer.Option(True, "--routers/--no-routers", help="Look for routers"),
+    peers: bool = typer.Option(True, "--peers/--no-peers", help="Look for peers"),
+    clients: bool = typer.Option(False, "--clients/--no-clients", help="Look for clients"),
+    config: str = typer.Option(
+        "{}", "--config", "-c", help="zenoh configuration for scouting, as JSON5"
+    ),
 ):
-    """Discover zenoh routers and peers on the network."""
-    import zenoh
-    import threading
-
-    what = None
-    for enabled, variant in [
-        (routers, zenoh.WhatAmI.ROUTER),
-        (peers,   zenoh.WhatAmI.PEER),
-        (clients, zenoh.WhatAmI.CLIENT),
-    ]:
-        if enabled:
-            what = variant if what is None else what | variant
-
-    if what is None:
-        console_err.print("[red]Error: at least one of --routers, --peers, --clients must be enabled.[/red]")
-        raise typer.Exit(1)
-
+    """Find zenoh routers and peers, by multicast scouting."""
+    what = "|".join(
+        kind
+        for kind, wanted in [("router", routers), ("peer", peers), ("client", clients)]
+        if wanted
+    )
+    if not what:
+        fail("look for at least one of --routers, --peers, --clients")
     console_err.print(f"[dim]Scouting ({timeout}s)...[/dim]")
+    found = _core.scout(what, timeout, config)
+    for zid, kind, locators in found:
+        document({"zid": zid, "whatami": kind, "locators": locators})
+    console_err.print(f"[dim]{len(found)} node(s) found[/dim]")
 
-    found = 0
-    scout = zenoh.scout(what=what)
 
-    # Stop scouting after the timeout
-    timer = threading.Timer(timeout, scout.stop)
-    timer.start()
+# --- meta ----------------------------------------------------------------------------------
 
-    try:
-        for hello in scout:
-            record = {
-                "zid":      str(hello.zid),
-                "whatami":  str(hello.whatami),
-                "locators": list(hello.locators),
-            }
-            out = session.type_registry.dumps(record).strip().removesuffix("\n...")
-            syntax = Syntax(out, "yaml", theme="ansi_dark", background_color="default")
-            console_out.print(syntax)
-            console_out.print("---")
-            found += 1
-    finally:
-        timer.cancel()
-
-    console_err.print(f"[dim]{found} node(s) found[/dim]")
-
-meta_app = typer.Typer()
-app.add_typer(meta_app, name="meta")
 
 @meta_app.command("type_schema")
 def meta_type_schema(
-    _type: str = typer.Argument("*", help="Type name to retrieve schema for (defaults to all types)",
-                                autocompletion=completion.complete_tag),
-    prefix: str = typer.Option("**", "--prefix", "-p", help="Key prefix (defaults to entire tree)",
-                               autocompletion=completion.complete_topic),
+    type_filter: str = typer.Argument(
+        "",
+        help="A class name or type $id (omit for every type)",
+        autocompletion=completion.complete_tag,
+    ),
+    prefix: str = typer.Option(
+        None,
+        "--prefix",
+        "-p",
+        help="Only objects under this",
+        autocompletion=completion.complete_topic,
+    ),
 ):
-    """Retrieve the schema of every object of a type.
-
-    Queries <prefix>/sr_type_schema/<type>. Each object of that type (or a
-    subtype) answers with its own sr_object_schema, so the output is one
-    {topic, schema} record per object, separated by ---.
-    """
-    query_path = f"{resolve(prefix)}/sr_type_schema/{_type}"
-    console_err.print(f"[dim]Querying: {query_path}[/dim]")
-
-    replies = session.zenoh_session.get(query_path, consolidation=zenoh.ConsolidationMode.NONE)
-
+    """Print the schema of every object of a type, or of its subtypes: a `{topic, schema}`
+    document each."""
     found = 0
-    for reply in replies:
-        if reply.ok:
-            topic_path = str(reply.ok.key_expr).rsplit("/sr_type_schema/", 1)[0]
-            schema = session.type_registry.load(reply.ok.payload.to_string())
-            out = session.type_registry.dumps({"topic": topic_path, "schema": schema}).strip()
-            console_out.print(Syntax(out, "yaml", theme="ansi_dark", background_color="default"))
-            console_out.print("---")
-            found += 1
-        else:
-            console_err.print(f"[red]Error reply:[/red] {reply.err}")
+    for t, schema in schemas(None, prefix, type_filter):
+        document({"topic": t, "schema": schema})
+        found += 1
+    if not found:
+        console_err.print(f"[yellow]No objects of type '{type_filter}'[/yellow]")
 
-    if found == 0:
-        console_err.print(f"[yellow]No schema found for type '{_type}'[/yellow]")
-    else:
-        console_err.print(f"[dim]{found} result(s)[/dim]")
 
-console = Console()
+# --- completion ----------------------------------------------------------------------------
 
 
 @app.command("completion")
 def completion_script(shell: completion.Shell):
-    """Print the tab-completion script for SHELL. It completes topics, type tags, RPC methods and their arguments.
+    """Print the tab-completion script for SHELL. It completes topics, types, remote methods
+    and their arguments.
 
     zsh: synq completion zsh > ~/.zfunc/_synq, with ~/.zfunc in $fpath before compinit.
-    bash: synq completion bash > ~/.local/share/bash-completion/completions/synq,
-    or source the script from ~/.bashrc. Both cover synq and spirisynq. Regenerate it after upgrading.
+    bash: synq completion bash > ~/.local/share/bash-completion/completions/synq, or source the
+    script from ~/.bashrc. Both cover synq and spirisynq. Regenerate it after upgrading.
     """
     typer.echo(completion.script(shell), nl=False)
 
@@ -692,14 +595,19 @@ def completion_script(shell: completion.Shell):
 @app.command("_complete-server", hidden=True)
 def complete_server(
     idle: float = typer.Option(600.0, "--idle", help="Exit after this many seconds without a Tab."),
-    connect: list[str] = typer.Option([], "--connect", help="Zenoh endpoint to connect to, without scouting."),
+    connect: list[str] = typer.Option(
+        [], "--connect", help="zenoh endpoint to connect to, without scouting."
+    ),
 ):
-    """Answer tab completion over a socket, with a zenoh session kept open. Started by the completion script."""
+    """Answer tab completion over a socket, with a session kept open. Started by the
+    completion script."""
     from loguru import logger
+
     from SpiriSynq.completion.server import serve
+
     logger.remove()
     serve(connect, idle=idle)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     app()

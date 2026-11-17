@@ -8,6 +8,7 @@
 
 mod hooks;
 mod notice;
+mod raw;
 mod value;
 
 use std::sync::Arc;
@@ -35,6 +36,17 @@ create_exception!(
 
 fn err(message: String) -> PyErr {
     SynqError::new_err(message)
+}
+
+/// zenoh's error, or any other that's only text.
+fn zerr(e: impl std::fmt::Display) -> PyErr {
+    err(e.to_string())
+}
+
+/// A timeout in seconds, as a duration. `ValueError` if it's negative or not a number.
+fn seconds(timeout: Option<f64>) -> PyResult<Option<Duration>> {
+    let timeout = timeout.map(Duration::try_from_secs_f64).transpose();
+    timeout.map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 impl From<Refused> for PyErr {
@@ -248,6 +260,45 @@ impl Node {
     fn peers(&self) -> PyResult<Vec<String>> {
         let peers = self.zenoh()?.info().peers_zid().wait();
         Ok(peers.map(|zid| zid.to_string()).collect())
+    }
+
+    /// The session ids of the routers this node is connected to.
+    fn routers(&self) -> PyResult<Vec<String>> {
+        let routers: Vec<_> = self.zenoh()?.info().routers_zid().wait().collect();
+        Ok(routers.iter().map(ToString::to_string).collect())
+    }
+
+    /// Put `payload` on `key`, with no object behind it.
+    #[pyo3(signature = (key, payload, encoding="application/yaml", attachment=None))]
+    fn put(
+        &self,
+        key: &str,
+        payload: PyBackedBytes,
+        encoding: &str,
+        attachment: Option<PyBackedBytes>,
+    ) -> PyResult<()> {
+        raw::put(&self.zenoh()?, key, &payload, encoding, attachment.as_ref())
+    }
+
+    /// Watch what's put on the keys `key` matches.
+    fn watch(&self, key: &str) -> PyResult<raw::Watch> {
+        raw::Watch::declare(&self.zenoh()?, key)
+    }
+
+    /// Query `key` with `parameters`, and a payload in `encoding` if given. Every queryable
+    /// that matches answers; the replies end after `timeout` seconds at the latest.
+    #[pyo3(signature = (key, parameters="", payload=None, encoding="application/yaml", timeout=10.0))]
+    fn get(
+        &self,
+        key: &str,
+        parameters: &str,
+        payload: Option<PyBackedBytes>,
+        encoding: &str,
+        timeout: f64,
+    ) -> PyResult<raw::Replies> {
+        let timeout = seconds(Some(timeout))?.unwrap_or_default();
+        let payload = payload.as_ref().map(|p| (&p[..], encoding));
+        raw::Replies::get(&self.zenoh()?, key, parameters, payload, timeout)
     }
 
     /// Start an authoritative object.
@@ -507,9 +558,7 @@ impl Node {
     /// `after_receive` decodes a field's sample.
     #[pyo3(signature = (timeout=None))]
     fn next_notice(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Option<Py<PyAny>>> {
-        let timeout = timeout.map(Duration::try_from_secs_f64).transpose();
-        let timeout = timeout.map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let deadline = timeout.map(|t| Instant::now() + t);
+        let deadline = seconds(timeout)?.map(|t| Instant::now() + t);
         // Wake up now and then to let Python handle signals, such as Ctrl-C.
         let slice = Duration::from_millis(100);
         loop {
@@ -570,4 +619,6 @@ mod _core {
         Alive, BadData, Call, Discovered, Incoming, Listeners, Rehydrated, Reply, RequestEnded,
         SchemaFetched,
     };
+    #[pymodule_export]
+    use crate::raw::{Message, Replies, Watch, scout};
 }
