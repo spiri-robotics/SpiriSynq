@@ -135,16 +135,17 @@ def test_a_bad_topic_is_an_error():
     assert code == 1 and "Invalid topic" in err
 
 
-def test_topic_schema(rover):
+def test_topic_schema(rover, monkeypatch):
     code, out, _ = invoke("topic", "schema", "./rover")
     schema = yaml.safe_load(out)
     assert schema["$id"] == "urn:pypi:spiri-rover:1.0:spirirover.Rover"
     assert "drive" in schema["x-remote-methods"]
+    monkeypatch.setattr(cli.session(), "call_timeout", 0.3)
     code, out, err = invoke("topic", "schema", "host/nothing")
     assert code == 0 and out == "" and "No schema" in err
 
 
-def test_topic_rpc(rover):
+def test_topic_rpc(rover, monkeypatch):
     beacon = Beacon("beacon", synq_authoritive=True)
     _, out, err = invoke("topic", "rpc", "./rover")
     (found,) = documents(out)
@@ -155,6 +156,7 @@ def test_topic_rpc(rover):
     wait_for(lambda: len(list(cli.session().list_topics(prefix="host", timeout=0.3))) == 2)
     _, out, _ = invoke("topic", "rpc", "--prefix", "host")
     assert [d["topic"] for d in documents(out)] == ["host/rover"]
+    monkeypatch.setattr(cli.session(), "call_timeout", 0.3)
     _, out, err = invoke("topic", "rpc", "host/nothing")
     assert out == "" and "nothing serves host/nothing" in err
     _ = beacon

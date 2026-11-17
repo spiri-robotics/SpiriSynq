@@ -331,5 +331,8 @@ would be a separate Zenoh runtime.
 
 :::{note}
 The Python API of the escape hatches isn't designed yet. It will grow alongside the field
-settings.
+settings. Until then, the session's `node` has the plain zenoh calls the `synq` command line
+uses, on the same zenoh session: `put(key, payload, encoding=..., attachment=...)`,
+`watch(key)` (read samples with `recv(timeout)`) and `get(key, parameters=..., payload=...,
+timeout=...)` (iterate over its replies). They may change before the API settles.
 :::

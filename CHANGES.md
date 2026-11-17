@@ -134,6 +134,9 @@
 
 ### Fixes
 
+- **`Session.fetch_schema` asks again until its timeout**, as `from_topic` waits for an owner:
+  an owner that just appeared may not be reachable yet. `from_topic_untyped` and the CLI's
+  `topic schema` and `rpc` wait with it.
 - **A handler on a mirror's signal can set another object's fields.** Applying a change to a
   mirror (and running a mirror callback) set how changes apply for the whole thread, so an owner
   written from such a handler silently didn't publish. It's now per object.
@@ -168,6 +171,9 @@
   extension module's Rust coverage.
 
 ### Internal
+
+- **The v1 dependencies are gone**: `eclipse-zenoh`, `deepdiff` and `pyyaml` (now only a dev
+  dependency, for the tests).
 
 - **`ruff format` leaves the docs alone.** ruff 0.17 formats code in Markdown, which rewrote
   the docs' fragments (a method shown indented, as in its class) as module code.

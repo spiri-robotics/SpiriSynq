@@ -226,13 +226,20 @@ class Session:
                 }
 
     def fetch_schema(self, topic: str, timeout: float | None = None) -> dict:
-        """The schema the object on `topic` serves. `LookupError` if nobody answers."""
-        request = self.node.fetch_schema(self.resolve_topic(topic))
-        with contextlib.suppress(TimeoutError):
-            for notice in self.notices(request, timeout or self.call_timeout):
-                if notice.error is not None:
-                    raise LookupError(f"{topic}: {notice.error[0]}: {notice.error[1]}")
-                return notice.value
+        """The schema the object on `topic` serves. `LookupError` if nobody answers within
+        `timeout` seconds (the call timeout by default).
+
+        Asks again until then: an owner that just appeared may not be reachable yet."""
+        key = self.resolve_topic(topic)
+        deadline = time.monotonic() + (timeout or self.call_timeout)
+        while (left := deadline - time.monotonic()) > 0:
+            request = self.node.fetch_schema(key)
+            with contextlib.suppress(TimeoutError):
+                for notice in self.notices(request, left):
+                    if notice.error is not None:
+                        raise LookupError(f"{topic}: {notice.error[0]}: {notice.error[1]}")
+                    return notice.value
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
         raise LookupError(f"nothing serves {topic}")
 
     def from_topic_untyped(self, topic: str, **options) -> SyncableObject:
