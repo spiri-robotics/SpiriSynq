@@ -169,6 +169,9 @@
 
 ### Internal
 
+- **`ruff format` leaves the docs alone.** ruff 0.17 formats code in Markdown, which rewrote
+  the docs' fragments (a method shown indented, as in its class) as module code.
+
 - **Wheels for every platform we can build**: releases now publish abi3 wheels (Python 3.13 and
   up) for manylinux2014 and musllinux on x86_64 and aarch64, macOS on Intel and Apple Silicon,
   and Windows x64, plus an sdist that builds with Rust 1.96 or newer. A pre-release tag such as

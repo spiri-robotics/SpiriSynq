@@ -49,6 +49,9 @@ patch = ["subprocess"]
 
 [tool.ruff]
 line-length = 100
+# Code samples in the docs are fragments (a method shown indented, as in its class), which the
+# formatter would rewrite as module code.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "SIM"]
