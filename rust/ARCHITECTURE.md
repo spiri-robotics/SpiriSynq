@@ -253,7 +253,8 @@ x-wasm:
                           #   an on_change_mirror may list several
     loader: python        # python | lua | javascript | wat | wasm
     entry: cell_voltage   # function to call inside the code
-    source: |             # omitted when large; fetched by hash. `wasm` takes !!binary
+    source: |             # left out of the served schema above 16 KiB; fetched by hash.
+                          #   `wasm` takes !!binary
       ...
     hash: sha256:...      # of the UTF-8 text or the module bytes; checked when inline
     params: {...}         # JSON Schema
@@ -449,8 +450,13 @@ Built for properties and methods, with every loader (2026-11-12).
   only inside the WebAssembly sandbox, where a bug can give wrong results but can't reach the
   host. The interpreter tests (`spirisynq-extism/tests/`) exercise it.
 
-Not yet:
-- Code fetched by hash.
+- Code fetched by hash (2026-11-17). An owner serves its schema with any `source` longer than
+  16 KiB left out, and answers `<topic>/sr_code/<hex digest>` with that code's bytes, for the
+  code in its own type only. A mirror whose schema leaves code out fetches it from the owner
+  when it opens, keeps it only if its hash matches, and asks again when an owner appears. Code
+  is kept per session by hash: a schema's own sources count too, so another mirror of the type
+  fetches nothing. Until it arrives, running that code fails with `CodeNotFetched`; the hooks
+  `_core` runs for it fail the same way (an `after_receive`'s value is `BadData`).
 
 ## Language targets
 
@@ -512,6 +518,7 @@ YAML (encoding `application/yaml`); everything else passes through to the bindin
 | `sr_metadata`, `sr_metadata/<type>` | owner's queryable | `{topic, owner: <zid>, type: <$id>, bases: [<$id>…]}` |
 | `sr_object_schema`, `sr_type_schema/<type>` | owner's queryable | the type's schema |
 | `sr_alive/<zid>` | owner's liveliness token | the owner is alive, in that session |
+| `sr_code/<hex>` | owner's queryable, if its type has code | the code with that SHA-256, as bytes |
 
 `<type>` is a type id without its version, as one key chunk (`pypi:<dist>:<path>`,
 `uuid:<uuid>`, `uri:<escaped URI>`), mounted for the type and each of its bases, so

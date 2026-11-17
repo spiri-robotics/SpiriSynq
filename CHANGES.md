@@ -92,13 +92,18 @@
   where bytes and integer keys are in its JSON from the new `marks` host function and the
   input's `"marks"`, and marks its own with `mark`.
 
+- **WASM code is fetched by its hash**: an owner leaves code over 16 KiB out of the schema it
+  serves, and serves it at `<topic>/sr_code/<hex digest>`. A mirror fetches the code its schema
+  leaves out, checks the hash, and keeps it for every object of the session; until it arrives,
+  running that code fails with `CodeNotFetched`.
+
 ### Tests
 
 - **The Rust core must keep 100% line and function coverage.** `make rust-test` and the new
   `Rust` workflow fail below it. `spirisynq-yaml` has 58 tests, including property tests that
   everything written reads back equal and that the parser never panics on arbitrary input.
   `spirisynq-schema` has 47, including property tests that every key built from a template
-  decodes back to the same arguments. `spirisynq-core` has 88, run over an in-memory network
+  decodes back to the same arguments. `spirisynq-core` has 91, run over an in-memory network
   that connects several sessions as zenoh would. `spirisynq-zenoh` has 21, over real zenoh
   sessions on loopback TCP, shared memory and zenoh failures included. `spirisynq-extism` has 34:
   a WebAssembly plug-in that uses every host function, past its time and memory limits

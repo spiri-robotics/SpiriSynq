@@ -23,6 +23,37 @@ pub const OBJECT_SCHEMA: &str = "sr_object_schema";
 pub const TYPE_SCHEMA: &str = "sr_type_schema";
 /// Liveliness tokens: `<topic>/sr_alive/<zid of the owner's session>`.
 pub const ALIVE: &str = "sr_alive";
+/// The query an owner answers with a piece of its type's WASM code, by hash:
+/// `sr_code/<hex digest>`. The reply's payload is the code's bytes, as hashed.
+pub const CODE: &str = "sr_code";
+
+/// Code longer than this, in bytes, is left out of the schema an owner serves, and fetched by
+/// its hash instead.
+pub const INLINE_LIMIT: usize = 16 * 1024;
+
+/// The schema as an owner serves it: code longer than [`INLINE_LIMIT`] left out.
+pub(crate) fn served_schema(schema: &Value) -> Value {
+    let mut schema = schema.clone();
+    let Value::Map(root) = &mut schema else { return schema };
+    for (key, wasm) in root.iter_mut() {
+        if *key != Value::String("x-wasm".into()) {
+            continue;
+        }
+        let Value::Map(entries) = wasm else { continue };
+        for (_, entry) in entries.iter_mut() {
+            let Value::Map(fields) = entry else { continue };
+            fields.retain(|(k, v)| {
+                let long = match v {
+                    Value::String(s) => s.len() > INLINE_LIMIT,
+                    Value::Binary(b) => b.len() > INLINE_LIMIT,
+                    _ => false,
+                };
+                !(*k == Value::String("source".into()) && long)
+            });
+        }
+    }
+    schema
+}
 
 pub(crate) fn key(topic: &str, rest: &str) -> String {
     format!("{topic}/{rest}")

@@ -164,3 +164,21 @@ pub fn settle(net: &mut Net) -> Vec<Vec<Notice>> {
 pub fn unwritable() -> Value {
     Value::Map(vec![(Value::Seq(vec![]), Value::Null)])
 }
+
+/// Schema text whose `x-wasm` entries say `hash: HASH`, with code in each: `(module)`, and its
+/// hash.
+pub fn with_code(text: &str) -> String {
+    let hash = spirisynq_schema::Source::Text("(module)".into()).hash();
+    let lines = text.lines().map(|line| {
+        let Some(at) = line.find("hash: HASH") else {
+            return line.to_owned();
+        };
+        if line.trim_start().starts_with("hash:") {
+            let indent = &line[..at];
+            format!("{indent}hash: {hash}\n{indent}source: \"(module)\"")
+        } else {
+            line.replace("hash: HASH", &format!("hash: {hash}, source: \"(module)\""))
+        }
+    });
+    lines.collect::<Vec<_>>().join("\n")
+}

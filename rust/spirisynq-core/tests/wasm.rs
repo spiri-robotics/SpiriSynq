@@ -9,8 +9,6 @@ use spirisynq_core::{Error, FieldOptions, Frame, ObjectOptions, WasmHost};
 use spirisynq_schema::WasmEntry;
 use spirisynq_yaml::Value;
 
-const HASH: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-
 const BATTERY_CODE: &str = r##"
 $schema: https://json-schema.org/draft/2020-12/schema
 x-spirisynq-schema: 3
@@ -101,7 +99,7 @@ fn returning(output: &str) -> Script {
 /// A network with a battery owned on session 0 and a mirror of it on session 1. The owner's
 /// `log` field has its own encoding.
 fn batteries() -> (Net, spirisynq_core::ObjectId, spirisynq_core::ObjectId) {
-    let schema = schema_from(&BATTERY_CODE.replace("HASH", HASH));
+    let schema = schema_from(&with_code(BATTERY_CODE));
     let mut net = Net::new();
     net.add_session();
     let raw = FieldOptions {

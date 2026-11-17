@@ -16,8 +16,6 @@ use spirisynq_core::{
 use spirisynq_schema::WasmEntry;
 use spirisynq_yaml::Value;
 
-const HASH: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-
 const LOG: &str = r##"
 $schema: https://json-schema.org/draft/2020-12/schema
 x-spirisynq-schema: 3
@@ -80,7 +78,7 @@ fn args(pairs: &[(&str, &str)]) -> Vec<(String, Value)> {
 
 /// A log owned on session 0, with `write` a raw method, and a mirror of it on session 1.
 fn logs() -> (Net, ObjectId, ObjectId) {
-    let schema = schema_from(&LOG.replace("HASH", HASH));
+    let schema = schema_from(&with_code(LOG));
     let mut net = Net::new();
     net.add_session();
     let options = ObjectOptions {

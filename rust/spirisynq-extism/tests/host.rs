@@ -341,7 +341,6 @@ fn code_that_cant_be_loaded_says_why() {
     let mut host = Host::default();
     let s = net.session(0);
     let cases = [
-        ("elsewhere", "isn't in the schema"),
         ("cobol", "loader `cobol` isn't available yet"),
         ("broken", "expected"),
         ("absent", "absent"),
@@ -354,5 +353,10 @@ fn code_that_cant_be_loaded_says_why() {
     assert_eq!(
         run(s, &mut host, owner, "check", "null"),
         Err(Error::NotRunnable("check".into()))
+    );
+    // Code left out of the schema, which no owner has sent.
+    assert_eq!(
+        run(s, &mut host, owner, "elsewhere", "null"),
+        Err(Error::CodeNotFetched("elsewhere".into()))
     );
 }

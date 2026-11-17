@@ -41,6 +41,9 @@ pub enum Error {
     NotRunnable(String),
     /// WASM code failed, or what it gave back can't be read; says why.
     Wasm(String),
+    /// The code isn't in the schema, and hasn't been fetched by its hash yet: a mirror fetches
+    /// it from the owner when it opens, and again when an owner appears.
+    CodeNotFetched(String),
     /// An `after_call` let one of the call's error replies through: the caller raises it as it
     /// is.
     Reply(ReplyError),
@@ -66,6 +69,12 @@ impl fmt::Display for Error {
             Error::UnknownCode(name) => write!(f, "no WASM code `{name}`"),
             Error::NotRunnable(name) => write!(f, "`{name}` is a hook, not a property or method"),
             Error::Wasm(why) => write!(f, "WASM: {why}"),
+            Error::CodeNotFetched(name) => {
+                write!(
+                    f,
+                    "the code of `{name}` hasn't been fetched from the owner yet"
+                )
+            }
             Error::Reply(error) => {
                 let (kind, message) = error.parts();
                 write!(f, "{kind}: {message}")

@@ -9,8 +9,6 @@ use spirisynq_core::{Data, Error, Frame, Notice, ObjectId, ObjectOptions, Origin
 use spirisynq_schema::{Role, WasmEntry};
 use spirisynq_yaml::Value;
 
-const HASH: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-
 const CAMERA: &str = r##"
 $schema: https://json-schema.org/draft/2020-12/schema
 x-spirisynq-schema: 3
@@ -61,7 +59,7 @@ fn wasm_error(result: Result<impl std::fmt::Debug, Error>) -> String {
 
 /// A camera owned on session 0, and a mirror of it on session 1.
 fn cameras() -> (Net, ObjectId, ObjectId) {
-    let schema = schema_from(&CAMERA.replace("HASH", HASH));
+    let schema = schema_from(&with_code(CAMERA));
     let mut net = Net::new();
     net.add_session();
     let owner = net

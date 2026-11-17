@@ -5,7 +5,8 @@ use std::iter;
 use std::sync::Arc;
 
 use spirisynq_schema::{
-    RemoteMethod, Role as CodeRole, TypeId, TypeSchema, WasmEntry, check_topic,
+    Loader, RemoteMethod, Role as CodeRole, Source as Code, TypeId, TypeSchema, WasmEntry,
+    check_topic,
 };
 use spirisynq_yaml::Value;
 
@@ -15,7 +16,7 @@ use crate::notice::{Data, IncomingCall, Notice, ObjectId, Origin, ReplyError, Re
 use crate::store::{Store, Stored};
 use crate::transport::{Command, EntityId, Event, Qos, QueryId, RequestId, Sample, Source, Zid};
 use crate::wasm::{CallJob, CallSent, Named, Replies, WasmHost, WasmJob};
-use crate::wire::{self, ALIVE, DONE, METADATA, OBJECT_SCHEMA, REHYDRATE, TYPE_SCHEMA};
+use crate::wire::{self, ALIVE, CODE, DONE, METADATA, OBJECT_SCHEMA, REHYDRATE, TYPE_SCHEMA};
 
 /// How this process handles one field: the Python `<field>_<setting>` class attributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -159,8 +160,24 @@ impl Object {
             .filter(move |c| c.role == *role && c.of.iter().any(|o| o == of))
     }
 
-    /// A job for `code`, with a snapshot of the fields.
-    fn job(&self, object: ObjectId, code: &WasmEntry, args: Named) -> Result<WasmJob, Error> {
+    /// A job for `code`, with a snapshot of the fields. Code left out of the schema comes from
+    /// `fetched`, by its hash.
+    fn job(
+        &self,
+        object: ObjectId,
+        code: &WasmEntry,
+        args: Named,
+        fetched: &HashMap<String, Code>,
+    ) -> Result<WasmJob, Error> {
+        let mut code = code.clone();
+        if code.source.is_none() {
+            let source = fetched.get(&code.hash);
+            code.source = Some(
+                source
+                    .cloned()
+                    .ok_or(Error::CodeNotFetched(code.name.clone()))?,
+            );
+        }
         let mut fields = Named::default();
         let mut paths = Vec::new();
         for field in self.schema.fields() {
@@ -174,7 +191,7 @@ impl Object {
         }
         Ok(WasmJob::new(
             object,
-            code.clone(),
+            code,
             self.schema.clone(),
             fields,
             paths,
@@ -219,14 +236,22 @@ enum Route {
     Method(String),
     Token,
     Alive,
+    Code,
 }
 
 #[derive(Debug)]
 enum RequestKind {
     Rehydrate(ObjectId),
-    Call { raw: bool },
+    Call {
+        raw: bool,
+    },
     Discover,
     Schema,
+    /// Code by its hash, and whether it's a binary module (else UTF-8 text).
+    Code {
+        hash: String,
+        binary: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -251,6 +276,10 @@ pub struct Session {
     routes: HashMap<EntityId, (ObjectId, Route)>,
     requests: HashMap<RequestId, Request>,
     queries: HashMap<QueryId, (ObjectId, String)>,
+    /// WASM code by its hash: from the schemas of objects opened here, and fetched by mirrors.
+    code: HashMap<String, Code>,
+    /// Code being fetched, by its hash.
+    fetching: HashMap<String, RequestId>,
     commands: VecDeque<Command>,
     notices: VecDeque<Notice>,
 }
@@ -265,6 +294,8 @@ impl Session {
             routes: HashMap::new(),
             requests: HashMap::new(),
             queries: HashMap::new(),
+            code: HashMap::new(),
+            fetching: HashMap::new(),
             commands: VecDeque::new(),
             notices: VecDeque::new(),
         }
@@ -338,6 +369,11 @@ impl Session {
             }
             raw_methods.insert(name);
         }
+        for code in schema.wasm() {
+            if let Some(source) = &code.source {
+                self.code.insert(code.hash.clone(), source.clone());
+            }
+        }
         let object = ObjectId(self.fresh());
         self.objects.insert(
             object,
@@ -400,6 +436,10 @@ impl Session {
             Route::Rehydrate,
             queryable(wire::key(&topic, REHYDRATE)),
         );
+        if !schema.wasm().is_empty() {
+            let code = format!("{CODE}/*");
+            self.declare(object, Route::Code, queryable(wire::key(&topic, &code)));
+        }
         let types = || iter::once(schema.id()).chain(schema.bases());
         let mounts = [(METADATA, METADATA), (OBJECT_SCHEMA, TYPE_SCHEMA)];
         for (bare, per_type) in mounts {
@@ -454,7 +494,31 @@ impl Session {
         if rehydrate {
             self.start_rehydrate(object);
         }
+        self.fetch_code(object);
         Ok(object)
+    }
+
+    /// Fetch, from the mirror's owner, the code its schema leaves out and no fetch is under way
+    /// for.
+    fn fetch_code(&mut self, object: ObjectId) {
+        let obj = &self.objects[&object];
+        let missing: Vec<(String, bool)> = (obj.schema.wasm().iter())
+            .filter(|c| c.source.is_none() && !self.code.contains_key(&c.hash))
+            .filter(|c| !self.fetching.contains_key(&c.hash))
+            .map(|c| (c.hash.clone(), c.loader == Loader::Wasm))
+            .collect();
+        let topic = obj.topic.clone();
+        for (hash, binary) in missing {
+            let hex = hash
+                .strip_prefix("sha256:")
+                .expect("the schema checks hashes");
+            let key = wire::key(&topic, &format!("{CODE}/{hex}"));
+            let h = hash.clone();
+            let request = self.send_get(key, String::new(), None, false, None, || {
+                RequestKind::Code { hash: h, binary }
+            });
+            self.fetching.insert(hash, request);
+        }
     }
 
     fn start_rehydrate(&mut self, object: ObjectId) {
@@ -631,7 +695,7 @@ impl Session {
             _ => return Err(Error::Wasm("the arguments must be a mapping".into())),
         }
         let args = named;
-        obj.job(object, code, args)
+        obj.job(object, code, args, &self.code)
     }
 
     /// The names of the object's WASM hooks of `role` on `of` (a field's key, or a remote
@@ -669,7 +733,7 @@ impl Session {
             args.insert("field", &Value::String(field.to_owned()))
                 .expect("a string has a JSON form");
         }
-        Ok(obj.job(object, code, args)?.of(field))
+        Ok(obj.job(object, code, args, &self.code)?.of(field))
     }
 
     /// Get ready to decode a sample that arrived for `field`, with its WASM `after_receive`;
@@ -685,7 +749,7 @@ impl Session {
         let Some(code) = obj.hooks(&CodeRole::AfterReceive, field).next() else {
             return Ok(None);
         };
-        let job = obj.job(object, code, Default::default())?;
+        let job = obj.job(object, code, Default::default(), &self.code)?;
         Ok(Some(job.of(field).with_sample(sample)))
     }
 
@@ -705,7 +769,7 @@ impl Session {
         let mut args = Named::default();
         args.insert("value", value)
             .map_err(|e| Error::Wasm(format!("the value: {e}")))?;
-        Ok(Some(obj.job(object, code, args)?.of(field)))
+        Ok(Some(obj.job(object, code, args, &self.code)?.of(field)))
     }
 
     /// Finish a job, and give its result. If the code failed, or its result or a field it set
@@ -820,7 +884,7 @@ impl Session {
             map.insert(name, value)
                 .map_err(|e| Error::Wasm(format!("`{name}`: {e}")))?;
         }
-        let job = obj.job(object, code, map)?.of(method);
+        let job = obj.job(object, code, map, &self.code)?.of(method);
         Ok(Some(CallJob { job, options }))
     }
 
@@ -890,7 +954,9 @@ impl Session {
         let Some(code) = obj.hooks(&CodeRole::AfterCall, method).next() else {
             return Ok(None);
         };
-        let job = obj.job(object, code, Default::default())?.of(method);
+        let job = obj
+            .job(object, code, Default::default(), &self.code)?
+            .of(method);
         Ok(Some(job.with_replies(replies)))
     }
 
@@ -1176,6 +1242,7 @@ impl Session {
         let obj = &self.objects[&object];
         let accepts = |rel: &str| match &route {
             Route::Rehydrate => rel == REHYDRATE,
+            Route::Code => rel.strip_prefix(CODE).is_some_and(|r| r.starts_with('/')),
             Route::Metadata(key) | Route::Schema(key) => wire::key(&obj.topic, rel) == *key,
             Route::Method(name) => {
                 (obj.schema.method_for_key(rel)).is_some_and(|(m, _)| m.name == *name)
@@ -1228,7 +1295,27 @@ impl Session {
                 });
                 self.answer_done(query, key);
             }
-            Route::Schema(key) => match wire::yaml_sample(obj.schema.raw()) {
+            Route::Code => {
+                let hash = format!("sha256:{}", &rel[CODE.len() + 1..]);
+                let ours = obj.schema.wasm().iter().any(|c| c.hash == hash);
+                match self.code.get(&hash).filter(|_| ours) {
+                    Some(code) => {
+                        let sample = Sample {
+                            payload: code.as_bytes().to_vec().into(),
+                            encoding: "zenoh/bytes".into(),
+                            attachment: None,
+                        };
+                        self.commands.push_back(Command::Reply {
+                            query,
+                            key: key.clone(),
+                            sample,
+                        });
+                        self.answer_done(query, key);
+                    }
+                    None => self.end_with_error(query, "LookupError", "no code with this hash"),
+                }
+            }
+            Route::Schema(key) => match wire::yaml_sample(&wire::served_schema(obj.schema.raw())) {
                 Ok(sample) => {
                     self.commands.push_back(Command::Reply {
                         query,
@@ -1353,6 +1440,18 @@ impl Session {
                 };
                 notice
             }
+            RequestKind::Code { ref hash, binary } => {
+                let bytes = sample.payload.bytes().into_owned();
+                let code = match binary {
+                    true => Some(Code::Binary(bytes)),
+                    false => String::from_utf8(bytes).ok().map(Code::Text),
+                };
+                // Only the code the hash names: anything else is dropped, and fetched again.
+                if let Some(code) = code.filter(|c| c.hash() == *hash) {
+                    self.code.insert(hash.clone(), code);
+                }
+                return;
+            }
         };
         self.notices.push_back(notice);
     }
@@ -1419,6 +1518,10 @@ impl Session {
                 }
                 return;
             }
+            RequestKind::Code { hash, .. } => {
+                self.fetching.remove(&hash);
+                return;
+            }
             _ => Notice::RequestEnded { request, end },
         };
         self.notices.push_back(notice);
@@ -1451,6 +1554,9 @@ impl Session {
         *again |= alive && *stale && rehydrating.is_some();
         if fetch {
             self.start_rehydrate(object);
+        }
+        if alive {
+            self.fetch_code(object);
         }
     }
 

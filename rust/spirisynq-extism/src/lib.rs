@@ -286,7 +286,7 @@ impl Module<'_> {
             Module::Bundled(bytes) => return Ok(bytes.to_vec()),
             Module::Own(code) => code,
         };
-        match (&code.loader, source(code)?) {
+        match (&code.loader, source(code)) {
             (Loader::Wasm, Source::Binary(bytes)) => Ok(bytes.clone()),
             (Loader::Wat, Source::Text(text)) => wat::parse_str(text).map_err(describe),
             (loader, _) => Err(format!("loader `{}` isn't available yet", loader.as_str())),
@@ -294,19 +294,17 @@ impl Module<'_> {
     }
 }
 
-fn source(code: &WasmEntry) -> Result<&Source, String> {
-    code.source.as_ref().ok_or_else(|| {
-        format!(
-            "`{}` isn't in the schema, and fetching code by its hash isn't supported yet",
-            code.name
-        )
-    })
+/// The code: the engine fills it in, from the schema or fetched by its hash.
+fn source(code: &WasmEntry) -> &Source {
+    code.source
+        .as_ref()
+        .expect("the engine gives jobs their code")
 }
 
 /// An interpreter's input: the source, the function to call, and the arguments in order.
 fn interpreter_input(code: &WasmEntry, frame: &mut Frame) -> Result<Vec<u8>, String> {
     // The schema checks that a text loader has text.
-    let text = String::from_utf8_lossy(source(code)?.as_bytes());
+    let text = String::from_utf8_lossy(source(code).as_bytes());
     let declared = match code.role {
         Role::Property | Role::Method | Role::BeforeCall => {
             code.params.as_ref().and_then(property_names)
