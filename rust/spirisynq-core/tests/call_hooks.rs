@@ -274,7 +274,7 @@ fn a_before_call_that_fails_sends_nothing() {
     );
     assert_eq!(
         wasm_error(job.map(|_| ())),
-        "`x`: a mapping key that isn't a string has no JSON form"
+        "`x`: a mapping key that isn't a string or an integer has no JSON form"
     );
     net.run();
     assert!(net.trace().is_empty(), "{:?}", net.trace());
@@ -606,7 +606,7 @@ fn after_call_runs_on_a_thread_while_replies_arrive() {
 
 /// A value with no JSON form.
 fn unwritable_json() -> Value {
-    Value::Map(vec![(Value::Int(1), Value::Null)])
+    Value::Map(vec![(Value::Bool(true), Value::Null)])
 }
 
 #[test]

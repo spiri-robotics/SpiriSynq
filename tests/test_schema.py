@@ -104,6 +104,7 @@ def test_containers():
     class Containers:
         items: list[int] = dataclasses.field(default_factory=list)
         mapping: dict[str, float] = dataclasses.field(default_factory=dict)
+        by_cell: dict[int, float] = dataclasses.field(default_factory=dict)
         pair: tuple[int, str] = (1, "a")
         many: tuple[int, ...] = ()
         tags: set[str] = dataclasses.field(default_factory=set)
@@ -113,6 +114,14 @@ def test_containers():
     assert props["items"] == {"type": "array", "items": {"type": "integer"}, "default": []}
     assert props["mapping"] == {
         "type": "object", "additionalProperties": {"type": "number"}, "default": {}
+    }
+    # JSON's keys are strings: an integer key says so.
+    assert props["by_cell"] == {
+        "type": "object",
+        "additionalProperties": {"type": "number"},
+        "propertyNames": {"pattern": "^-?[0-9]+$"},
+        "x-key-type": "integer",
+        "default": {},
     }
     assert props["pair"] == {
         "type": "array",

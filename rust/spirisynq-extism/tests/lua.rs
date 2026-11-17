@@ -230,7 +230,11 @@ fn values_cross_as_json() {
         assert_eq!(get(&got, key), &v(want), "{key}");
     }
     let keyed = get(&got, "keyed");
-    assert_eq!((get(keyed, "1"), get(keyed, "3")), (&text("a"), &text("c")));
+    let (one, three) = (Value::Int(1), Value::Int(3));
+    assert_eq!(
+        (at(keyed, &one), at(keyed, &three)),
+        (&text("a"), &text("c"))
+    );
     // What goes in comes back out.
     let x = v(
         r#"{x: {text: "a\"b\\c/\b\f\n\r\t é 😀 \x01", list: [-1, 2.5e-3, true, false, []], none: null}}"#,

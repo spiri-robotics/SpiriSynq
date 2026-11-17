@@ -7,20 +7,23 @@
 //! its result ([`Session::finish_wasm`](crate::Session::finish_wasm)). Nothing is locked while
 //! the code runs.
 //!
-//! Code sees values as JSON: tags are dropped and bytes are base64 strings, as the schema
-//! describes them. Where the bytes are goes with the JSON, as paths of keys and indexes
-//! ([`Frame::given`], and `"binary"` in [`Frame::input`]), so a runner can make them its
-//! language's bytes. What comes back is read the other way, guided by the schema: a string whose
-//! schema says `x-yaml-tag: "!!binary"` becomes bytes, and a string or collection whose schema
+//! Code sees values as JSON: tags are dropped, bytes are base64 strings, and integer keys are
+//! strings. Where those are goes with the JSON, as marks ([`Frame::given`], and `"marks"` in
+//! [`Frame::input`]): `{"bytes": [...], "int_keys": [...]}`, each a list of paths of keys and
+//! indexes from the value's root, an integer key's path being its entry's. A runner makes them
+//! its language's bytes and integers. What comes back is read the other way, guided by the
+//! schema: a string whose schema says `x-yaml-tag: "!!binary"` becomes bytes, a key of a mapping
+//! whose schema says `x-key-type: integer` becomes an integer, a string or collection whose schema
 //! has a local tag such as `!Link` becomes that tagged value, and a whole number whose schema
 //! says `number` but not `integer` becomes a float. In an `anyOf`, the first branch whose `type`
 //! fits the value guides it.
 //!
-//! Code can mark the strings in what it hands back that are bytes, base64-encoded
-//! ([`Frame::mark`]): those are bytes whatever the schema says, or text where the schema says a
-//! string that isn't bytes. In an `anyOf`, a marked string prefers a bytes branch, and a string
-//! that isn't marked one that isn't. Lua's strings are bytes already, so from Lua code a string
-//! that isn't marked, where the schema says bytes, is the string's own bytes, not base64.
+//! Code can mark the bytes and integer keys in what it hands back, the same way
+//! ([`Frame::mark`]). A marked string is bytes whatever the schema says, or text where the schema
+//! says a string that isn't bytes; a marked key is an integer. In an `anyOf`, a marked string
+//! prefers a bytes branch, and a string that isn't marked one that isn't. Lua's strings are bytes
+//! already, so from Lua code a string that isn't marked, where the schema says bytes, is the
+//! string's own bytes, not base64.
 //!
 //! The field hooks run the same way. An `after_receive` reads the [`Sample`] that arrived
 //! ([`Frame::sample`], [`Frame::decode_sample`]) and returns the field's value; a `before_send`
@@ -76,12 +79,12 @@ pub struct Frame {
     /// Every field key, and whether it has its own encoding (code can't use those).
     paths: Vec<(String, bool)>,
     args: Named,
-    /// The fields the code set, and where it marked bytes in each.
-    writes: Vec<(String, Json, Vec<Path>)>,
-    /// Where the bytes are in the JSON the code was last given.
-    given: Vec<Path>,
-    /// Where the code marked bytes in the JSON it hands over next.
-    marks: Vec<Path>,
+    /// The fields the code set, and its marks in each.
+    writes: Vec<(String, Json, Marks)>,
+    /// The marks in the JSON the code was last given.
+    given: Marks,
+    /// The code's marks in the JSON it hands over next.
+    marks: Marks,
     /// Whether the code's strings are bytes (Lua).
     byte_strings: bool,
     /// The role, if it can't set fields.
@@ -99,46 +102,20 @@ pub struct Frame {
 #[derive(Debug, Clone, PartialEq)]
 enum Sent {
     Raw(Sample),
-    Value(Json, Vec<Path>),
-    Args(Map<String, Json>, Vec<Path>),
+    Value(Json, Marks),
+    Args(Map<String, Json>, Marks),
     Call { sample: Sample, parameters: String },
 }
 
 /// A place in a JSON value: keys and indexes from its root.
 pub(crate) type Path = Vec<Json>;
 
-/// Values by name as code sees them, and where their bytes are: paths starting with a name.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct Named {
-    map: Map<String, Json>,
-    binary: Vec<Path>,
-}
-
-impl Named {
-    /// Add a value, as JSON.
-    pub fn insert(&mut self, name: &str, value: &Value) -> Result<(), String> {
-        let mut at = vec![Json::from(name)];
-        let json = marked(value, &mut at, &mut self.binary)?;
-        self.map.insert(name.to_owned(), json);
-        Ok(())
-    }
-
-    /// The value at `path`, a name and keys below it, and where its bytes are.
-    fn get(&self, path: &[Json]) -> Option<(Json, Vec<Path>)> {
-        let (first, rest) = path.split_first()?;
-        let mut node = self.map.get(first.as_str()?)?;
-        for key in rest {
-            node = node.as_object()?.get(key.as_str()?)?;
-        }
-        Some((node.clone(), below(&self.binary, path)))
-    }
-
-    /// The JSON of them all, with the paths of its bytes under `name`.
-    fn json(&self, name: &str, binary: &mut Vec<Path>) -> Json {
-        let at = |p: &Path| [vec![Json::from(name)], p.clone()].concat();
-        binary.extend(self.binary.iter().map(at));
-        Json::Object(self.map.clone())
-    }
+/// Where JSON holds what JSON can't say: bytes, as base64 strings, and integer keys, as
+/// strings. Paths from the value's root; an integer key's path is its entry's.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct Marks {
+    bytes: Vec<Path>,
+    int_keys: Vec<Path>,
 }
 
 /// The paths among `paths` that are under `prefix`, from there.
@@ -147,6 +124,113 @@ fn below(paths: &[Path], prefix: &[Json]) -> Vec<Path> {
         .iter()
         .filter_map(|p| p.strip_prefix(prefix).map(<[Json]>::to_vec))
         .collect()
+}
+
+impl Marks {
+    /// The marks under `prefix`, from there.
+    fn below(&self, prefix: &[Json]) -> Marks {
+        Marks {
+            bytes: below(&self.bytes, prefix),
+            int_keys: below(&self.int_keys, prefix),
+        }
+    }
+
+    /// Add `other`'s marks, put under `prefix`.
+    fn add_under(&mut self, prefix: &[Json], other: &Marks) {
+        let under = |p: &Path| [prefix, p].concat();
+        self.bytes.extend(other.bytes.iter().map(under));
+        self.int_keys.extend(other.int_keys.iter().map(under));
+    }
+
+    /// Drop the marks under `prefix`.
+    fn clear_under(&mut self, prefix: &[Json]) {
+        self.bytes.retain(|p| !p.starts_with(prefix));
+        self.int_keys.retain(|p| !p.starts_with(prefix));
+    }
+
+    /// Whether the value itself is marked as bytes.
+    fn bytes_here(&self) -> bool {
+        self.bytes.iter().any(Vec::is_empty)
+    }
+
+    /// Whether the value's key is marked as an integer.
+    fn int_key_here(&self) -> bool {
+        self.int_keys.iter().any(Vec::is_empty)
+    }
+
+    /// As JSON, leaving out what's empty: `None` if all is.
+    fn to_json(&self) -> Option<Json> {
+        let mut map = Map::new();
+        for (kind, paths) in [("bytes", &self.bytes), ("int_keys", &self.int_keys)] {
+            if !paths.is_empty() {
+                map.insert(kind.into(), Json::from(paths.clone()));
+            }
+        }
+        (!map.is_empty()).then_some(Json::Object(map))
+    }
+
+    fn from_json(json: Json) -> Result<Marks, String> {
+        let bad = || {
+            r#"marks must be {"bytes": [...], "int_keys": [...]}, each a list of paths of keys and indexes"#
+                .to_owned()
+        };
+        let Json::Object(map) = json else {
+            return Err(bad());
+        };
+        let mut marks = Marks::default();
+        for (kind, paths) in map {
+            let list = match kind.as_str() {
+                "bytes" => &mut marks.bytes,
+                "int_keys" => &mut marks.int_keys,
+                _ => return Err(bad()),
+            };
+            let Json::Array(paths) = paths else {
+                return Err(bad());
+            };
+            for path in paths {
+                match path {
+                    Json::Array(keys) if keys.iter().all(|k| k.is_string() || k.is_u64()) => {
+                        list.push(keys);
+                    }
+                    _ => return Err(bad()),
+                }
+            }
+        }
+        Ok(marks)
+    }
+}
+
+/// Values by name as code sees them, and their marks: paths starting with a name.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Named {
+    map: Map<String, Json>,
+    marks: Marks,
+}
+
+impl Named {
+    /// Add a value, as JSON.
+    pub fn insert(&mut self, name: &str, value: &Value) -> Result<(), String> {
+        let mut at = vec![Json::from(name)];
+        let json = marked(value, &mut at, &mut self.marks)?;
+        self.map.insert(name.to_owned(), json);
+        Ok(())
+    }
+
+    /// The value at `path`, a name and keys below it, and its marks.
+    fn get(&self, path: &[Json]) -> Option<(Json, Marks)> {
+        let (first, rest) = path.split_first()?;
+        let mut node = self.map.get(first.as_str()?)?;
+        for key in rest {
+            node = node.as_object()?.get(key.as_str()?)?;
+        }
+        Some((node.clone(), self.marks.below(path)))
+    }
+
+    /// The JSON of them all, with its marks put under `name`.
+    fn json(&self, name: &str, marks: &mut Marks) -> Json {
+        marks.add_under(&[Json::from(name)], &self.marks);
+        Json::Object(self.map.clone())
+    }
 }
 
 /// A field key as a path.
@@ -202,45 +286,34 @@ fn article(role: &str) -> &'static str {
 }
 
 impl Frame {
-    /// The entry function's input: `{"self": <fields>, "args": <arguments>}`, and `"binary"`:
-    /// where the bytes are in it, if anywhere. Fields without a value, and fields with their own
-    /// encoding, are left out of `self`.
+    /// The entry function's input: `{"self": <fields>, "args": <arguments>}`, and `"marks"`:
+    /// where its bytes and integer keys are, if anywhere. Fields without a value, and fields with
+    /// their own encoding, are left out of `self`.
     pub fn input(&self) -> Vec<u8> {
-        let mut binary = Vec::new();
+        let mut marks = Marks::default();
         let mut input = Map::new();
-        input.insert("self".into(), self.fields.json("self", &mut binary));
-        input.insert("args".into(), self.args.json("args", &mut binary));
-        if !binary.is_empty() {
-            input.insert("binary".into(), Json::from(binary));
+        input.insert("self".into(), self.fields.json("self", &mut marks));
+        input.insert("args".into(), self.args.json("args", &mut marks));
+        if let Some(marks) = marks.to_json() {
+            input.insert("marks".into(), marks);
         }
         Json::Object(input).to_string().into_bytes()
     }
 
-    /// Where the bytes are in the JSON the code was last given, by [`Frame::field`],
-    /// [`Frame::arg`], [`Frame::decode_sample`] or [`Frame::decode_reply`]: a list of paths,
-    /// each a list of keys and indexes from the value's root. `None` if nowhere.
+    /// The marks in the JSON the code was last given, by [`Frame::field`], [`Frame::arg`],
+    /// [`Frame::decode_sample`] or [`Frame::decode_reply`]: `{"bytes": [...], "int_keys":
+    /// [...]}`, each a list of paths of keys and indexes from the value's root, and left out if
+    /// empty. `None` if there are none.
     pub fn given(&self) -> Option<Json> {
-        (!self.given.is_empty()).then(|| Json::from(self.given.clone()))
+        self.given.to_json()
     }
 
-    /// Mark where the code put bytes, as base64 strings, in the JSON it hands over next: to
-    /// [`Frame::set_field`], [`Frame::send_value`], [`Frame::send_args`] or [`Frame::give`], or
-    /// as its result if it hands over nothing else first. `paths` as for [`Frame::given`].
-    pub fn mark(&mut self, paths: Json) -> Result<(), String> {
-        let bad = || "marks must be a list of paths, each a list of keys and indexes".to_owned();
-        let Json::Array(paths) = paths else {
-            return Err(bad());
-        };
-        let mut marks = Vec::new();
-        for path in paths {
-            match path {
-                Json::Array(keys) if keys.iter().all(|k| k.is_string() || k.is_u64()) => {
-                    marks.push(keys);
-                }
-                _ => return Err(bad()),
-            }
-        }
-        self.marks = marks;
+    /// Mark where the code put bytes, as base64 strings, and integer keys, as strings, in the
+    /// JSON it hands over next: to [`Frame::set_field`], [`Frame::send_value`],
+    /// [`Frame::send_args`] or [`Frame::give`], or as its result if it hands over nothing else
+    /// first. `marks` as [`Frame::given`] gives them.
+    pub fn mark(&mut self, marks: Json) -> Result<(), String> {
+        self.marks = Marks::from_json(marks)?;
         Ok(())
     }
 
@@ -282,9 +355,8 @@ impl Frame {
         }
         map.insert(last.to_owned(), value.clone());
         let at = key_path(path);
-        let binary = &mut self.fields.binary;
-        binary.retain(|p| !p.starts_with(&at));
-        binary.extend(marks.iter().map(|m| [at.as_slice(), m].concat()));
+        self.fields.marks.clear_under(&at);
+        self.fields.marks.add_under(&at, &marks);
         self.writes.retain(|(p, ..)| p != path);
         self.writes.push((path.to_owned(), value, marks));
         Ok(())
@@ -440,12 +512,12 @@ impl Frame {
     }
 }
 
-/// A sample decoded the usual way, from YAML, as JSON, and where its bytes are.
-fn decode(sample: &Sample) -> Result<(Json, Vec<Path>), String> {
+/// A sample decoded the usual way, from YAML, as JSON, and its marks.
+fn decode(sample: &Sample) -> Result<(Json, Marks), String> {
     let value = wire::decode(sample)?;
-    let mut binary = Vec::new();
-    let json = marked(&value, &mut Vec::new(), &mut binary)?;
-    Ok((json, binary))
+    let mut marks = Marks::default();
+    let json = marked(&value, &mut Vec::new(), &mut marks)?;
+    Ok((json, marks))
 }
 
 /// Code about to run: see [`Session::wasm_job`](crate::Session::wasm_job).
@@ -696,8 +768,8 @@ fn after_call(object: ObjectId, of: Option<String>, stream: Stream) -> Result<Ou
     })
 }
 
-/// A value as code sees it, at `at`; the paths of its bytes go in `binary`.
-fn marked(value: &Value, at: &mut Path, binary: &mut Vec<Path>) -> Result<Json, String> {
+/// A value as code sees it, at `at`; where its bytes and integer keys are goes in `marks`.
+fn marked(value: &Value, at: &mut Path, marks: &mut Marks) -> Result<Json, String> {
     Ok(match value {
         Value::Null => Json::Null,
         Value::Bool(b) => Json::Bool(*b),
@@ -708,14 +780,14 @@ fn marked(value: &Value, at: &mut Path, binary: &mut Vec<Path>) -> Result<Json, 
         },
         Value::String(s) => Json::String(s.clone()),
         Value::Binary(bytes) => {
-            binary.push(at.clone());
+            marks.bytes.push(at.clone());
             Json::String(BASE64.encode(bytes))
         }
         Value::Seq(items) => {
             let mut array = Vec::with_capacity(items.len());
             for (i, item) in items.iter().enumerate() {
                 at.push(Json::from(i));
-                array.push(marked(item, at, binary)?);
+                array.push(marked(item, at, marks)?);
                 at.pop();
             }
             Json::Array(array)
@@ -723,16 +795,29 @@ fn marked(value: &Value, at: &mut Path, binary: &mut Vec<Path>) -> Result<Json, 
         Value::Map(entries) => {
             let mut map = Map::new();
             for (k, v) in entries {
-                let Value::String(k) = k else {
-                    return Err("a mapping key that isn't a string has no JSON form".into());
+                let key = match k {
+                    Value::String(k) => k.clone(),
+                    Value::Int(i) => i.to_string(),
+                    _ => {
+                        let why = "a mapping key that isn't a string or an integer";
+                        return Err(format!("{why} has no JSON form"));
+                    }
                 };
-                at.push(Json::from(k.as_str()));
-                map.insert(k.clone(), marked(v, at, binary)?);
+                if map.contains_key(&key) {
+                    return Err(format!("two keys are `{key}` in JSON"));
+                }
+                at.push(Json::from(key.as_str()));
+                // Before what's inside it, so a runner that goes backwards does inner keys first.
+                if let Value::Int(_) = k {
+                    marks.int_keys.push(at.clone());
+                }
+                let json = marked(v, at, marks)?;
+                map.insert(key, json);
                 at.pop();
             }
             Json::Object(map)
         }
-        Value::Tagged(t) => marked(&t.value, at, binary)?,
+        Value::Tagged(t) => marked(&t.value, at, marks)?,
     })
 }
 
@@ -825,21 +910,24 @@ impl<'a> Shape<'a> {
         schema
     }
 
-    /// A mapping's entries, each read against its property's schema.
+    /// A mapping's entries, each read against its property's schema, and whether each key is
+    /// an integer: marked as one, or the schema says `x-key-type: integer`.
     fn properties(
         &self,
         map: Map<String, Json>,
         schema: &'a Value,
         budget: usize,
-        marks: &[Path],
-    ) -> Result<Vec<(String, Value)>, String> {
+        marks: &Marks,
+    ) -> Result<Vec<(String, bool, Value)>, String> {
         let props = get(schema, "properties");
         let other = get(schema, "additionalProperties").unwrap_or(&Value::Null);
+        let int_keys = get(schema, "x-key-type").and_then(text) == Some("integer");
         let mut entries = Vec::new();
         for (k, j) in map {
             let sub = props.and_then(|p| get(p, &k)).unwrap_or(other);
-            let v = self.value(j, sub, budget, &below(marks, &[Json::from(k.as_str())]))?;
-            entries.push((k, v));
+            let marks = marks.below(&[Json::from(k.as_str())]);
+            let v = self.value(j, sub, budget, &marks)?;
+            entries.push((k, int_keys || marks.int_key_here(), v));
         }
         Ok(entries)
     }
@@ -849,22 +937,23 @@ impl<'a> Shape<'a> {
         &self,
         map: Map<String, Json>,
         schema: &'a Value,
-        marks: &[Path],
+        marks: &Marks,
     ) -> Result<Vec<(String, Value)>, String> {
         let mut budget = BUDGET;
         let schema = self.resolve(schema, &mut budget);
-        self.properties(map, schema, budget, marks)
+        let entries = self.properties(map, schema, budget, marks)?;
+        Ok(entries.into_iter().map(|(k, _, v)| (k, v)).collect())
     }
 
-    /// `json` as a value, guided by `schema`; `marks` are where the code marked bytes in it.
+    /// `json` as a value, guided by `schema` and the code's `marks` in it.
     fn value(
         &self,
         json: Json,
         schema: &'a Value,
         mut budget: usize,
-        marks: &[Path],
+        marks: &Marks,
     ) -> Result<Value, String> {
-        let bytes = marks.iter().any(Vec::is_empty);
+        let bytes = marks.bytes_here();
         let mut schema = self.resolve(schema, &mut budget);
         while budget > 0
             && let Some(Value::Seq(branches)) = get(schema, "anyOf")
@@ -918,19 +1007,24 @@ impl<'a> Shape<'a> {
                 let item = get(schema, "items").unwrap_or(&Value::Null);
                 let mut seq = Vec::with_capacity(items.len());
                 for (i, j) in items.into_iter().enumerate() {
-                    let marks = below(marks, &[Json::from(i)]);
+                    let marks = marks.below(&[Json::from(i)]);
                     seq.push(self.value(j, item, budget, &marks)?);
                 }
                 Value::Seq(seq)
             }
             Json::Object(map) => {
-                let entries = self.properties(map, schema, budget, marks)?;
-                Value::Map(
-                    entries
-                        .into_iter()
-                        .map(|(k, v)| (Value::String(k), v))
-                        .collect(),
-                )
+                let mut entries = Vec::new();
+                for (k, int, v) in self.properties(map, schema, budget, marks)? {
+                    let key = match int {
+                        true => Value::Int(
+                            k.parse()
+                                .map_err(|_| format!("key `{k}` isn't an integer"))?,
+                        ),
+                        false => Value::String(k),
+                    };
+                    entries.push((key, v));
+                }
+                Value::Map(entries)
             }
         };
         // Only strings and collections take a local tag: a null where a link may be stays null.

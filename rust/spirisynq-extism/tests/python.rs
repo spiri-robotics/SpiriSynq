@@ -274,7 +274,7 @@ fn values_cross_as_json() {
         // Bytes go out marked as bytes: still bytes where the schema doesn't say.
         ("raw", "!!binary AAEC"),
         ("buffer", "!!binary Aw=="),
-        ("keyed", "{'3': c}"),
+        ("keyed", "{3: c}"),
     ] {
         assert_eq!(get(&got, key), &v(want), "{key}");
     }
@@ -322,8 +322,10 @@ fn the_docs_examples_run() {
     assert_eq!(none, Ok(Value::Null));
     let cells = v("{voltages: [3.8, 3.69, 3.9, 3.52], count: 2}");
     let weakest = run(s, &mut host, owner, "weakest_cells", &cells).unwrap();
+    // Integer keys, as the docs show, in no particular order: MicroPython's dicts have none.
+    let (one, three) = (Value::Int(1), Value::Int(3));
     assert_eq!(
-        (get(&weakest, "3"), get(&weakest, "1")),
+        (at(&weakest, &three), at(&weakest, &one)),
         (&v("3.52"), &v("3.69"))
     );
 }

@@ -23,10 +23,10 @@
 //! | `reply_payload(index) -> bytes`, `reply_encoding(index) -> text`, `reply_attachment(index) -> bytes`, `reply_decode(index) -> json` | In an `after_call`: a reply, as for a sample. `index` is an `i64`. |
 //! | `reply_escaped()` | In an `after_call`, about to fail: the error reply it was handed is why, so the caller gets that error as it is. |
 //! | `call_yield(json)` | In an `after_call`: yield a result to the caller. |
-//! | `binary_paths() -> json` | Where the bytes are, as base64 strings, in the JSON `field_get`, `arg_get`, `sample_decode` or `reply_decode` last returned: a list of paths, each a list of keys and indexes. Block 0 if nowhere. |
-//! | `binary_mark(json)` | Mark where the code put bytes, as base64 strings, in the JSON it hands over next (to `field_set`, `sample_send_value`, `call_send_args` or `call_yield`, or as its output if nothing else first), as paths. |
+//! | `marks() -> json` | Where the JSON `field_get`, `arg_get`, `sample_decode` or `reply_decode` last returned holds bytes, as base64 strings, and integer keys, as strings: `{"bytes": [...], "int_keys": [...]}`, each a list of paths of keys and indexes (an integer key's is its entry's), left out if empty. Block 0 if there are none. |
+//! | `mark(json)` | Mark where the code put bytes and integer keys, the same way, in the JSON it hands over next (to `field_set`, `sample_send_value`, `call_send_args` or `call_yield`, or as its output if nothing else first). |
 //!
-//! The input says where its bytes are too, as `"binary"`: paths from the input's root, such as
+//! The input has its marks too, as `"marks"`, with paths from the input's root such as
 //! `["self", "image"]`, left out if there are none.
 //!
 //! Block 0 is empty bytes (Extism gives an empty block offset 0), so an empty attachment is no
@@ -45,9 +45,9 @@
 //! `"sample": "in"` or `"out"` in the input. A `before_call`'s arguments go in the order of its
 //! `params` too, after a call object, marked by `"call": "send"`; an `after_call` gets the
 //! call's replies as its one argument, marked by `"call": "replies"`, and each result it yields
-//! goes to the caller. Its `"binary"` says where the bytes are in it, as for any input
-//! (`["args", 0]`), so the runner hands them to the code as the language's bytes; the runner
-//! marks the bytes in what it hands back with `binary_mark`.
+//! goes to the caller. Its `"marks"` say where its bytes and integer keys are, as for any input
+//! (`["args", 0]`), so the runner hands them to the code as the language's own; the runner marks
+//! them in what it hands back with `mark`.
 //!
 //! Code is sandboxed: it gets WASI with no files, no environment and no output (its stdout and
 //! stderr go nowhere), and no network. Each call is limited in time and memory ([`Limits`]),
@@ -314,25 +314,27 @@ fn interpreter_input(code: &WasmEntry, frame: &mut Frame) -> Result<Vec<u8>, Str
         _ => None,
     };
     let names = declared.unwrap_or_else(|| frame.args().keys().cloned().collect());
-    let (mut args, mut binary) = (Vec::new(), Vec::new());
+    let (mut args, mut marks) = (Vec::new(), serde_json::Map::new());
     for (i, name) in names.iter().enumerate() {
         args.push(frame.arg(name)?);
-        let paths = match frame.given() {
-            Some(Json::Array(paths)) => paths,
-            _ => Vec::new(),
-        };
-        for path in paths {
-            let mut at = vec![json!("args"), json!(i)];
-            at.extend(path.as_array().into_iter().flatten().cloned());
-            binary.push(Json::Array(at));
+        let Some(Json::Object(given)) = frame.given() else { continue };
+        for (kind, paths) in given {
+            let list = marks.entry(kind).or_insert_with(|| json!([]));
+            for path in paths.as_array().into_iter().flatten() {
+                let mut at = vec![json!("args"), json!(i)];
+                at.extend(path.as_array().into_iter().flatten().cloned());
+                list.as_array_mut()
+                    .expect("made above")
+                    .push(Json::Array(at));
+            }
         }
     }
     let mut input = serde_json::Map::new();
     input.insert("source".into(), Json::String(text.into_owned()));
     input.insert("entry".into(), Json::String(code.entry.clone()));
     input.insert("args".into(), Json::Array(args));
-    if !binary.is_empty() {
-        input.insert("binary".into(), Json::Array(binary));
+    if !marks.is_empty() {
+        input.insert("marks".into(), Json::Object(marks));
     }
     let sample = match code.role {
         Role::AfterReceive => Some("in"),
@@ -453,8 +455,8 @@ fn functions(slot: &Slot, clock: &Arc<Clock>) -> Vec<Function> {
         define(slot, "reply_decode", &[I64], &[PTR], reply_decode),
         define(slot, "reply_escaped", &[], &[], reply_escaped),
         define(slot, "call_yield", &[PTR], &[], call_yield),
-        define(slot, "binary_paths", &[], &[PTR], binary_paths),
-        define(slot, "binary_mark", &[PTR], &[], binary_mark),
+        define(slot, "marks", &[], &[PTR], marks),
+        define(slot, "mark", &[PTR], &[], mark),
     ]
 }
 
@@ -766,24 +768,14 @@ fn call_yield(
     f.give(value)
 }
 
-fn binary_paths(
-    p: &mut CurrentPlugin,
-    _: &[Val],
-    o: &mut [Val],
-    f: &mut Frame,
-) -> Result<(), String> {
+fn marks(p: &mut CurrentPlugin, _: &[Val], o: &mut [Val], f: &mut Frame) -> Result<(), String> {
     match f.given() {
-        Some(paths) => give(p, &paths, &mut o[0]),
+        Some(marks) => give(p, &marks, &mut o[0]),
         None => hand(p, &[], &mut o[0]),
     }
 }
 
-fn binary_mark(
-    p: &mut CurrentPlugin,
-    i: &[Val],
-    _: &mut [Val],
-    f: &mut Frame,
-) -> Result<(), String> {
+fn mark(p: &mut CurrentPlugin, i: &[Val], _: &mut [Val], f: &mut Frame) -> Result<(), String> {
     let json = text(p, &i[0])?;
     f.mark(parse(&json)?)
 }

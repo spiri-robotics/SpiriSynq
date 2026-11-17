@@ -180,3 +180,90 @@ fn bytes_arrive_as_bytes_and_go_out_as_bytes() {
         assert_eq!(s.field(owner, "either").unwrap(), Some(&v("5")));
     }
 }
+
+/// Integer keys in each language: `keys(x)` puts `x`, a mapping with integer keys holding bytes,
+/// in a field with no schema, and `{5: 1}` in `counts`, whose schema says integer keys; it
+/// returns whether `x`'s key is an integer, and the length of the bytes in it. `bad_keys` puts a
+/// key that isn't an integer in `counts`. Then what `anything` holds: JavaScript's keys are
+/// strings, so they stay strings where the schema doesn't say.
+const KEYS: [(&str, [Code; 2], &str); 3] = [
+    (
+        "lua",
+        [
+            (
+                "keys",
+                "method",
+                "",
+                "function keys(self, x)
+                   self.anything = x
+                   self.counts = {[5] = 1}
+                   return {math.type(next(x)) == 'integer', #x[3][7]}
+                 end",
+            ),
+            (
+                "bad_keys",
+                "method",
+                "",
+                "function bad_keys(self) self.counts = {x = 1} end",
+            ),
+        ],
+        "{3: {7: !!binary /w==}}",
+    ),
+    (
+        "python",
+        [
+            (
+                "keys",
+                "method",
+                "",
+                "def keys(self, x):\n    self.anything = x\n    self.counts = {5: 1}\n    return [type(list(x)[0]) is int, len(x[3][7])]\n",
+            ),
+            (
+                "bad_keys",
+                "method",
+                "",
+                "def bad_keys(self):\n    self.counts = {'x': 1}\n",
+            ),
+        ],
+        "{3: {7: !!binary /w==}}",
+    ),
+    (
+        "javascript",
+        [
+            (
+                "keys",
+                "method",
+                "",
+                "function keys(self, x) {
+                   self.anything = x;
+                   self.counts = {5: 1};
+                   return [Object.keys(x)[0] === '3', x[3][7].length];
+                 }",
+            ),
+            (
+                "bad_keys",
+                "method",
+                "",
+                "function bad_keys(self) { self.counts = {x: 1}; }",
+            ),
+        ],
+        "{'3': {'7': !!binary /w==}}",
+    ),
+];
+
+#[test]
+fn integer_keys_arrive_and_go_out_as_integers() {
+    for (loader, code, anything) in KEYS {
+        let (mut net, owner) = battery(loader, &code);
+        let mut host = Host::default();
+        let s = net.session(0);
+        let x = v("{x: {3: {7: !!binary /w==}}}");
+        let got = run(s, &mut host, owner, "keys", &x);
+        assert_eq!(got, Ok(v("[true, 1]")), "{loader}");
+        let field = |s: &mut spirisynq_core::Session, path| s.field(owner, path).unwrap().cloned();
+        assert_eq!(field(s, "anything"), Some(v(anything)), "{loader}");
+        assert_eq!(field(s, "counts"), Some(v("{5: 1}")), "{loader}");
+        let bad = failure(run(s, &mut host, owner, "bad_keys", &Value::Null));
+        assert_eq!(bad, "field `counts`: key `x` isn't an integer", "{loader}");
+    }
+}

@@ -147,14 +147,14 @@ fn code_sees_the_fields_and_arguments_as_json() {
                     "gps": {"latitude": 45.5, "fix": {"quality": 3}},
                 },
                 "args": {"cells": 4, "tag": "AAE=", "none": null, "flag": true, "list": [1]},
-                "binary": [["self", "photo"], ["args", "tag"]],
+                "marks": {"bytes": [["self", "photo"], ["args", "tag"]]},
             })
         );
         // Where the bytes are goes with each value the code is given.
         assert_eq!(frame.field("photo"), Ok(json!("AAEC")));
-        assert_eq!(frame.given(), Some(json!([[]])));
+        assert_eq!(frame.given(), Some(json!({"bytes": [[]]})));
         assert_eq!(frame.arg("tag"), Ok(json!("AAE=")));
-        assert_eq!(frame.given(), Some(json!([[]])));
+        assert_eq!(frame.given(), Some(json!({"bytes": [[]]})));
         assert_eq!(frame.field("gps/fix/quality"), Ok(json!(3)));
         assert_eq!(frame.given(), None);
         assert_eq!(frame.field("charging"), Ok(Json::Null));
@@ -343,20 +343,26 @@ fn code_marks_where_it_put_bytes() {
     let (mut net, owner, _) = batteries();
     let s = net.session(0);
     let mut code = host(|_, frame| {
-        let bad = "marks must be a list of paths, each a list of keys and indexes";
-        for marks in [json!({}), json!([5]), json!([["a", -1]])] {
+        let bad = r#"marks must be {"bytes": [...], "int_keys": [...]}, each a list of paths of keys and indexes"#;
+        for marks in [
+            json!([]),
+            json!({"floats": []}),
+            json!({"bytes": 5}),
+            json!({"bytes": [5]}),
+            json!({"int_keys": [["a", -1]]}),
+        ] {
             assert_eq!(frame.mark(marks), Err(bad.into()));
         }
         // A field the code set, and where it marked its bytes, is what the code reads back.
-        frame.mark(json!([["fix", "quality"]]))?;
+        frame.mark(json!({"bytes": [["fix", "quality"]]}))?;
         frame.set_field("gps", json!({"latitude": 1.5, "fix": {"quality": "AAE="}}))?;
         assert_eq!(frame.field("gps/fix"), Ok(json!({"quality": "AAE="})));
-        assert_eq!(frame.given(), Some(json!([["quality"]])));
+        assert_eq!(frame.given(), Some(json!({"bytes": [["quality"]]})));
         frame.set_field("gps/fix", json!({"quality": 2}))?;
         frame.field("gps")?;
         assert_eq!(frame.given(), None);
         // Marks nothing else took are the result's.
-        frame.mark(json!([[]]))?;
+        frame.mark(json!({"bytes": [[]]}))?;
         Ok(br#""!!""#.to_vec())
     });
     let got = s.run_wasm(&mut code, owner, "charge", &Value::Null);
@@ -389,6 +395,10 @@ fn what_cant_run_is_refused() {
     assert_eq!(
         refused(s, "charge", "{1: 2}"),
         Error::Wasm("the arguments: a mapping key that isn't a string has no JSON form".into())
+    );
+    assert_eq!(
+        refused(s, "charge", "{x: {1: a, '1': b}}"),
+        Error::Wasm("the arguments: two keys are `1` in JSON".into())
     );
     assert_eq!(
         refused(s, "charge", "{x: .nan}"),

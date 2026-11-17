@@ -302,7 +302,7 @@ fn a_before_send_must_send_once_and_well() {
             s.before_send_job(owner, "image", &unwritable_json())
                 .map(|_| ())
         ),
-        "the value: a mapping key that isn't a string has no JSON form"
+        "the value: a mapping key that isn't a string or an integer has no JSON form"
     );
     // Only a `before_send` sends, and only an `after_receive` has a sample.
     let mut method = host(|_, frame| {
@@ -322,5 +322,5 @@ fn a_before_send_must_send_once_and_well() {
 
 /// A value with no JSON form.
 fn unwritable_json() -> Value {
-    Value::Map(vec![(Value::Int(1), Value::Null)])
+    Value::Map(vec![(Value::Bool(true), Value::Null)])
 }

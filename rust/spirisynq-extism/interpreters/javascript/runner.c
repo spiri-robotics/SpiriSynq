@@ -2,7 +2,8 @@
  *
  * Values cross as JSON. An integer too large for a number to hold exactly arrives as a BigInt,
  * and a BigInt goes out as the integer it is. Bytes are Uint8Arrays, crossing as base64 strings
- * marked where they are (see ../spirisynq.h). A number that isn't finite, a function or a
+ * marked where they are (see ../spirisynq.h). An object's keys are strings, integer keys too;
+ * the engine reads them back as integers where the schema says so. A number that isn't finite, a function or a
  * symbol has no JSON form, and is an error rather than quietly becoming null.
  *
  * QuickJS without its libc has no I/O at all: the code sees the language and its built-in
@@ -19,14 +20,14 @@
 /* Builds `self` and the conversions, and gives back the function each call goes through. */
 static const char PRELUDE[] =
     "(function (fieldGet, fieldSet, evaluate, part, send, hand, callSend, replyNext, escaped,\n"
-    "           binaryPaths, mark) {\n"
+    "           marksGiven, mark) {\n"
     "  'use strict';\n"
     "  const { parse: jsonParse, stringify: jsonStringify, rawJSON } = JSON;\n"
     "  const parse = (text) => jsonParse(text, (key, value, context) =>\n"
     "    typeof value === 'number' && !Number.isSafeInteger(value) && Number.isInteger(value)\n"
     "      && /^-?[0-9]+$/.test(context.source) ? BigInt(context.source) : value);\n"
-    "  const unpack = (value, paths) => {\n"
-    "    for (const path of paths) {\n"
+    "  const unpack = (value, marks) => {\n"
+    "    for (const path of marks.bytes ?? []) {\n"
     "      if (path.length === 0) { value = Uint8Array.fromBase64(value); continue; }\n"
     "      let node = value;\n"
     "      for (const key of path.slice(0, -1)) node = node[key];\n"
@@ -37,8 +38,8 @@ static const char PRELUDE[] =
     "  };\n"
     "  const load = (text) => {\n"
     "    const value = parse(text);\n"
-    "    const paths = binaryPaths();\n"
-    "    return paths ? unpack(value, jsonParse(paths)) : value;\n"
+    "    const marks = marksGiven();\n"
+    "    return marks ? unpack(value, jsonParse(marks)) : value;\n"
     "  };\n"
     "  const replace = (key, value) => {\n"
     "    switch (typeof value) {\n"
@@ -62,7 +63,7 @@ static const char PRELUDE[] =
     "      if (v !== null && typeof v === 'object') at.set(v, path);\n"
     "      return v;\n"
     "    }) ?? 'null';\n"
-    "    if (marks.length) mark(jsonStringify(marks));\n"
+    "    if (marks.length) mark(jsonStringify({ bytes: marks }));\n"
     "    return text;\n"
     "  };\n"
     "  const self = new Proxy({}, {\n"
@@ -119,7 +120,7 @@ static const char PRELUDE[] =
     "  let loaded = false;\n"
     "  return (text) => {\n"
     "    const input = parse(text);\n"
-    "    if (input.binary) unpack(input, input.binary);\n"
+    "    if (input.marks) unpack(input, input.marks);\n"
     "    if (!loaded) { evaluate(input.source); loaded = true; }\n"
     "    const entry = globalThis[input.entry];\n"
     "    if (typeof entry !== 'function') throw new Error(`no function \\`${input.entry}\\``);\n"
@@ -256,21 +257,21 @@ static JSValue reply_escaped(JSContext *ctx, JSValueConst this_val, int argc, JS
     return JS_UNDEFINED;
 }
 
-/* Where the bytes are in the JSON a host function last returned: '' if nowhere. */
-static JSValue binary_paths(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+/* The marks in the JSON a host function last returned: '' if there are none. */
+static JSValue marks(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     size_t len;
-    char *json = synq_binary_paths(&len);
+    char *json = synq_marks(&len);
     if (json == NULL) return JS_ThrowOutOfMemory(ctx);
     JSValue text = JS_NewStringLen(ctx, json, len);
     free(json);
     return text;
 }
 
-static JSValue binary_mark(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+static JSValue mark(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     size_t len;
     const char *json = JS_ToCStringLen(ctx, &len, argv[0]);
     if (json == NULL) return JS_EXCEPTION;
-    synq_binary_mark(json, len);
+    synq_mark(json, len);
     JS_FreeCString(ctx, json);
     return JS_UNDEFINED;
 }
@@ -306,8 +307,8 @@ static int start(void) {
         JS_NewCFunction(context, call_send, "callSend", 4),
         JS_NewCFunction(context, reply_next, "replyNext", 0),
         JS_NewCFunction(context, reply_escaped, "escaped", 0),
-        JS_NewCFunction(context, binary_paths, "binaryPaths", 0),
-        JS_NewCFunction(context, binary_mark, "mark", 1),
+        JS_NewCFunction(context, marks, "marksGiven", 0),
+        JS_NewCFunction(context, mark, "mark", 1),
     };
     call = JS_Call(context, make, JS_UNDEFINED, 11, args);
     for (int i = 0; i < 11; i++) JS_FreeValue(context, args[i]);

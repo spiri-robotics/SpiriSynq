@@ -23,6 +23,9 @@ SCHEMA_VERSION = 2
 
 JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
+INT_KEY_PATTERN = "^-?[0-9]+$"
+"""``propertyNames`` pattern of a mapping with integer keys, which also says ``x-key-type``."""
+
 JsonSchema = NewType("JsonSchema", dict)
 """Return annotation for methods that return a JSON Schema document."""
 
@@ -248,8 +251,13 @@ class _Builder:
             return {"type": "array", "uniqueItems": True, "x-yaml-tag": "!!set",
                     "items": self.resolve(args[0]) if args else {}}
         if origin is dict or origin is collections.abc.Mapping:
-            return {"type": "object",
-                    "additionalProperties": self.resolve(args[1]) if len(args) > 1 else {}}
+            schema = {"type": "object",
+                      "additionalProperties": self.resolve(args[1]) if len(args) > 1 else {}}
+            if args and args[0] is int:
+                # JSON's keys are strings: say which strings, and that they stand for integers.
+                schema["propertyNames"] = {"pattern": INT_KEY_PATTERN}
+                schema["x-key-type"] = "integer"
+            return schema
         if origin is not None:
             return self.resolve(origin)
 

@@ -82,9 +82,15 @@
   `Uint8Array` and Lua as a string, in a field, an argument, a decoded sample or reply, typed or
   not, and the language's bytes go back out as bytes. A string from Lua is its own bytes where
   the schema says bytes; one that isn't UTF-8 is bytes anywhere. Text where an `anyOf` allows
-  bytes or text stays text. Code compiled to WebAssembly learns where the bytes are with the new
-  `binary_paths` host function and the input's `"binary"`, and marks its own with
-  `binary_mark`.
+  bytes or text stays text.
+
+- **Integer keys stay integers**: a `dict[int, …]` field's schema says `x-key-type: integer`, with
+  `propertyNames: {pattern: "^-?[0-9]+$"}` for validators that don't know that keyword. WASM code
+  gets integer keys as integers in Python and Lua (JavaScript's keys are strings), and what it
+  hands back has integer keys where it used them or the schema says so, so `weakest_cells` in
+  the WASM docs returns `{3: 3.52, 1: 3.69}` as promised. Code compiled to WebAssembly learns
+  where bytes and integer keys are in its JSON from the new `marks` host function and the
+  input's `"marks"`, and marks its own with `mark`.
 
 ### Tests
 
@@ -94,9 +100,9 @@
   `spirisynq-schema` has 47, including property tests that every key built from a template
   decodes back to the same arguments. `spirisynq-core` has 88, run over an in-memory network
   that connects several sessions as zenoh would. `spirisynq-zenoh` has 21, over real zenoh
-  sessions on loopback TCP, shared memory and zenoh failures included. `spirisynq-extism` has 33:
+  sessions on loopback TCP, shared memory and zenoh failures included. `spirisynq-extism` has 34:
   a WebAssembly plug-in that uses every host function, past its time and memory limits
-  included, and each interpreter's values, bytes, errors, sandbox, field hooks and caller hooks, the docs'
+  included, and each interpreter's values, bytes, integer keys, errors, sandbox, field hooks and caller hooks, the docs'
   MicroPython examples among them. `SpiriSynq._core` has 52 Python tests in `tests/core`, which also measure the
   extension module's Rust coverage.
 

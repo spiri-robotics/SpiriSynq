@@ -50,6 +50,11 @@ properties:                  # one per synced field (synq_skip_sync fields are l
   image: {type: string, x-yaml-tag: "!!binary", x-skip-rehydrate: true}
   gps: {anyOf: [{$ref: "#/$defs/Gps"}, {type: "null"}]}
   camera: {type: string, x-yaml-tag: "!Link", x-link: "urn:pypi:spiricamera:0.3.4:spiricamera.camera.Camera"}
+  cell_voltages:             # dict[int, float]
+    type: object
+    additionalProperties: {type: number}
+    propertyNames: {pattern: "^-?[0-9]+$"}
+    x-key-type: integer
 $defs:
   Gps: {type: object, x-sync: fields, properties: {latitude: {type: number}}}
 x-remote-methods:
@@ -83,6 +88,10 @@ x-wasm: {...}                # see "Code entries and loaders"
     ACL on `read/data/secret` can't be sidestepped with `read/data/%73ecret`.
 - **Reserved keys:** a member's key may not start with a chunk beginning `sr_`, or with a
   placeholder. No two members' keys may overlap. Both are checked when the schema is loaded.
+- **Integer keys:** YAML keys can be integers, JSON's can't. A mapping with integer keys says
+  `x-key-type: integer` (2026-11-13), and `propertyNames: {pattern: "^-?[0-9]+$"}` for
+  validators that don't know it. Where JSON stands between, such as for WASM code, keys come
+  back as integers where the schema says so.
 - **Forward compatibility:** unknown `x-wasm` roles and loaders are kept, so a schema from a
   newer peer still loads; the core just can't run that code.
 
@@ -293,15 +302,18 @@ Built for properties and methods, with every loader (2026-11-12).
   result as JSON, empty for `null`. Code sees values as the schema describes them: tags are
   dropped and bytes are base64 strings. Fields without a value, and fields with their own
   encoding, are left out of `self`; code can't read or set the latter.
-- Where the bytes are goes with the JSON (2026-11-13), as paths of keys and indexes from its
-  root: the input's `"binary"` (`[["self", "photo"], ["args", "tag"]]`, left out if there are
-  none), and `binary_paths()` for the JSON a host function last returned. The engine knows
-  exactly where they are, from the values themselves, so a runner can hand code its language's
-  bytes, typed field or not. Going the other way, code marks where it wrote bytes as base64
-  with `binary_mark(paths)`, just before it hands the JSON over.
+- Code sees integer keys as strings. Marks go with the JSON (2026-11-13), saying where its
+  bytes and integer keys are: `{"bytes": [...], "int_keys": [...]}`, each a list of paths of
+  keys and indexes from its root, an integer key's path being its entry's, inner keys after
+  outer ones. The input has them as `"marks"` (`{"bytes": [["self", "photo"]]}`, left out if
+  there are none), and `marks()` gives them for the JSON a host function last returned. The
+  engine knows exactly where they are, from the values themselves, so a runner can hand code
+  its language's bytes and integer keys, typed or not. Going the other way, code marks where it
+  wrote them with `mark(marks)`, just before it hands the JSON over.
 - The result and the fields code sets are read back guided by their schemas and the code's
   marks. A marked string is bytes, or text where the schema says a string that isn't bytes
-  (an error if it isn't UTF-8). A string that isn't marked, under `x-yaml-tag: "!!binary"`, is
+  (an error if it isn't UTF-8). A key is an integer where it's marked, or its mapping's schema
+  says `x-key-type: integer`. A string that isn't marked, under `x-yaml-tag: "!!binary"`, is
   base64, or from Lua its own bytes: Lua's strings are bytes, and the Lua runner marks only the
   ones that aren't UTF-8, so text-like bytes arrive unmarked. A string or collection under a
   local tag such as `!Link` becomes that tagged value (a `null` stays `null`); a whole number
@@ -328,8 +340,8 @@ Built for properties and methods, with every loader (2026-11-12).
   | `reply_payload(i64) -> bytes`, `reply_encoding`, `reply_attachment`, `reply_decode` | In an `after_call`: a reply it has had, by index, as for a sample. |
   | `reply_escaped()` | In an `after_call`, about to fail: the error reply it was handed is why. |
   | `call_yield(json)` | In an `after_call`: yield a result. |
-  | `binary_paths() -> json` | Where the bytes are in the JSON `field_get`, `arg_get`, `sample_decode` or `reply_decode` last returned: a list of paths. Block 0 if nowhere. |
-  | `binary_mark(json)` | Where the code put bytes, as base64, in the JSON it hands over next (to `field_set`, `sample_send_value`, `call_send_args`, `call_yield`, or as its output), as paths. |
+  | `marks() -> json` | The marks in the JSON `field_get`, `arg_get`, `sample_decode` or `reply_decode` last returned. Block 0 if there are none. |
+  | `mark(json)` | The code's marks in the JSON it hands over next (to `field_set`, `sample_send_value`, `call_send_args`, `call_yield`, or as its output). |
 
   Block 0 is empty bytes (Extism gives an empty block offset 0), so an empty attachment is no
   attachment.
@@ -424,8 +436,10 @@ Built for properties and methods, with every loader (2026-11-12).
   number can't hold exactly arrives as a `BigInt`, and a `BigInt` goes out exactly. Python:
   integers of any size. Bytes arrive as `bytes`, `Uint8Array`s and Lua strings, wherever they
   are, and go out marked: `bytes` and `bytearray`s, `Uint8Array`s, and Lua strings that aren't
-  UTF-8 (a table key must be). Everywhere, a non-finite float or a function is an error, not
-  `null`, and an integer key goes out as a string.
+  UTF-8 (a table key must be). Integer keys arrive as integers in Python and Lua, and go out
+  marked; JavaScript's keys are strings, so they arrive as strings there, and go out as integers
+  where the schema says so. Everywhere, a non-finite float or a function is an error, not
+  `null`.
 - Errors carry the language's own type and message, and the line in `code` where they can:
   `ValueError: too high (line 2)`, `code:1: too high`, `RangeError: too high (code:2:9)`.
 - Built by `interpreters/default.nix` from pinned sources and pinned tools (nixpkgs' wasm32-wasi
@@ -437,8 +451,6 @@ Built for properties and methods, with every loader (2026-11-12).
 
 Not yet:
 - Code fetched by hash.
-- Integer dict keys come back as strings (`{3: 3.52}` returns `{"3": 3.52}`), until results are
-  read against their `returns` schema's key types.
 
 ## Language targets
 

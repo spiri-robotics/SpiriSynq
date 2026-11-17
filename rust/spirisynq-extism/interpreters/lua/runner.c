@@ -5,7 +5,8 @@
  * exactly 1..n (an empty table is an empty array), else as an object, whose keys must be
  * strings or integers. Strings are bytes: bytes arrive as strings, and a string that isn't
  * UTF-8 goes out as base64, marked as bytes (see ../spirisynq.h). One that is UTF-8 goes out as
- * text, and the engine takes its bytes where the schema says bytes.
+ * text, and the engine takes its bytes where the schema says bytes. Integer keys arrive and go
+ * out as integers, marked.
  *
  * Only Lua's base, coroutine, table, string, math and utf8 libraries are open: no files, OS or
  * packages, and `load` takes text only, since Lua's bytecode loader trusts its input.
@@ -218,29 +219,43 @@ static void push_key(lua_State *L, int path, lua_Integer k) {
     }
 }
 
-/* Make the base64 strings in the value at `idx` bytes, where the paths at the top of the stack
- * say (popped). A path that's empty is the value itself. */
+/* Push the table holding what the path at `path` (`len` keys, at least one) points to, in the
+ * value at `idx`. */
+static void push_parent(lua_State *L, int idx, int path, lua_Integer len) {
+    lua_pushvalue(L, idx);
+    for (lua_Integer k = 1; k < len; k++) {
+        push_key(L, path, k);
+        lua_gettable(L, -2);
+        lua_remove(L, -2);
+    }
+}
+
+/* Push the paths of kind `kind` in the marks at `marks`, and how many there are. */
+static lua_Integer push_paths(lua_State *L, int marks, const char *kind) {
+    if (lua_getfield(L, marks, kind) != LUA_TTABLE) return 0;
+    return (lua_Integer)lua_rawlen(L, -1);
+}
+
+/* Make the bytes and integer keys in the value at `idx` Lua's, where the marks at the top of the
+ * stack say (popped). A bytes path that's empty is the value itself. */
 static void unpack(lua_State *L, int idx) {
     idx = lua_absindex(L, idx);
+    int marks = lua_gettop(L);
+    luaL_checkstack(L, 10, "too many marks");
+    lua_Integer n = push_paths(L, marks, "bytes");
     int paths = lua_gettop(L);
-    lua_Integer n = (lua_Integer)lua_rawlen(L, paths);
-    luaL_checkstack(L, 6, "too many paths");
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, paths, i);
         int path = lua_gettop(L);
         lua_Integer len = (lua_Integer)lua_rawlen(L, path);
-        lua_pushvalue(L, idx);
         if (len == 0) {
+            lua_pushvalue(L, idx);
             unbase64(L);
             lua_replace(L, idx);
             lua_pop(L, 1);
             continue;
         }
-        for (lua_Integer k = 1; k < len; k++) {
-            push_key(L, path, k);
-            lua_gettable(L, -2);
-            lua_remove(L, -2);
-        }
+        push_parent(L, idx, path, len);
         push_key(L, path, len);
         lua_pushvalue(L, -1);
         lua_gettable(L, -3);
@@ -248,14 +263,31 @@ static void unpack(lua_State *L, int idx) {
         lua_settable(L, -3);
         lua_pop(L, 2);
     }
-    lua_pop(L, 1);
+    /* Inner keys come after outer ones: going backwards, they're done first. */
+    n = push_paths(L, marks, "int_keys");
+    paths = lua_gettop(L);
+    for (lua_Integer i = n; i >= 1; i--) {
+        lua_rawgeti(L, paths, i);
+        int path = lua_gettop(L);
+        lua_Integer len = (lua_Integer)lua_rawlen(L, path);
+        push_parent(L, idx, path, len);
+        lua_rawgeti(L, path, len);
+        if (!lua_stringtonumber(L, lua_tostring(L, -1))) luaL_error(L, "a key that isn't an integer");
+        lua_pushvalue(L, -2);
+        lua_gettable(L, -4);
+        lua_settable(L, -4);
+        lua_pushnil(L);
+        lua_settable(L, -3);
+        lua_pop(L, 2);
+    }
+    lua_settop(L, marks - 1);
 }
 
-/* Make the bytes in the value at the top of the stack strings, where the host function that
- * returned it says they are. */
+/* Make the bytes and integer keys in the value at the top of the stack Lua's, where the host
+ * function that returned it says they are. */
 static void unpack_given(lua_State *L) {
     size_t len;
-    char *json = synq_binary_paths(&len);
+    char *json = synq_marks(&len);
     if (json == NULL) luaL_error(L, "out of memory");
     if (len == 0) {
         free(json);
@@ -272,10 +304,10 @@ static void unpack_given(lua_State *L) {
 /* ---- Lua values to JSON text ---- */
 
 /* Buffers reused by every call; a failed encoding leaves nothing to free. `out` is the JSON,
- * `path` where in it the encoder is (keys and indexes, comma-separated), and `marks` the paths
- * of the bytes in it. */
+ * `path` where in it the encoder is (keys and indexes, comma-separated), `bytes` and `keys` the
+ * paths of the bytes and integer keys in it, and `marks` the two together, to hand over. */
 typedef struct { char *data; size_t len, cap; } Buffer;
-static Buffer out, path, marks;
+static Buffer out, path, bytes, keys, marks;
 
 /* Make room for `n` more bytes. */
 static void reserve(lua_State *L, Buffer *b, size_t n) {
@@ -326,6 +358,13 @@ static void put_string(lua_State *L, Buffer *b, const unsigned char *s, size_t n
     add(L, b, "\"", 1);
 }
 
+/* Add the encoder's path to the paths in `b`. */
+static void mark_here(lua_State *L, Buffer *b) {
+    add(L, b, b->len ? ",[" : "[", b->len ? 2 : 1);
+    add(L, b, path.data, path.len);
+    add(L, b, "]", 1);
+}
+
 /* Bytes that aren't text: base64, marked where they are. */
 static void put_bytes(lua_State *L, const unsigned char *s, size_t n) {
     size_t len = 4 * ((n + 2) / 3);
@@ -333,9 +372,7 @@ static void put_bytes(lua_State *L, const unsigned char *s, size_t n) {
     out.data[out.len++] = '"';
     out.len += synq_base64_encode(s, n, out.data + out.len);
     out.data[out.len++] = '"';
-    add(L, &marks, marks.len ? ",[" : "[[", 2);
-    add(L, &marks, path.data, path.len);
-    add(L, &marks, "]", 1);
+    mark_here(L, &bytes);
 }
 
 /* Go into an index or a key, at the end of `path`; returns where to come back to. */
@@ -424,6 +461,7 @@ static void encode(lua_State *L, int idx, int depth) {
                     int n = snprintf(text, sizeof text, "\"%lld\"", (long long)lua_tointeger(L, -2));
                     put(L, text, n);
                     add(L, &path, text, n);
+                    mark_here(L, &keys);
                 } else luaL_error(L, "a table key must be a string or an integer");
                 put(L, ":", 1);
                 encode(L, -1, depth + 1);
@@ -437,17 +475,30 @@ static void encode(lua_State *L, int idx, int depth) {
     }
 }
 
-/* Encode the value at `idx` into `out`, marking where it has bytes. */
+/* Encode the value at `idx` into `out`, marking where it has bytes and integer keys. */
 static void encode_value(lua_State *L, int idx) {
-    out.len = path.len = marks.len = 0;
+    out.len = path.len = bytes.len = keys.len = 0;
     encode(L, idx, 0);
 }
 
-/* Mark where the bytes are in `out`, if anywhere: just before handing it over. */
+/* Mark where the bytes and integer keys are in `out`, if anywhere: just before handing it
+ * over. */
 static void send_marks(lua_State *L) {
-    if (marks.len == 0) return;
-    add(L, &marks, "]", 1);
-    synq_binary_mark(marks.data, marks.len);
+    if (bytes.len == 0 && keys.len == 0) return;
+    marks.len = 0;
+    add(L, &marks, "{", 1);
+    if (bytes.len) {
+        add(L, &marks, "\"bytes\":[", 9);
+        add(L, &marks, bytes.data, bytes.len);
+        add(L, &marks, "]", 1);
+    }
+    if (keys.len) {
+        add(L, &marks, bytes.len ? ",\"int_keys\":[" : "\"int_keys\":[", bytes.len ? 13 : 12);
+        add(L, &marks, keys.data, keys.len);
+        add(L, &marks, "]", 1);
+    }
+    add(L, &marks, "}", 1);
+    synq_mark(marks.data, marks.len);
 }
 
 /* ---- self ---- */
@@ -665,7 +716,7 @@ static void run_after_call(lua_State *L) {
             luaL_checkstack(L, nres + 4, "too many results");
             lua_xmove(co, L, nres);
             if (nres > 0) encode_value(L, -nres);
-            else out.len = marks.len = 0, put(L, "null", 4);
+            else out.len = bytes.len = keys.len = 0, put(L, "null", 4);
             send_marks(L);
             lua_pop(L, nres);
             synq_send_json(synq_host_call_yield, out.data, out.len);
@@ -688,7 +739,7 @@ static int call(lua_State *L) {
     const char *input = lua_tolstring(L, 1, &len);
     decode(L, input, len);
     int request = lua_gettop(L);
-    if (lua_getfield(L, request, "binary") == LUA_TTABLE) unpack(L, request);
+    if (lua_getfield(L, request, "marks") == LUA_TTABLE) unpack(L, request);
     else lua_pop(L, 1);
     if (!loaded) {
         lua_getfield(L, request, "source");

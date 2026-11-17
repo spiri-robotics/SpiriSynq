@@ -29,6 +29,7 @@ properties:
   frames: {type: array, items: {type: string, x-yaml-tag: "!!binary"}}
   either: {anyOf: [{type: string, x-yaml-tag: "!!binary"}, {type: string}, {type: integer}]}
   anything: {}
+  counts: {type: object, additionalProperties: {type: integer}, propertyNames: {pattern: "^-?[0-9]+$"}, x-key-type: integer}
 x-remote-methods:
   history:
     parameters: {type: object, properties: {minutes: {type: integer}}}
@@ -175,8 +176,13 @@ pub fn failure(result: Result<Value, Error>) -> String {
 
 /// A mapping's value for `key`.
 pub fn get<'a>(map: &'a Value, key: &str) -> &'a Value {
+    at(map, &text(key))
+}
+
+/// A mapping's value for a key of any kind.
+pub fn at<'a>(map: &'a Value, key: &Value) -> &'a Value {
     let Value::Map(entries) = map else { panic!("not a mapping: {map:?}") };
-    &entries.iter().find(|(k, _)| *k == text(key)).unwrap().1
+    &entries.iter().find(|(k, _)| k == key).unwrap().1
 }
 
 pub fn seq(value: &Value) -> &[Value] {
