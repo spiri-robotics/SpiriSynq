@@ -255,10 +255,17 @@ impl MemoryNetwork {
                 }
                 self.update_matching();
             }
-            Command::Put { publisher, sample } => {
+            Command::Put {
+                publisher,
+                sample,
+                qos,
+            } => {
                 let key = self.nodes[index].publishers[&publisher].clone();
-                self.trace
-                    .push(format!("{index} put {key} {}", Self::describe(&sample)));
+                let qos = qos.map(|q| format!(" ({q:?})")).unwrap_or_default();
+                self.trace.push(format!(
+                    "{index} put {key} {}{qos}",
+                    Self::describe(&sample)
+                ));
                 for to in 0..self.nodes.len() {
                     let source = self.source(index, to, publisher);
                     let node = &mut self.nodes[to];

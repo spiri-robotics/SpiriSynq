@@ -19,7 +19,7 @@ use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyBytes, PyDict};
-use spirisynq_core::{self as core, CallOptions, Priority, Qos, QueryId, Session};
+use spirisynq_core::{self as core, CallOptions, Priority, Qos, QosOverride, QueryId, Session};
 use spirisynq_extism::Limits;
 use spirisynq_schema::{Role as CodeRole, TypeId, TypeSchema};
 use spirisynq_zenoh::zenoh::{self, Wait};
@@ -141,6 +141,13 @@ const PRIORITIES: [(&str, Priority); 7] = [
     ("background", Priority::Background),
 ];
 
+fn priority_named(name: &str) -> PyResult<Priority> {
+    match PRIORITIES.iter().find(|(n, _)| *n == name) {
+        Some(&(_, priority)) => Ok(priority),
+        None => Err(PyValueError::new_err(format!("no priority `{name}`"))),
+    }
+}
+
 #[pymethods]
 impl FieldOptions {
     #[new]
@@ -152,11 +159,11 @@ impl FieldOptions {
         lazy: bool,
         raw: bool,
     ) -> PyResult<Self> {
-        let Some(&(_, priority)) = PRIORITIES.iter().find(|(name, _)| *name == priority) else {
-            return Err(PyValueError::new_err(format!("no priority `{priority}`")));
-        };
         Ok(FieldOptions(core::FieldOptions {
-            qos: Qos { priority, reliable },
+            qos: Qos {
+                priority: priority_named(priority)?,
+                reliable,
+            },
             ignore_incoming,
             lazy,
             raw,
@@ -417,10 +424,23 @@ impl Node {
         self.with(|s| s.unsubscribe(object.0, path))
     }
 
-    /// Send a field's value in its own encoding.
-    fn send_raw(&self, object: ObjectId, path: &str, sample: &Sample) -> PyResult<()> {
+    /// Send a field's value in its own encoding. `priority` and `reliable` override the
+    /// field's for this sample alone.
+    #[pyo3(signature = (object, path, sample, *, priority=None, reliable=None))]
+    fn send_raw(
+        &self,
+        object: ObjectId,
+        path: &str,
+        sample: &Sample,
+        priority: Option<&str>,
+        reliable: Option<bool>,
+    ) -> PyResult<()> {
+        let qos = QosOverride {
+            priority: priority.map(priority_named).transpose()?,
+            reliable,
+        };
         let sample = sample.0.clone();
-        self.with(|s| s.send_raw(object.0, path, sample))
+        self.with(|s| s.send_raw_with(object.0, path, sample, qos))
     }
 
     /// A field's value as the engine holds it, or `default` if it has none.

@@ -204,8 +204,9 @@ class Camera(SyncableObject):
 
 Settings have no type annotation, so the dataclass doesn't make them fields. They are never
 synced, and, except `_on_demand`, aren't part of the schema: they only affect how this process
-handles the field. They
-are fixed when the class is defined and can't be changed at run time.
+handles the field. They are fixed when the class is defined and can't be changed at run time,
+but a field with a `before_send` can send any one value with other QoS: see
+[QoS for one value](#qos-for-one-value).
 
 | Setting | Values | Default |
 | --- | --- | --- |
@@ -295,6 +296,28 @@ Uses:
 
 To share an encoding between fields, write it once as a function and call it from each field's
 hooks.
+
+### QoS for one value
+
+`sample.send` and `sample.send_value` take `qos=` and `reliability=`, to send this value with
+other settings than the field's. Video is the usual case: a frame between keyframes can drop,
+since the next one soon replaces it, but a lost keyframe spoils every frame until the next one.
+
+```python
+@dataclass
+class Camera(SyncableObject):
+    frame: Frame | None = None
+    frame_qos = qos.background
+
+    def frame_before_send(self, frame: Frame, sample: Sample) -> None:
+        if frame.keyframe:
+            sample.send(frame.data, encoding="video/h264", reliability=qos.reliable)
+        else:
+            sample.send(frame.data, encoding="video/h264")
+```
+
+A setting left out stays the field's. The values are the presets of the field settings. A
+`before_send` written in WASM (see [WASM](wasm.md)) sends with the field's settings.
 
 ## Reacting to changes
 

@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use spirisynq_core::{
-    Data, Error, FieldOptions, Notice, ObjectOptions, Origin, Priority, Qos, Source,
+    Data, Error, FieldOptions, Notice, ObjectOptions, Origin, Priority, Qos, QosOverride, Source,
 };
 
 #[test]
@@ -357,6 +357,42 @@ fn raw_fields() {
             data: Data::Raw(jpeg),
             origin: Origin::Write,
         }]
+    );
+}
+
+#[test]
+fn a_sample_can_have_its_own_qos() {
+    let (mut net, owner, mirror) = pair();
+    net.clear_trace();
+    let keyframe = QosOverride {
+        priority: None,
+        reliable: Some(true),
+    };
+    let s = net.session(0);
+    s.send_raw_with(owner, "voltage", yaml("1"), keyframe)
+        .unwrap();
+    // Only what differs from the field's QoS counts: this one is the field's own.
+    let same = QosOverride {
+        priority: Some(Priority::Data),
+        reliable: Some(false),
+    };
+    s.send_raw_with(owner, "voltage", yaml("2"), same).unwrap();
+    net.run();
+    let background = QosOverride {
+        priority: Some(Priority::Background),
+        reliable: None,
+    };
+    net.session(1)
+        .send_raw_with(mirror, "voltage", yaml("3"), background)
+        .unwrap();
+    net.run();
+    assert_eq!(
+        net.trace(),
+        [
+            "0 put robot/battery/voltage application/yaml 1 (Qos { priority: Data, reliable: true })",
+            "0 put robot/battery/voltage application/yaml 2",
+            "1 put robot/battery/voltage application/yaml 3 (Qos { priority: Background, reliable: false })",
+        ]
     );
 }
 

@@ -23,6 +23,7 @@ from loguru import logger
 from psygnal import EmissionInfo, Signal, SignalGroupDescriptor
 
 from SpiriSynq import _core, qos, values
+from SpiriSynq import qos as _qos
 from SpiriSynq.callbacks import OnChange
 from SpiriSynq.link import Link, ObjectNotFound
 from SpiriSynq.remote_callables import YAML, RemoteMethod
@@ -39,7 +40,9 @@ class Sample:
 
     Arriving, it has `payload` (bytes), `encoding` and `attachment`, and `decode()` decodes it
     the usual way. Going out, `send(payload, encoding=..., attachment=...)` sends bytes as they
-    are, and `send_value(value)` sends a value the usual way: exactly one of them, once.
+    are, and `send_value(value)` sends a value the usual way: exactly one of them, once. Either
+    takes `qos=` (a priority preset) and `reliability=` (`qos.drop` or `qos.reliable`) to send
+    this sample with other settings than the field's.
     """
 
     def __init__(self, payload: bytes = b"", encoding: str = BYTES, attachment=None, hint=Any):
@@ -55,16 +58,40 @@ class Sample:
             raise ValueError(f"a {self.encoding} sample isn't encoded the usual way")
         return from_value(_core.yaml_load(self.payload), self._hint)
 
-    def send(self, payload: bytes, *, encoding: str = BYTES, attachment: bytes | None = None):
-        """Send the value as these bytes."""
+    def send(
+        self,
+        payload: bytes,
+        *,
+        encoding: str = BYTES,
+        attachment: bytes | None = None,
+        qos: qos.Priority | None = None,
+        reliability: qos.Reliability | None = None,
+    ) -> None:
+        """Send the value as these bytes. `qos` and `reliability` override the field's
+        settings for this sample alone."""
+        if qos is not None and not isinstance(qos, _qos.Priority):
+            raise TypeError("qos must be a qos preset, like qos.data")
+        if reliability is not None and not isinstance(reliability, _qos.Reliability):
+            raise TypeError("reliability must be qos.drop or qos.reliable")
         if self._send is None:
             raise RuntimeError("only a before_send can send its sample, once")
         send, self._send = self._send, None
-        send(_core.Sample(bytes(payload), encoding, attachment))
+        send(
+            _core.Sample(bytes(payload), encoding, attachment),
+            priority=None if qos is None else qos.name,
+            reliable=None if reliability is None else reliability.reliable,
+        )
 
-    def send_value(self, value: Any) -> None:
+    def send_value(
+        self,
+        value: Any,
+        *,
+        qos: qos.Priority | None = None,
+        reliability: qos.Reliability | None = None,
+    ) -> None:
         """Send a value the usual way."""
-        self.send(_core.yaml_dump(to_value(value)), encoding=YAML)
+        payload = _core.yaml_dump(to_value(value))
+        self.send(payload, encoding=YAML, qos=qos, reliability=reliability)
 
 
 @dataclass
@@ -494,7 +521,7 @@ class SyncableObject:
             node.set_field(self._synq_id, key, to_value(value))
             return
         sample = Sample()
-        sample._send = lambda s: node.send_raw(self._synq_id, key, s)
+        sample._send = lambda s, **qos: node.send_raw(self._synq_id, key, s, **qos)
         holder = self._synq_get(path.rpartition("/")[0]) if "/" in path else self
         before(holder, value, sample)
         if sample._send is not None:

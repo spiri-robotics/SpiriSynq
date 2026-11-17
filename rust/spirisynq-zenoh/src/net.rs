@@ -106,6 +106,15 @@ pub fn is_timeout(reply: &Reply) -> bool {
             .is_err_and(|e| *e.payload().to_bytes() == *b"Timeout")
 }
 
+/// A field's QoS in zenoh's terms. Reliable data blocks rather than drop when congested.
+fn zenoh_qos(qos: Qos) -> (Priority, Reliability, CongestionControl) {
+    let (reliability, congestion) = match qos.reliable {
+        true => (Reliability::Reliable, CongestionControl::Block),
+        false => (Reliability::BestEffort, CongestionControl::Drop),
+    };
+    (PRIORITIES[qos.priority as usize], reliability, congestion)
+}
+
 /// What zenoh delivered, queued by its callbacks for the driver.
 pub(crate) enum Input {
     Sample(EntityId, zenoh::sample::Sample),
@@ -232,16 +241,41 @@ impl Net {
                 self.held.remove(&id);
                 self.local.retain(|_, e| *e != id);
             }
-            Command::Put { publisher, sample } => {
+            Command::Put {
+                publisher,
+                sample,
+                qos,
+            } => {
                 let Some(p) = self.publishers.get_mut(&publisher) else { return };
                 p.sn = p.sn.wrapping_add(1);
-                let put = p
-                    .publisher
-                    .put(unwrap(&sample.payload))
-                    .encoding(sample.encoding)
-                    .attachment(sample.attachment.as_ref().map(unwrap))
-                    .source_info(SourceInfo::new(p.publisher.id(), p.sn));
-                report("put", put.wait());
+                let source = SourceInfo::new(p.publisher.id(), p.sn);
+                let payload = unwrap(&sample.payload);
+                let attachment = sample.attachment.as_ref().map(unwrap);
+                let put = match qos {
+                    // A publisher's QoS is fixed: a sample with its own goes out through the
+                    // session, on the publisher's key and as the publisher, so it still counts
+                    // as this object's own.
+                    Some(qos) => {
+                        let (priority, reliability, congestion) = zenoh_qos(qos);
+                        self.zenoh
+                            .put(p.publisher.key_expr(), payload)
+                            .priority(priority)
+                            .reliability(reliability)
+                            .congestion_control(congestion)
+                            .encoding(sample.encoding)
+                            .attachment(attachment)
+                            .source_info(source)
+                            .wait()
+                    }
+                    None => p
+                        .publisher
+                        .put(payload)
+                        .encoding(sample.encoding)
+                        .attachment(attachment)
+                        .source_info(source)
+                        .wait(),
+                };
+                report("put", put);
             }
             Command::Get {
                 id,
@@ -299,14 +333,11 @@ impl Net {
     }
 
     fn declare_publisher(&mut self, id: EntityId, key: String, qos: Qos) {
-        let (reliability, congestion) = match qos.reliable {
-            true => (Reliability::Reliable, CongestionControl::Block),
-            false => (Reliability::BestEffort, CongestionControl::Drop),
-        };
+        let (priority, reliability, congestion) = zenoh_qos(qos);
         let declared = self
             .zenoh
             .declare_publisher(key)
-            .priority(PRIORITIES[qos.priority as usize])
+            .priority(priority)
             .reliability(reliability)
             .congestion_control(congestion)
             .wait();

@@ -309,6 +309,39 @@ def test_fields_with_their_own_encoding(other):
     wait_for(lambda: camera.frame == "from the mirror")
 
 
+@dataclass
+class Video(SyncableObject):
+    synq_type_id = "9a8a6c1e-3b7d-4c9a-8e5f-1a2b3c4d5e6f:1"
+    frame: str | None = None
+    frame_qos = qos.background
+
+    def frame_before_send(self, frame: str, sample: Sample) -> None:
+        if frame.startswith("key"):
+            sample.send_value(frame, qos=qos.data_high, reliability=qos.reliable)
+        else:
+            sample.send(frame.encode(), encoding="text/plain", qos=qos.background)
+
+    def frame_after_receive(self, sample: Sample) -> str:
+        return sample.decode() if sample.encoding == "application/yaml" else sample.payload.decode()
+
+
+def test_a_sample_can_have_its_own_qos(other):
+    video = Video("video", synq_authoritive=True, frame="key 1")
+    mirror = Video.from_topic("host/video", session=other)
+    assert mirror.frame == "key 1"
+    video.frame = "delta 2"
+    wait_for(lambda: mirror.frame == "delta 2")
+    video.frame = "key 3"
+    wait_for(lambda: mirror.frame == "key 3")
+
+
+def test_a_samples_qos_must_be_presets():
+    with pytest.raises(TypeError, match="qos must be a qos preset"):
+        Sample().send(b"", qos="data")
+    with pytest.raises(TypeError, match="reliability must be qos.drop or qos.reliable"):
+        Sample().send(b"", reliability=True)
+
+
 def test_a_before_send_must_send_once():
     @dataclass
     class Silent(SyncableObject):

@@ -2,7 +2,7 @@ mod common;
 
 use common::*;
 use spirisynq_core::{
-    Data, FieldOptions, Notice, ObjectId, ObjectOptions, Origin, Priority, Qos, Sample,
+    Data, FieldOptions, Notice, ObjectId, ObjectOptions, Origin, Priority, Qos, QosOverride, Sample,
 };
 use spirisynq_zenoh::Node;
 use spirisynq_zenoh::zenoh::Wait;
@@ -122,6 +122,27 @@ fn raw_fields_keep_their_encoding_and_attachment() {
         .unwrap();
     let (data, origin) = incoming(&nodes[1], "image");
     assert_eq!((data, origin), (Data::Raw(sample), Origin::Owner));
+}
+
+#[test]
+fn a_sample_with_its_own_qos_is_still_the_owners() {
+    let nodes = network(2);
+    let owner = owner(&nodes[0], "robot/battery", raw_image());
+    mirror(&nodes[1], "robot/battery", raw_image());
+    let sample = raw(b"\x89PNG", "image/png");
+    let qos = QosOverride {
+        priority: Some(Priority::Background),
+        reliable: Some(false),
+    };
+    nodes[0]
+        .with(|s| s.send_raw_with(owner, "image", sample.clone(), qos))
+        .unwrap();
+    let (data, origin) = incoming(&nodes[1], "image");
+    assert_eq!((data, origin), (Data::Raw(sample), Origin::Owner));
+    // The owner takes writes on the field, but knows its own sample.
+    while let Some(notice) = quiet(&nodes[0]) {
+        assert!(!matches!(notice, Notice::Incoming { .. }), "{notice:?}");
+    }
 }
 
 #[test]

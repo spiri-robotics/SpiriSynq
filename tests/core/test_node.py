@@ -73,6 +73,11 @@ def test_raw_fields_arrive_as_samples(network, battery):
     sample = _core.Sample(b"\x89PNG", "image/png", b"frame 7")
     a.send_raw(owner, "image", sample)
     assert incoming(b, "image").data == sample
+    keyframe = _core.Sample(b"\x89PNG key", "image/png")
+    a.send_raw(owner, "image", keyframe, priority="real_time", reliable=False)
+    assert incoming(b, "image").data == keyframe
+    with pytest.raises(ValueError, match="no priority `urgent`"):
+        a.send_raw(owner, "image", sample, priority="urgent")
 
 
 def test_values_that_dont_decode_are_reported_and_dropped(network, battery):

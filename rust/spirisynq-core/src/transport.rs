@@ -137,6 +137,24 @@ pub struct Qos {
     pub reliable: bool,
 }
 
+/// One sample's QoS, where it differs from its field's: a camera sending a keyframe reliably
+/// among frames that may drop. `None` keeps the field's setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct QosOverride {
+    pub priority: Option<Priority>,
+    pub reliable: Option<bool>,
+}
+
+impl QosOverride {
+    /// The QoS a sample of a field with `qos` is sent with.
+    pub fn apply(self, qos: Qos) -> Qos {
+        Qos {
+            priority: self.priority.unwrap_or(qos.priority),
+            reliable: self.reliable.unwrap_or(qos.reliable),
+        }
+    }
+}
+
 /// Something the core asks the transport to do. Take them with
 /// [`Session::poll_command`](crate::Session::poll_command), in order.
 #[derive(Debug, Clone, PartialEq)]
@@ -154,8 +172,13 @@ pub enum Command {
     DeclareLivelinessSubscriber { id: EntityId, key: String },
     /// Undeclare any of the above.
     Undeclare { id: EntityId },
-    /// Put a sample on a publisher's key.
-    Put { publisher: EntityId, sample: Sample },
+    /// Put a sample on a publisher's key, with the publisher's QoS, or `qos` for this sample
+    /// alone.
+    Put {
+        publisher: EntityId,
+        sample: Sample,
+        qos: Option<Qos>,
+    },
     /// Send a get. Consolidation is always off: every reply counts. Report replies as
     /// [`Event::Reply`], then [`Event::RequestDone`] once no more can come, timeouts included.
     Get {

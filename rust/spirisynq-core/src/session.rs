@@ -14,7 +14,9 @@ use crate::Error;
 use crate::keyexpr;
 use crate::notice::{Data, IncomingCall, Notice, ObjectId, Origin, ReplyError, RequestEnd};
 use crate::store::{Store, Stored};
-use crate::transport::{Command, EntityId, Event, Qos, QueryId, RequestId, Sample, Source, Zid};
+use crate::transport::{
+    Command, EntityId, Event, Qos, QosOverride, QueryId, RequestId, Sample, Source, Zid,
+};
 use crate::wasm::{CallJob, CallSent, Named, Replies, WasmHost, WasmJob};
 use crate::wire::{self, ALIVE, CODE, DONE, METADATA, OBJECT_SCHEMA, REHYDRATE, TYPE_SCHEMA};
 
@@ -631,7 +633,7 @@ impl Session {
         let sample = wire::yaml_sample(&value)?;
         let changed = self.object_mut(object)?.set(path, value)?;
         if changed {
-            self.publish(object, path, sample);
+            self.publish(object, path, sample, QosOverride::default());
         }
         Ok(changed)
     }
@@ -655,6 +657,18 @@ impl Session {
     /// Publish a field in its own encoding, as its `before_send` produced it. An owner keeps the
     /// sample, to send to new mirrors as the field's state.
     pub fn send_raw(&mut self, object: ObjectId, path: &str, sample: Sample) -> Result<(), Error> {
+        self.send_raw_with(object, path, sample, QosOverride::default())
+    }
+
+    /// [`send_raw`](Self::send_raw), with this sample's own QoS where it differs from the
+    /// field's.
+    pub fn send_raw_with(
+        &mut self,
+        object: ObjectId,
+        path: &str,
+        sample: Sample,
+        qos: QosOverride,
+    ) -> Result<(), Error> {
         let obj = self.object_mut(object)?;
         obj.check_field(path)?;
         if let Role::Owner { .. } = obj.role {
@@ -666,12 +680,14 @@ impl Session {
                 false => obj.store.set_raw(path, sample.clone()),
             }
         }
-        self.publish(object, path, sample);
+        self.publish(object, path, sample, qos);
         Ok(())
     }
 
-    fn publish(&mut self, object: ObjectId, path: &str, sample: Sample) {
+    fn publish(&mut self, object: ObjectId, path: &str, sample: Sample, over: QosOverride) {
         let obj = &self.objects[&object];
+        let field = obj.options(path).qos;
+        let qos = Some(over.apply(field)).filter(|&q| q != field);
         let publisher = match &obj.role {
             Role::Owner { listening } => {
                 if obj.options(path).lazy && !listening.get(path).copied().unwrap_or(false) {
@@ -683,9 +699,12 @@ impl Session {
                 Some(id) => *id,
                 None => {
                     let key = wire::key(&obj.topic, path);
-                    let qos = obj.options(path).qos;
                     let id = self.declare(object, Route::FieldPub(path.to_owned()), |id| {
-                        Command::DeclarePublisher { id, key, qos }
+                        Command::DeclarePublisher {
+                            id,
+                            key,
+                            qos: field,
+                        }
                     });
                     let obj = self
                         .objects
@@ -696,7 +715,11 @@ impl Session {
                 }
             },
         };
-        self.commands.push_back(Command::Put { publisher, sample });
+        self.commands.push_back(Command::Put {
+            publisher,
+            sample,
+            qos,
+        });
     }
 
     /// Subscribe a mirror to an on-demand field, and fetch its last value from the owner unless

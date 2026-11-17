@@ -31,7 +31,7 @@ pub use error::Error;
 pub use notice::{Data, IncomingCall, Metadata, Notice, ObjectId, Origin, ReplyError, RequestEnd};
 pub use session::{CallOptions, FieldOptions, ObjectOptions, Session};
 pub use transport::{
-    Bytes, Command, EntityId, Event, Payload, Priority, Qos, QueryId, RequestId, Sample, Source,
-    Zid,
+    Bytes, Command, EntityId, Event, Payload, Priority, Qos, QosOverride, QueryId, RequestId,
+    Sample, Source, Zid,
 };
 pub use wasm::{CallJob, Frame, NextReply, Replies, WasmHost, WasmJob};

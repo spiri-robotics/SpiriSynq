@@ -132,6 +132,11 @@
   leaves out, checks the hash, and keeps it for every object of the session; until it arrives,
   running that code fails with `CodeNotFetched`.
 
+- **QoS for one value**: a field's `before_send` can send a value with other settings than
+  the field's: `sample.send(..., qos=qos.data_high, reliability=qos.reliable)`, and the same on
+  `sample.send_value`. For video, a keyframe can go reliably among frames that may drop.
+  `_core.Node.send_raw` takes `priority=` and `reliable=`.
+
 ### Fixes
 
 - **`Session.fetch_schema` asks again until its timeout**, as `from_topic` waits for an owner:

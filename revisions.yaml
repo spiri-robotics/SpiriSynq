@@ -37,6 +37,6 @@ revisions:
     date: 2026-11-17
     summary: >-
       Describes 1.0.0rc1, the first release of v2: marks what isn't in it yet, and documents the
-      synq command line again.
+      synq command line again, and QoS for one value.
     author: Spiri Robotics
     draft: true

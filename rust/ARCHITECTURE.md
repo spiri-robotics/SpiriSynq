@@ -665,7 +665,8 @@ A Cargo workspace in `rust/`. Lower crates know nothing about the ones above the
   a routing node (entity 0); the transport drops it, so the engine sees the get end without
   its done marker and reports it cut short.
 - QoS: a reliable field is sent reliably with congestion control `Block`; others best effort,
-  `Drop`. Priorities map one to one.
+  `Drop`. Priorities map one to one. A sample with its own QoS goes out through the session,
+  as its publisher (above).
 - A failed zenoh operation is logged (`log`) and the engine carries on; a failed get still ends.
 
 ### Testing
@@ -719,6 +720,14 @@ methods can be tested end to end). Each is tested before the next starts.
   class attribute `<field>_<setting>` set to a preset, e.g. `exposure_qos = qos.realtime`,
   `recording_reliability = qos.reliable` (default `qos.drop`, best effort), `voltage_ignore_incoming = True`,
   `image_lazy = True`. Settings are fixed at class definition, never changed at run time.
+- **QoS for one sample** (built 2026-11-17, for video keyframes). A `before_send` may send one
+  sample with another priority or reliability than its field's: `sample.send(..., qos=,
+  reliability=)` in Python, taking the same presets. In the core, `Session::send_raw_with` takes
+  a `QosOverride` (each part optional); `Command::Put` carries the resulting `Qos` only when it
+  differs from the field's. A zenoh publisher's QoS is fixed, so the transport sends such a
+  sample with `Session::put` on the publisher's key, carrying the publisher's `SourceInfo`: it
+  is still the publisher's sample to every reader, its own session included. WASM hooks send
+  with the field's QoS for now: the host API has no way to say otherwise.
 - Packaging: maturin, platform wheels, and the CI workflows the project template owns.
 
 - **On-demand fields** (decided and built 2026-11-17, for camera frames). A field whose key
@@ -728,8 +737,7 @@ methods can be tested end to end). Each is tested before the next starts.
   value. On the owner it is lazy and ignores incoming writes, so its listener status says
   whether anyone wants it. In Python, `<field>_on_demand = True` names the key `@<field>`; the
   attribute keeps its name. It's in the schema, as the property's name, so every binding knows.
-  `sample.send(..., priority=, reliable=)` may override the field's QoS for one sample (not
-  built yet). In the core: `Field::on_demand`; an owner keeps such values apart from the state,
+  A `before_send` may override the field's QoS for one sample (see below). In the core: `Field::on_demand`; an owner keeps such values apart from the state,
   so they're never in a dataclass's value, a full state or WASM's `self`;
   `Session::subscribe` / `unsubscribe` count a mirror's holds, and the first fetches the last
   value with a get on `sr_rehydrate` with the parameter `field=<key>`, unless the field says
