@@ -64,6 +64,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: PyO3/maturin-action@v1
+        env:
+          # manylinux2014's aarch64 cross gcc doesn't define __ARM_ARCH, which ring's assembly
+          # (zenoh's TLS) needs.
+          CFLAGS_aarch64_unknown_linux_gnu: -D__ARM_ARCH=8
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.libc }}

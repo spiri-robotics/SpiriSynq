@@ -139,6 +139,9 @@
 
 ### Fixes
 
+- The aarch64 manylinux2014 wheel builds: `ring`'s assembly needs `__ARM_ARCH`, which that
+  image's cross compiler doesn't define.
+
 - **`Session.fetch_schema` asks again until its timeout**, as `from_topic` waits for an owner:
   an owner that just appeared may not be reachable yet. `from_topic_untyped` and the CLI's
   `topic schema` and `rpc` wait with it.
