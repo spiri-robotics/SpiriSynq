@@ -33,3 +33,10 @@ revisions:
     summary: Rewritten as the specification of SpiriSynq v2, ahead of its implementation.
     author: Spiri Robotics
     draft: true
+  - revision: "0.3"
+    date: 2026-11-17
+    summary: >-
+      Describes 1.0.0rc1, the first release of v2: marks what isn't in it yet, and documents the
+      synq command line again.
+    author: Spiri Robotics
+    draft: true

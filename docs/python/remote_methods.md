@@ -393,16 +393,23 @@ How a raw remote method is declared:
   those. Then the method declares only the placeholders in its key template after `query`, and
   reads the rest from the query itself.
 - The return annotation is `AsyncIterator[Reply]`. The schema records the type callers get as
-  `after_call`'s yield type, or, without an `after_call`, as raw bytes.
+  `after_call`'s yield type, or, without an `after_call`, as any value.
 - It takes the same options as `@remote_method`, such as `key=` and `timeout=`, and the same hooks.
 
 A raw remote method runs only on the owner. Calling it on the owner itself raises `TypeError`,
 since there's no query. Give the logic a plain method of its own if the owner needs it too.
 
-A mirror without the method's `after_call`, such as one that doesn't import your class, gets each
-reply's payload, as bytes.
+A caller without the method's `after_call`, such as one that doesn't import your class, gets each
+reply as a value if it's YAML (what `Reply.encode` sends), and as its payload, in bytes, if it
+isn't.
 
 ## Chaining calls
+
+:::{admonition} Not in 1.0.0rc1
+:class: warning
+
+`.pipe()` raises `NotImplementedError` in 1.0.0rc1. Call the method, then call the methods of the object it returns. This section describes chaining as it will be.
+:::
 
 A remote method can return a syncable object:
 

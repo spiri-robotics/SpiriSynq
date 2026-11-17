@@ -44,11 +44,16 @@ the answer is always yes. See
 ## Discovery
 
 Use `session.list_topics()` to find the objects on the network. Liveliness tells you which
-objects are alive right now; each object's metadata tells you its types and owner.
+objects are alive right now; each object's metadata tells you its topic, owner (its session's
+zenoh id), type `$id` and base types.
 
 ```python
 from SpiriSynq.session import current_session
 
-for metadata in current_session.get().list_topics(type_filter="Counter"):
-    print(metadata["topic"], metadata["classes"])
+for metadata in current_session.get().list_topics(type_filter=Counter):
+    print(metadata["topic"], metadata["type"], metadata["owner"])
 ```
+
+`type_filter` is a syncable class, a type `$id`, or a class name such as `"Counter"`; it finds
+objects of that type and of the types derived from it. `prefix` limits the search to topics under
+one, and `timeout` is how long to wait for answers, in seconds.

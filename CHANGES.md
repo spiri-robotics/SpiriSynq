@@ -146,6 +146,10 @@
 
 ### Improvements
 
+- **The docs say what isn't in 1.0.0rc1**: `@wasm.mamba`, `@wasm.asm`, WASM code on the owner
+  and `.pipe()`, with what to use meanwhile (`@wasm.wat` for WebAssembly text). Raw methods'
+  replies and `list_topics` are described as they work. Document revision 0.3.
+
 - **`Position`, on the core**: an owner follows its parent through a mirror of it, as a
   `Position` (so a parent of a subclass type works), and loses its pose while the parent's owner
   is gone. `Pose.from_plain` is gone with v1's untyped state fetch. The unused example

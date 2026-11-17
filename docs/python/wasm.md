@@ -45,6 +45,14 @@ What you gain depends only on where the code runs (see
 
 ### A portable owner
 
+:::{admonition} Not in 1.0.0rc1
+:class: warning
+
+WASM code that runs on the owner, remote methods and `@on_change.owner` callbacks, isn't in
+1.0.0rc1: a class with any raises `NotImplementedError` when it's defined. WASM properties and
+methods, `@on_change.mirror` callbacks, field hooks and call hooks work.
+:::
+
 Callers can't tell whether a remote method is WASM. The difference is on the owner's side:
 
 ```python
@@ -128,6 +136,15 @@ language the process itself is written in:
 
 All the interpreters together add less than 1 MiB, compressed, to SpiriSynq.
 
+:::{admonition} Not in 1.0.0rc1
+:class: warning
+
+The mamba compiler isn't built yet, so in 1.0.0rc1 `@wasm.python` always ships the function's
+source for MicroPython, and `@wasm.mamba` and `@wasm.asm` raise `NotImplementedError`. To write
+WebAssembly by hand, use `@wasm.wat`: it takes the text of a WebAssembly module that exports the
+method's name, as `@wasm.lua` takes Lua (see [How the code travels](#how-the-code-travels)).
+:::
+
 ## Python
 
 `@wasm.python` takes an ordinary Python function. SpiriSynq runs it one of two ways:
@@ -164,6 +181,12 @@ carries on with a bigger integer, as Python does. A method where that can happen
 
 (mamba)=
 ### Compiled: mamba
+
+:::{admonition} Not in 1.0.0rc1
+:class: warning
+
+`@wasm.mamba` raises `NotImplementedError` in 1.0.0rc1. This section describes it as it will be.
+:::
 
 The battery's `percent` and `minutes_left`, and a property that adds up the bytes of the serial
 number, as a simple checksum:
@@ -357,6 +380,12 @@ For longer code, keep it in a file: `@wasm.lua(file="battery.lua")`. The path is
 file that defines the class.
 
 ## WebAssembly text: `@wasm.asm`
+
+:::{admonition} Not in 1.0.0rc1
+:class: warning
+
+`@wasm.asm` raises `NotImplementedError` in 1.0.0rc1; `@wasm.wat` takes WebAssembly text as a string. This section describes `@wasm.asm` as it will be.
+:::
 
 `@wasm.asm` lets you write a method in WebAssembly instructions directly, inside a Python
 function, the way MicroPython's `@micropython.asm_thumb` lets you write ARM assembly. It goes
