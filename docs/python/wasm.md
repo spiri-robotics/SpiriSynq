@@ -31,7 +31,7 @@ included. `@wasm.python` is one of several languages you can write it in; see
 ## What WASM gives you
 
 What you gain depends only on where the code runs (see
-[the table in the overview](overview.md#the-pieces)):
+[the table in the overview](../overview.md#the-pieces)):
 
 - **Code that runs on mirrors, or wherever it's used, goes in the type's schema.** Every mirror
   gets it with the type and runs it, in any language. That's what `percent` above shows: the

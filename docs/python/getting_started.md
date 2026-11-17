@@ -36,7 +36,7 @@ class Counter(SyncableObject):
 
 `synq_type_id` names the type on the network. A class in a package published on PyPI gets one
 automatically; a class in a script or an unpublished module needs one written in. See
-[Type identity and schemas](type_identity.md).
+[Type identity and schemas](../type_identity.md).
 
 The owner, `counter.py`:
 

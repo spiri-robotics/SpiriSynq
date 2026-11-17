@@ -97,6 +97,12 @@
   leaves out, checks the hash, and keeps it for every object of the session; until it arrives,
   running that code fails with `CodeNotFetched`.
 
+### Improvements
+
+- **The docs are organized by language tier**: Python, the tier-1 language, has its own
+  section (`docs/python/`); a page on the other languages says what tier 2 (Rust, TypeScript
+  and C/C++) can do and where each binding stands; type identity and schemas are reference.
+
 ### Tests
 
 - **The Rust core must keep 100% line and function coverage.** `make rust-test` and the new

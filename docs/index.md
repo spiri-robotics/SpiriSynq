@@ -30,17 +30,36 @@ specification it has to meet. The few parts that aren't designed yet say so.
 
 ```{toctree}
 :maxdepth: 2
-:numbered:
 
 overview
-getting_started
-objects
-nested_objects
-liveliness
-methods
-remote_methods
-callbacks
-wasm
+```
+
+```{toctree}
+:maxdepth: 2
+:numbered:
+:caption: Python
+
+python/getting_started
+python/objects
+python/nested_objects
+python/liveliness
+python/methods
+python/remote_methods
+python/callbacks
+python/wasm
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Other languages
+
+languages
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Reference
+
 type_identity
 ```
 

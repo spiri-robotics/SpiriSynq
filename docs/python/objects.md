@@ -28,7 +28,7 @@ Elsewhere, `Battery.from_topic("myhost/battery")` makes a mirror.
 
 From the class's fields and type annotations, SpiriSynq builds a JSON Schema for it. That schema,
 not the Python class, is what the core and other processes see. See
-[Type identity and schemas](type_identity.md).
+[Type identity and schemas](../type_identity.md).
 
 ## Topics
 

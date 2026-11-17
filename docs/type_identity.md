@@ -50,6 +50,6 @@ Creating an instance of a class that has neither raises `TypeError`, naming the 
 
 SpiriSynq has no rules for evolving a type. Keeping a type compatible with older readers is up
 to you; WASM properties can help, by standing in for fields you've removed (see
-[Methods and properties](methods.md)).
+[Methods and properties](python/methods.md)).
 
 If two processes use different versions of a type, SpiriSynq at most reports the difference.
