@@ -146,6 +146,10 @@
 
 ### Improvements
 
+- **A page on moving from v1** (`docs/python/migration.md`): type identity, values without a
+  registry, codecs as field hooks, field settings, signals, links, remote-method hooks, sessions
+  and the command line, each with its v1 form beside its v2 one.
+
 - **The docs say what isn't in 1.0.0rc1**: `@wasm.mamba`, `@wasm.asm`, WASM code on the owner
   and `.pipe()`, with what to use meanwhile (`@wasm.wat` for WebAssembly text). Raw methods'
   replies and `list_topics` are described as they work. Document revision 0.3.

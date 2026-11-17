@@ -48,6 +48,7 @@ python/methods
 python/remote_methods
 python/callbacks
 python/wasm
+python/migration
 ```
 
 ```{toctree}
