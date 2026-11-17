@@ -1,7 +1,14 @@
 name: Publish to PyPI
 
-# A `vX.Y.Z` tag builds the package and publishes it to PyPI with trusted
-# publishing: no token, PyPI trusts this workflow.
+# A `vX.Y.Z` tag, or a pre-release such as `v1.0.0rc1`, builds the wheels and the sdist and
+# publishes them to PyPI with trusted publishing: no token, PyPI trusts this workflow. pip and uv
+# skip pre-releases unless asked for one (`pip install --pre`, or `spirisynq==1.0.0rc1`), so a
+# release candidate is out of everyone's upgrade path.
+#
+# The package has a Rust extension, SpiriSynq._core, built with maturin: one abi3 wheel per
+# platform covers every Python from 3.13. Pull requests and pushes to main that touch the Rust
+# code or the packaging build every wheel too, without publishing, so a platform that stops
+# building shows up before a release does.
 #
 # One-time setup on PyPI: the project's Publishing settings > add a trusted
 # publisher for spiri-robotics/SpiriSynq, workflow `pypi-publish.yml`,
@@ -9,12 +16,30 @@ name: Publish to PyPI
 on:
   push:
     tags: ["v*.*.*"]
+    branches: [main]
+    paths:
+      - "rust/**"
+      - "src/**"
+      - "pyproject.toml"
+      - ".github/workflows/pypi-publish.yml"
+  pull_request:
+    paths:
+      - "rust/**"
+      - "src/**"
+      - "pyproject.toml"
+      - ".github/workflows/pypi-publish.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  # The Rust the `Rust` workflow tests with.
+  RUST_TOOLCHAIN: "1.99.1"
+
 jobs:
-  build:
+  version:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -26,15 +51,78 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME doesn't match pyproject.toml's version $version."
             exit 1
           fi
-      - name: Build
-        run: uv build
+
+  # manylinux2014 is glibc 2.17, the oldest Rust builds for: the widest a wheel can reach.
+  # Other Linux architectures wait until wasmtime (the WASM engine) is shown to build for them.
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64, aarch64]
+        libc: ["2014", musllinux_1_2]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.libc }}
+          rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          args: --release --locked --out dist
       - uses: actions/upload-artifact@v7
         with:
-          name: dist
+          name: wheels-linux-${{ matrix.target }}-${{ matrix.libc }}
+          path: dist/
+
+  macos:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-macos-${{ matrix.target }}
+          path: dist/
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64-pc-windows-msvc
+          rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-windows
+          path: dist/
+
+  # For platforms without a wheel: building it needs Rust 1.96 or newer.
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-sdist
           path: dist/
 
   publish:
-    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, linux, macos, windows, sdist]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -42,7 +130,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v7
         with:
-          name: dist
+          pattern: wheels-*
+          merge-multiple: true
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

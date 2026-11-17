@@ -460,18 +460,27 @@ Built for properties and methods, with every loader (2026-11-12).
 
 ## Language targets
 
-Decided 2026-11-11: **Python, C++ and browser JavaScript.** Node isn't a target.
+Decided 2026-11-17, in tiers:
+
+- **Tier 1: Python.** The best documented, and where types are defined. Released first, as
+  `1.0.0rc1` on PyPI, with manylinux wheels for as many platforms as we can build.
+- **Tier 2: Rust, TypeScript and C/C++.** Each gets its own section of the docs, shorter than
+  Python's: install, mirror a type, set fields, call methods.
+
+The bindings:
 
 - Python: PyO3 + maturin, hand-written (the decorator/descriptor surface needs it).
-- C++: a C ABI (cbindgen header) with a header-only C++ wrapper over it, as zenoh-cpp does.
-- Browser JS: the browser runs the same Rust core, compiled to wasm32, and speaks **real zenoh
+- Rust: the engine crates themselves, with a typed API over `spirisynq-zenoh`'s `Node`.
+- C/C++: a C ABI (cbindgen header) with a header-only C++ wrapper over it, as zenoh-cpp does.
+- TypeScript: in the browser, with TypeScript typings over the wasm32 build. Node isn't a target.
+  The browser runs the same Rust core, compiled to wasm32, and speaks **real zenoh
   over a WebSocket**, decoded by a Rust zenoh implementation in the browser (decided 2026-11-11).
   No zenoh-ts, no remote-api plugin: SourceInfo, liveliness and the rest are ordinary zenoh.
   Native zenoh has a `ws/` link, so any native peer (drone, ground station) can listen for
   browsers directly. The core can't assume Tokio or threads. WASM methods sit behind a host
   abstraction (wasmtime natively, the browser's own engine in the browser).
-- C++ and browser users only mirror types defined in Python, for now. Defining their own types
-  comes later.
+- Tier-2 users only mirror types defined in Python, for now. Defining their own types comes
+  later.
 - YAML is parsed and emitted in the Rust core, never by the binding, so every language reads the
   wire the same way (no third-party C++ YAML parsers). Bindings receive a parsed value tree, YAML
   tags included, and build their native values from it.

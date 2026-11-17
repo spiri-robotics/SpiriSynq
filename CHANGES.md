@@ -113,6 +113,12 @@
 
 ### Internal
 
+- **Wheels for every platform we can build**: releases now publish abi3 wheels (Python 3.13 and
+  up) for manylinux2014 and musllinux on x86_64 and aarch64, macOS on Intel and Apple Silicon,
+  and Windows x64, plus an sdist that builds with Rust 1.96 or newer. A pre-release tag such as
+  `v1.0.0rc1` publishes too, and pip and uv only install it when asked. Pull requests touching
+  the Rust code or the packaging build every wheel without publishing.
+
 - **The flake builds the Rust side too**: `packages.<system>.interpreters` builds the bundled
   interpreters, and `nix develop .#rust` gives the toolchain `make rust-test` needs (Rust 1.99,
   cargo-llvm-cov, LLVM 23). Its nixpkgs pin moves to nixos-unstable of 2026-11-11.
