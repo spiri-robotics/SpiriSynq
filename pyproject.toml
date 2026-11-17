@@ -1,6 +1,6 @@
 [project]
 name = "SpiriSynq"
-version = "0.6.0"
+version = "1.0.0rc1"
 description = "Keeps Python dataclass instances in sync across processes, machines and languages over Zenoh"
 readme = "README.md"
 requires-python = ">=3.13"
